@@ -69,42 +69,27 @@ typedef enum {
 
 ### 2.3 比较值换算
 
-新增两个明确的换算函数，替换所有“直接写 cmp”的路径：
+新增一个明确的换算函数，替换所有“直接写 cmp”的路径（互补与同向都用它）：
 
 ```c
-/* 高侧占空比 -> 高通道比较值（峰值导通，比较值是关断点） */
+/* 占空比 -> 比较值（峰值导通，比较值是关断点，X = CPSR*(1-D)） */
 static uint16_t HighDutyToCmpH(float dutyPct)
 {
-    uint16_t cpsr = (uint16_t)(s_ctx.periodTicks - 1U);
-    int32_t  x;
+    int32_t cpsr = (int32_t)s_ctx.periodTicks - 1;
+    int32_t x;
 
     if (dutyPct < 0.0f)   dutyPct = 0.0f;
     if (dutyPct > 100.0f) dutyPct = 100.0f;
 
-    x = (int32_t)cpsr - (int32_t)((float)cpsr * dutyPct / 100.0f);
-    if (x < 1)          x = 1;                 /* 避开 0% 边界 */
-    if (x > (int32_t)cpsr - 1) x = (int32_t)cpsr - 1;  /* 避开 100% 边界 */
-    return (uint16_t)x;
-}
-
-/* 低侧占空比 -> 低通道比较值（谷底导通，比较值就是导通宽度） */
-static uint16_t LowDutyToCmpL(float dutyPct)
-{
-    uint16_t cpsr = (uint16_t)(s_ctx.periodTicks - 1U);
-    int32_t  x;
-
-    if (dutyPct < 0.0f)   dutyPct = 0.0f;
-    if (dutyPct > 100.0f) dutyPct = 100.0f;
-
-    x = (int32_t)((float)cpsr * dutyPct / 100.0f);
-    if (x < 1)                 x = 1;
-    if (x > (int32_t)cpsr - 1) x = (int32_t)cpsr - 1;
+    x = cpsr - (int32_t)((float)cpsr * dutyPct / 100.0f);
+    if (x < 1)        x = 1;                 /* 避开 0% 边界 */
+    if (x > cpsr - 1) x = cpsr - 1;          /* 避开 100% 边界 */
     return (uint16_t)x;
 }
 ```
 
-- `CenterPctToCompare` 保留但只用于“把中心值/百分比换算成 tick”这类计算，不再直接写比较寄存器。
-- 所有内部 `s_occrH[ch] / s_occrL[ch]` 仍保存“寄存器里的原始比较值”，但语义在注释里更新为 Xh/Xl。
+- 同向模式下两路都用这一路换算；下管比较值 = 上管比较值 + deadTicks。
+- 所有内部 `s_occrH[ch] / s_occrL[ch]` 仍保存“寄存器里的原始比较值”。
 
 ### 2.4 `OCModeCompLow`（互补模式唯一使用的比较通道配置）
 
@@ -161,22 +146,22 @@ static void OCModeSyncHigh(CM_TMR4_TypeDef *TMR4x, uint32_t ch)
     m.OCMRx_f.OCFPKH  = TMR4_OC_OCF_SET;
     m.OCMRx_f.OCFUCH  = TMR4_OC_OCF_SET;
     m.OCMRx_f.OCFZRH  = TMR4_OC_OCF_SET;
-    /* 同向：上下管同相，导通窗口 [0, X)（居中谷底） */
-    m.OCMRx_f.OPDCH   = TMR4_OC_HIGH;   /* 下计数匹配 -> HIGH */
+    /* 同向：上下管同相，导通窗口 (X, CPSR]（居中峰值） */
+    m.OCMRx_f.OPDCH   = TMR4_OC_LOW;    /* 下计数匹配 -> LOW  */
     m.OCMRx_f.OPPKH   = TMR4_OC_LOW;    /* 峰值匹配   -> LOW  */
-    m.OCMRx_f.OPUCH   = TMR4_OC_LOW;    /* 上计数匹配 -> LOW  */
+    m.OCMRx_f.OPUCH   = TMR4_OC_HIGH;   /* 上计数匹配 -> HIGH */
     m.OCMRx_f.OPZRH   = TMR4_OC_HIGH;   /* 谷底匹配   -> HIGH */
-    m.OCMRx_f.OPNPKH  = TMR4_OC_LOW;    /* 峰值无匹配 -> LOW  */
-    m.OCMRx_f.OPNZRH  = TMR4_OC_HIGH;   /* 谷底无匹配 -> HIGH */
+    m.OCMRx_f.OPNPKH  = TMR4_OC_HIGH;   /* 峰值无匹配 -> HIGH */
+    m.OCMRx_f.OPNZRH  = TMR4_OC_LOW;    /* 谷底无匹配 -> LOW  */
     TMR4_OC_SetHighChCompareMode(TMR4x, ch, m);
 }
 ```
 
-结果：上下管同相，导通窗口 `[0, X)`，`D = X/CPSR`，PB5 与 PB4 同高同低（死区为 0 时完全一致）。
+结果：上下管同相，导通窗口 `(X, CPSR]`，`D = (CPSR−X)/CPSR`，PB5 与 PB4 同高同低（死区为 0 时完全一致）；峰值处导通、谷底处关断。
 
 ### 2.6 `OCModeSyncLow`（同向模式下管）
 
-保持“谷底导通”，补齐边界强制项与独立模式镜像：
+保持“峰值导通”，与上管同相，并补齐边界强制项与独立模式镜像：
 
 ```c
 static void OCModeSyncLow(CM_TMR4_TypeDef *TMR4x, uint32_t ch)
@@ -218,18 +203,19 @@ static void ApplySyncDutyWithDeadTime(tmr4_pwm_channel_t ch,
                                       uint16_t deadTicks)
 {
     const pwm_pair_desc_t *pair = &s_pairs[ch];
-    int32_t xh = (int32_t)LowDutyToCmpL(dutyPct);   /* 同向：上管也是谷底导通 */
-    int32_t xl = xh - (int32_t)deadTicks;
+    uint16_t cpsr = (uint16_t)(s_ctx.periodTicks - 1U);
+    int32_t xh = (int32_t)HighDutyToCmpH(dutyPct);   /* 同向：上管峰值导通 */
+    int32_t xl = xh + (int32_t)deadTicks;
 
-    /* 死区为 0 时两路完全相同；非 0 时下管提前 deadTicks 关断 */
-    if (xl < 1) xl = 1;
+    /* 死区为 0 时两路完全相同；非 0 时下管推迟 deadTicks 开通、提前 deadTicks 关断 */
+    if (xl > (int32_t)cpsr - 1) xl = (int32_t)cpsr - 1;
 
     OccrHWrite((int)ch, pair->ocChH, (uint16_t)xh);
     OccrLWrite((int)ch, pair->ocChL, (uint16_t)xl);
 }
 ```
 
-- 上下管同相、同时上升（都居中谷底），下管比上管提前 `deadTicks` 关断。
+- 上下管同相、同时上升（都居中峰值），下管推迟 `deadTicks` 开通、提前 `deadTicks` 关断。
 - 死区为 0 时 `Xh = Xl`，PB5 与 PB4 完全一致。
 - 同向模式下两管同时导通，仅适合台架波形验证或门极带互锁的驱动，不能直接带功率级。
 - `TMR4_DEADTIME_TICKS_MAX` 仍为 0x3FF，钳位保留。
@@ -269,7 +255,7 @@ static void ShadowApplyOC(uint32_t ocCh)
 同向分支（L351-L374）：
 - 初始化 OCH/OCL 后调用 2.5 / 2.6 的新版本。
 - 用 `ApplySyncDutyWithDeadTime(ch, 50.0f, deadTicks)` 代替现在的 `(periodTicks/2, deadTicks)`。
-- `TMR4_OC_Init` 的初值同样用 `HighDutyToCmpH(50.0f)` 给 OCH、`LowDutyToCmpL(50.0f-...)` 给 OCL。
+- `TMR4_OC_Init` 的初值同样用 `HighDutyToCmpH(50.0f)` 给 OCH 和 OCL。
 - 其余（THROUGH、极性、两路都使能）不变。
 
 ### 2.10 占空比写入路径（三处必须一起改）
@@ -277,7 +263,7 @@ static void ShadowApplyOC(uint32_t ocCh)
 - `hw_tmr4_pwm_set_duty_float`（L632-L663）
   互补：`OccrLWrite(i, ocChL, HighDutyToCmpH(centerPct))`
   同向 `TMR4_MODE_HIGH_SIDE`：`OccrHWrite(i, ocChH, HighDutyToCmpH(centerPct))`
-  同向 `TMR4_MODE_LOW_SIDE`：保持“下管常开”语义（比较值 CPSR = 100%），该分支不随 `centerPct` 更新，维持现状即可
+  同向 `TMR4_MODE_LOW_SIDE`：保持“下管常开”语义（比较值 0 = 100%），该分支不随 `centerPct` 更新
   同向 `TMR4_MODE_OFF`：`ApplySyncDutyWithDeadTime(ch, centerPct, deadTicks)`
 
 - `hw_tmr4_pwm_set_duty3`（L665-L696）
@@ -289,7 +275,7 @@ static void ShadowApplyOC(uint32_t ocCh)
 - `hw_tmr4_pwm_set_output_type`（L967-L1039）
   互补：`OccrLWrite` 用 `HighDutyToCmpH(d50)`；同向：`ApplySyncDutyWithDeadTime`。
 - `hw_tmr4_pwm_set_channel_mode`（L893-L962）
-  `HIGH_SIDE` 的 `OccrHWrite` 用 `HighDutyToCmpH`；`LOW_SIDE` 的 100% 初值保持 `CPSR`（等价于 `LowDutyToCmpL(100)`）。
+  `HIGH_SIDE` 的 `OccrHWrite` 用 `HighDutyToCmpH`；`LOW_SIDE` 的 100% 初值写 0。
 - `hw_tmr4_pwm_resume_output`（L430-L488）
   调用新的 OCMode 函数；比较值不动。
 
@@ -320,7 +306,7 @@ MAIN_D("[HW_TMR4] sample=%s trig=%s (%u)",
 
 - `hw_tmr4_pwm_get_state`（L772-L799）
   互补：`highPct = 100×(CPSR − X)/periodTicks − deadPct/2`；`lowPct = 100 − highPct − deadPct`。
-  同向：`highPct = 100×Xh/periodTicks`；`lowPct = 100×Xl/periodTicks`（引脚无死区延迟）。
+  同向：`highPct = 100×(CPSR − Xh)/periodTicks`；`lowPct = 100×(CPSR − Xl)/periodTicks`（引脚无死区延迟）。
 - `hw_tmr4_pwm_center_to_actual`
   互补保持 `high = center − dtPct/2`、`low = 100 − high − dtPct`。
   同向改为 `high = center`、`low = center − dtPct`。
@@ -336,8 +322,8 @@ MAIN_D("[HW_TMR4] sample=%s trig=%s (%u)",
 | 场景 | 寄存器 | OPU C/D | OPPK | OPZR | OPNPK | OPNZR | EOP* |
 |---|---|---|---|---|---|---|---|
 | 互补（OCMRL） | OCMRul/vl/wl | U=HIGH, D=LOW | LOW | HIGH | HIGH | LOW | 与 OP 镜像，bit19~16=0 |
-| 同向上管（OCMRH） | OCMRuh/vh/wh | U=LOW, D=HIGH | LOW | HIGH | LOW | HIGH | 无 |
-| 同向下管（OCMRL） | OCMRul/vl/wl | U=LOW, D=HIGH | LOW | HIGH | LOW | HIGH | 与 OP 镜像，bit19~16=0 |
+| 同向上管（OCMRH） | OCMRuh/vh/wh | U=HIGH, D=LOW | LOW | HIGH | HIGH | LOW | 无 |
+| 同向下管（OCMRL） | OCMRul/vl/wl | U=HIGH, D=LOW | LOW | HIGH | HIGH | LOW | 与 OP 镜像，bit19~16=0 |
 
 （HOLD=0，HIGH=1，LOW=2，INVT=3；互补与同向下管的 EOP 必须镜像 OP，且 bit19~16 为 0，保证独立操作模式。）
 
@@ -345,8 +331,8 @@ MAIN_D("[HW_TMR4] sample=%s trig=%s (%u)",
 
 ## 4. 边界与钳位
 
-1. `HighDutyToCmpH` / `LowDutyToCmpL` 把 X 钳在 `[1, CPSR−1]`，规避 0%/100% 的极值匹配歧义。
-2. 同向模式 `Xl = Xh − deadTicks`，必须保证 `Xl ≥ 1` 且 `Xl ≤ Xh−1`；死区过大时优先牺牲低侧占空比。
+1. `HighDutyToCmpH` 把 X 钳在 `[1, CPSR−1]`，规避 0%/100% 的极值匹配歧义。
+2. 同向模式 `Xl = Xh + deadTicks`，必须保证 `Xl ≤ CPSR−1`；死区过大时低侧脉冲先被压缩到最短。
 3. `TMR4_DEADTIME_TICKS_MAX = 0x3FF`（10 bit）保持不变；换算修正后 500 ns = 50 tick，仍在范围内。
 4. ACTIVE_HIGH 必须 true。若改成 false，两路整体反相，高/低侧窗口互换，采样映射失效；如需支持，必须在 `OCMode*` 里同步翻转并把采样点映射一起换。
 5. 互补模式只用 OCL，OCH 保持 `OCEH=0`；不要顺手使能 OCH，否则会进入链接操作模式，行为改变。
@@ -366,8 +352,8 @@ MAIN_D("[HW_TMR4] sample=%s trig=%s (%u)",
      - 谷底触发：CNT ≈ 0 + N。
    - 配合 PB5/PB4 电平确认采样瞬间落在对应导通区。
 3. 组合矩阵
-   - 配置 0：SYNC + UPPER → 峰值触发；同向模式下两管同相且居中谷底，峰值处两管都是关断，采样点落在关断区（“高侧采样”在同向模式下没有物理意义）。
-   - 配置 1：SYNC + LOWER → 谷底触发，两管同时导通，采样落在导通区。
+   - 配置 0：SYNC + UPPER → 峰值触发；同向模式下两管同相、居中峰值，峰值处两管都导通，采样落在导通区。
+   - 配置 1：SYNC + LOWER → 谷底触发；谷底处两管都关断，采样落在关断区（同向模式下“低侧采样”没有对应的独立导通区）。
    - 配置 2/4：COMP + LOWER → 谷底触发，PB4 为高时采样。
    - 配置 5：COMP + UPPER → 峰值触发，PB5 为高时采样。
 4. 装载点
@@ -381,7 +367,7 @@ MAIN_D("[HW_TMR4] sample=%s trig=%s (%u)",
 
 1. 死区由“名义值的一半”变成真实值，500 ns 配置下死区占比翻倍（20 kHz、50 µs 周期下 1%）。
 2. 非 50% 命令下的实际相电压方向会翻转回正确方向。若整机符号（电流采样方向、编码器 dir）此前是按“反相”标定的，改完后 mode 3 对齐、mode 4 的 iq 正负可能整体反向，需要重新跑一次对齐/校准，并复核 iq 反馈符号。
-3. 同向模式保持“上下管同相”（PB4/PB5 同高同低），死区为 0 时两路完全相同；非 0 时下管提前 deadTicks 关断。注意：同向模式下上下管同时导通，只适合台架波形验证或门极带互锁的驱动，不能直接带功率级。同向模式下“高侧/低侧采样”没有物理区分，LOWER（谷底）落在导通区、UPPER（峰值）落在关断区。
+3. 同向模式保持“上下管同相”（PB4/PB5 同高同低），导通区居中峰值，死区为 0 时两路完全相同；非 0 时下管推迟/提前 deadTicks。注意：同向模式下上下管同时导通，只适合台架波形验证或门极带互锁的驱动，不能直接带功率级。同向模式下“低侧采样”没有独立的低侧导通区（谷底处两管都关断）。
 4. 采样点变为与模式无关，`cfg_foc_table.h` 里 `UPPER/LOWER` 的注释语义第一次真正成立。
 
 ---
