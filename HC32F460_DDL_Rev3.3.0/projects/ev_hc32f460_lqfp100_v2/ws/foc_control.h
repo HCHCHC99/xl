@@ -27,6 +27,7 @@ void Foc_Control_Step(void);
 /*=============================================================================
  * Keil Watch 观测量
  *=============================================================================*/
+extern volatile uint32_t g_dbg_cnt_at_isr;
 extern volatile uint32_t g_fc_isr_cnt;
 extern volatile uint32_t g_fc_isr_dt_max_us;
 extern volatile uint32_t g_fc_isr_dt_min_us;

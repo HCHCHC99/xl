@@ -11,6 +11,19 @@
 #include "cfg_foc_table.h"
 
 /*=============================================================================
+ * 采样臂 / 影子装载点（编译期，由 cfg_foc_table.h 决定）
+ *
+ *   FOC_CFG_SAMPLE_POINT == CFG_SAMPLE_UPPER : 采峰值（高侧导通区）
+ *   FOC_CFG_SAMPLE_POINT == CFG_SAMPLE_LOWER : 采谷底（低侧导通区）
+ *
+ *   装载点取采样点的“另一个极值”，避免占空比更新与 ADC 采样撞在同一时刻。
+ *   注意：CFG_SAMPLE_* 是枚举常量，不能用 #if 判断，只能用运行期表达式。
+ *=============================================================================*/
+#define TMR4_SAMPLE_IS_HIGH_SIDE   ((FOC_CFG_SAMPLE_POINT) == CFG_SAMPLE_UPPER)
+#define TMR4_OC_LOAD_COND()        ((FOC_CFG_SAMPLE_POINT) == CFG_SAMPLE_UPPER \
+                                    ? TMR4_OC_BUF_COND_VALLEY : TMR4_OC_BUF_COND_PEAK)
+
+/*=============================================================================
  * Single-instance state (hard-coded to TMR4_3)
  *=============================================================================*/
 typedef struct {
@@ -49,7 +62,7 @@ static bool ChannelIsValid(tmr4_pwm_channel_t ch)
 
 static void ShadowApplyOC(uint32_t ocCh)
 {
-    uint16_t cond  = TMR4_OC_BUF_COND_PEAK;
+    uint16_t cond  = TMR4_OC_LOAD_COND();
     uint16_t immed = TMR4_OC_BUF_COND_IMMED;
 
     TMR4_OC_SetCompareBufCond(CM_TMR4_3, ocCh, TMR4_OC_BUF_CMP_VALUE,
@@ -74,7 +87,9 @@ static uint16_t DeadTimeNsToTicks(uint16_t deadTimeNs, uint32_t timerHz)
 {
     uint16_t ticks;
 
-    ticks = (uint16_t)((uint64_t)deadTimeNs * timerHz / 2000000000ULL);
+    /* 死区计数器与 PWM 计数器同源（PCLK1，DIV1），1 tick = 1 个时钟周期。
+     * 实测：500 ns @100 MHz 应得 50 tick = 500 ns；旧代码多除了 2，只剩 250 ns。 */
+    ticks = (uint16_t)((uint64_t)deadTimeNs * timerHz / 1000000000ULL);
     if (ticks > TMR4_DEADTIME_TICKS_MAX) {
         ticks = TMR4_DEADTIME_TICKS_MAX;
     }
@@ -97,47 +112,64 @@ static void RefreshContext(void)
                       ? ((float)s_ctx.deadTicks * 100.0f / fPeriod) : 0.0f;
 }
 
-static uint16_t CenterPctToCompare(float centerPct)
-{
-    int32_t cmp;
-    int32_t hi;
-
-    if (centerPct < 0.0f)   centerPct = 0.0f;
-    if (centerPct > 100.0f) centerPct = 100.0f;
-
-    hi  = (int32_t)s_ctx.periodTicks - 1;
-    cmp = (int32_t)((float)s_ctx.periodTicks * centerPct / 100.0f);
-
-    if (cmp < 0)  cmp = 0;
-    if (cmp > hi) cmp = hi;
-    return (uint16_t)cmp;
-}
-
 static float CompareToPct(uint16_t ticks)
 {
     float fPeriod = (float)s_ctx.periodTicks;
     return (fPeriod > 0.0f) ? ((float)ticks * 100.0f / fPeriod) : 0.0f;
 }
 
+/*=============================================================================
+ * 占空比 -> 比较值（新几何）
+ *
+ *   高侧：导通窗口 (Xh, CPSR]，Dh = (CPSR - Xh)/CPSR  =>  Xh = CPSR*(1-Dh)
+ *   低侧：导通窗口 [0, Xl)，Dl = Xl/CPSR            =>  Xl = CPSR*Dl
+ *
+ *   钳位到 [1, CPSR-1]，避开 0%/100% 的极值匹配歧义区
+ *=============================================================================*/
+static uint16_t HighDutyToCmpH(float dutyPct)
+{
+    int32_t cpsr = (int32_t)s_ctx.periodTicks - 1;
+    int32_t x;
+
+    if (dutyPct < 0.0f)   dutyPct = 0.0f;
+    if (dutyPct > 100.0f) dutyPct = 100.0f;
+
+    x = cpsr - (int32_t)((float)cpsr * dutyPct / 100.0f);
+
+    if (x < 1)        x = 1;
+    if (x > cpsr - 1) x = cpsr - 1;
+    return (uint16_t)x;
+}
+
+static uint16_t LowDutyToCmpL(float dutyPct)
+{
+    int32_t cpsr = (int32_t)s_ctx.periodTicks - 1;
+    int32_t x;
+
+    if (dutyPct < 0.0f)   dutyPct = 0.0f;
+    if (dutyPct > 100.0f) dutyPct = 100.0f;
+
+    x = (int32_t)((float)cpsr * dutyPct / 100.0f);
+
+    if (x < 1)        x = 1;
+    if (x > cpsr - 1) x = cpsr - 1;
+    return (uint16_t)x;
+}
+
 static void ApplySyncDutyWithDeadTime(tmr4_pwm_channel_t ch,
-                                      uint16_t centerTicks,
+                                      float dutyPct,
                                       uint16_t deadTicks)
 {
     const pwm_pair_desc_t *pair = &s_pairs[ch];
-    int32_t h, l;
-    int32_t lo = 0;
-    int32_t hi = (int32_t)s_ctx.periodTicks - 1;
+    int32_t xh = (int32_t)HighDutyToCmpH(dutyPct);
+    int32_t xl = xh - (int32_t)deadTicks;
 
-    h = (int32_t)centerTicks + (int32_t)deadTicks;
-    l = (int32_t)centerTicks - (int32_t)deadTicks;
+    /* 每个切换边留死区：Xh - Xl = deadTicks，上下管不会重叠 */
+    if (xl > xh - 1) xl = xh - 1;
+    if (xl < 1)      xl = 1;
 
-    if (h > hi) { int32_t s = h - hi; h -= s; l -= s; }
-    if (l < lo) { int32_t s = lo - l; l += s; h += s; }
-    if (h > hi) h = hi;
-    if (l < lo) l = lo;
-
-    OccrHWrite((int)ch, pair->ocChH, (uint16_t)h);
-    OccrLWrite((int)ch, pair->ocChL, (uint16_t)l);
+    OccrHWrite((int)ch, pair->ocChH, (uint16_t)xh);
+    OccrLWrite((int)ch, pair->ocChL, (uint16_t)xl);
 }
 
 static uint16_t ComplementaryPolarity(tmr4_pwm_channel_t ch, bool activeHigh)
@@ -158,16 +190,17 @@ static void OCModeSyncHigh(CM_TMR4_TypeDef *TMR4x, uint32_t ch)
 {
     un_tmr4_oc_ocmrh_t m;
     m.OCMRx = 0U;
-    m.OCMRx_f.OCFDCH = TMR4_OC_OCF_SET;
-    m.OCMRx_f.OCFPKH = TMR4_OC_OCF_SET;
-    m.OCMRx_f.OCFUCH = TMR4_OC_OCF_SET;
-    m.OCMRx_f.OCFZRH = TMR4_OC_OCF_SET;
-    m.OCMRx_f.OPDCH  = TMR4_OC_HIGH;
-    m.OCMRx_f.OPPKH  = TMR4_OC_HIGH;
-    m.OCMRx_f.OPUCH  = TMR4_OC_LOW;
-    m.OCMRx_f.OPZRH  = TMR4_OC_HOLD;
-    m.OCMRx_f.OPNPKH = TMR4_OC_LOW;
-    m.OCMRx_f.OPNZRH = TMR4_OC_HOLD;
+    m.OCMRx_f.OCFDCH  = TMR4_OC_OCF_SET;
+    m.OCMRx_f.OCFPKH  = TMR4_OC_OCF_SET;
+    m.OCMRx_f.OCFUCH  = TMR4_OC_OCF_SET;
+    m.OCMRx_f.OCFZRH  = TMR4_OC_OCF_SET;
+    /* 高侧导通窗口 (Xh, CPSR]：谷底强制低，上计数匹配拉高，峰值保持高，下计数匹配拉低 */
+    m.OCMRx_f.OPDCH   = TMR4_OC_LOW;
+    m.OCMRx_f.OPPKH   = TMR4_OC_LOW;    /* 占空比 0% 边界（Xh=峰值） */
+    m.OCMRx_f.OPUCH   = TMR4_OC_HIGH;
+    m.OCMRx_f.OPZRH   = TMR4_OC_HIGH;   /* 占空比 100% 边界（Xh=0） */
+    m.OCMRx_f.OPNPKH  = TMR4_OC_HIGH;   /* 峰值无匹配 -> 高（常规情况） */
+    m.OCMRx_f.OPNZRH  = TMR4_OC_LOW;    /* 谷底无匹配 -> 低（常规情况） */
     TMR4_OC_SetHighChCompareMode(TMR4x, ch, m);
 }
 
@@ -179,20 +212,22 @@ static void OCModeSyncLow(CM_TMR4_TypeDef *TMR4x, uint32_t ch)
     m.OCMRx_f.OCFPKL  = TMR4_OC_OCF_SET;
     m.OCMRx_f.OCFUCL  = TMR4_OC_OCF_SET;
     m.OCMRx_f.OCFZRL  = TMR4_OC_OCF_SET;
+    /* 低侧导通窗口 [0, Xl)：谷底强制高，上计数匹配拉低，峰值保持低，下计数匹配拉高 */
     m.OCMRx_f.OPDCL   = TMR4_OC_HIGH;
-    m.OCMRx_f.OPPKL   = TMR4_OC_HIGH;
+    m.OCMRx_f.OPPKL   = TMR4_OC_LOW;    /* 占空比 0% 边界（Xl=峰值） */
     m.OCMRx_f.OPUCL   = TMR4_OC_LOW;
-    m.OCMRx_f.OPZRL   = TMR4_OC_HOLD;
-    m.OCMRx_f.OPNPKL  = TMR4_OC_LOW;
-    m.OCMRx_f.OPNZRL  = TMR4_OC_HOLD;
+    m.OCMRx_f.OPZRL   = TMR4_OC_HIGH;   /* 占空比 100% 边界（Xl=0） */
+    m.OCMRx_f.OPNPKL  = TMR4_OC_LOW;    /* 峰值无匹配 -> 低（常规情况） */
+    m.OCMRx_f.OPNZRL  = TMR4_OC_HIGH;   /* 谷底无匹配 -> 高（常规情况） */
+    /* 独立操作模式：bit19~16=0，bit31~20 与 bit15~4 镜像同一组动作 */
     m.OCMRx_f.EOPNDCL = TMR4_OC_HOLD;
     m.OCMRx_f.EOPNUCL = TMR4_OC_HOLD;
     m.OCMRx_f.EOPDCL  = TMR4_OC_HIGH;
-    m.OCMRx_f.EOPPKL  = TMR4_OC_HIGH;
+    m.OCMRx_f.EOPPKL  = TMR4_OC_LOW;
     m.OCMRx_f.EOPUCL  = TMR4_OC_LOW;
-    m.OCMRx_f.EOPZRL  = TMR4_OC_HOLD;
+    m.OCMRx_f.EOPZRL  = TMR4_OC_HIGH;
     m.OCMRx_f.EOPNPKL = TMR4_OC_LOW;
-    m.OCMRx_f.EOPNZRL = TMR4_OC_HOLD;
+    m.OCMRx_f.EOPNZRL = TMR4_OC_HIGH;
     TMR4_OC_SetLowChCompareMode(TMR4x, ch, m);
 }
 
@@ -204,20 +239,26 @@ static void OCModeCompLow(CM_TMR4_TypeDef *TMR4x, uint32_t ch)
     m.OCMRx_f.OCFPKL  = TMR4_OC_OCF_SET;
     m.OCMRx_f.OCFUCL  = TMR4_OC_OCF_SET;
     m.OCMRx_f.OCFZRL  = TMR4_OC_OCF_SET;
-    m.OCMRx_f.OPDCL   = TMR4_OC_INVT;
-    m.OCMRx_f.OPPKL   = TMR4_OC_INVT;
-    m.OCMRx_f.OPUCL   = TMR4_OC_INVT;
-    m.OCMRx_f.OPZRL   = TMR4_OC_INVT;
-    m.OCMRx_f.OPNPKL  = TMR4_OC_HOLD;
-    m.OCMRx_f.OPNZRL  = TMR4_OC_HOLD;
+    /* in_op 在 (Xh, CPSR] 为高，窗口关于峰值对称：
+     * 谷底拉低 -> 上计数匹配拉高（峰值前的上升沿）-> 峰值保持高 -> 下计数匹配拉低
+     * 若上计数用 HOLD，就只有“峰值到下降沿”这半个窗口，占空比会只有一半 */
+    m.OCMRx_f.OPDCL   = TMR4_OC_LOW;
+    m.OCMRx_f.OPPKL   = TMR4_OC_LOW;    /* 占空比 0% 边界（Xh=峰值） */
+    m.OCMRx_f.OPUCL   = TMR4_OC_HIGH;
+    m.OCMRx_f.OPZRL   = TMR4_OC_HIGH;   /* 占空比 100% 边界（Xh=0） */
+    m.OCMRx_f.OPNPKL  = TMR4_OC_HIGH;   /* 峰值无匹配 -> 高（常规情况） */
+    m.OCMRx_f.OPNZRL  = TMR4_OC_LOW;    /* 谷底无匹配 -> 低（常规情况） */
+    /* EOP 与 OP 镜像、bit19~16=0：保证独立操作模式。
+     * 互补模式虽然没有使能 H 通道，但 OCCR*h 仍可能是 0（谷底恒匹配），
+     * 若不镜像，谷底会走 EOP 分支而不是 OPNZRL，波形会被破坏。 */
     m.OCMRx_f.EOPNDCL = TMR4_OC_HOLD;
     m.OCMRx_f.EOPNUCL = TMR4_OC_HOLD;
-    m.OCMRx_f.EOPDCL  = TMR4_OC_INVT;
-    m.OCMRx_f.EOPPKL  = TMR4_OC_INVT;
-    m.OCMRx_f.EOPUCL  = TMR4_OC_INVT;
-    m.OCMRx_f.EOPZRL  = TMR4_OC_INVT;
-    m.OCMRx_f.EOPNPKL = TMR4_OC_HOLD;
-    m.OCMRx_f.EOPNZRL = TMR4_OC_HOLD;
+    m.OCMRx_f.EOPDCL  = TMR4_OC_LOW;
+    m.OCMRx_f.EOPPKL  = TMR4_OC_LOW;
+    m.OCMRx_f.EOPUCL  = TMR4_OC_HIGH;
+    m.OCMRx_f.EOPZRL  = TMR4_OC_HIGH;
+    m.OCMRx_f.EOPNPKL = TMR4_OC_HIGH;
+    m.OCMRx_f.EOPNZRL = TMR4_OC_LOW;
     TMR4_OC_SetLowChCompareMode(TMR4x, ch, m);
 }
 
@@ -242,11 +283,13 @@ void hw_tmr4_pwm_center_to_actual(tmr4_pwm_channel_t ch,
     dtPct = s_ctx.deadTimePct;
 
     if (s_outputType[ch] == TMR4_OUTPUT_COMPLEMENTARY) {
+        /* 互补：高侧引脚上升沿被 PDBR 延迟半个死区，低侧同理 */
         *outHighPct = centerPct - dtPct * 0.5f;
         *outLowPct  = 100.0f - (*outHighPct) - dtPct;
     } else {
-        *outHighPct = centerPct + dtPct;
-        *outLowPct  = centerPct - dtPct;
+        /* 同向：死区由两个比较值错开实现，引脚本身没有额外延迟 */
+        *outHighPct = centerPct;
+        *outLowPct  = 100.0f - centerPct - dtPct;
     }
 }
 
@@ -266,8 +309,9 @@ tmr4_pwm_err_t hw_tmr4_pwm_actual_duty_to_center(tmr4_pwm_channel_t ch,
     if (s_outputType[ch] == TMR4_OUTPUT_COMPLEMENTARY) {
         *outCenterPct = highPct + dtPct * 0.5f;
     } else {
-        *outCenterPct = (highPct + lowPct) * 0.5f;
+        *outCenterPct = highPct;
     }
+    (void)lowPct;
     return TMR4_PWM_OK;
 }
 
@@ -328,10 +372,10 @@ tmr4_pwm_err_t hw_tmr4_pwm_config(const tmr4_pwm_config_t *cfg)
         stcTmr4PwmInit.u16ClockDiv = TMR4_PWM_CLK_DIV1;
 
         if (s_outputType[i] == TMR4_OUTPUT_COMPLEMENTARY) {
-            stcTmr4OcInit.u16CompareValue        = s_ctx.periodTicks / 2U;
+            stcTmr4OcInit.u16CompareValue        = HighDutyToCmpH(50.0f);
             stcTmr4OcInit.u16OcInvalidPolarity   = TMR4_OC_INVD_LOW;
-            stcTmr4OcInit.u16CompareValueBufCond = TMR4_OC_BUF_COND_PEAK;
-            stcTmr4OcInit.u16CompareModeBufCond  = TMR4_OC_BUF_COND_PEAK;
+            stcTmr4OcInit.u16CompareValueBufCond = TMR4_OC_LOAD_COND();
+            stcTmr4OcInit.u16CompareModeBufCond  = TMR4_OC_LOAD_COND();
             stcTmr4OcInit.u16BufLinkTransObject  = TMR4_OC_BUF_CMP_VALUE | TMR4_OC_BUF_CMP_MD;
             TMR4_OC_Init(CM_TMR4_3, pair->ocChL, &stcTmr4OcInit);
 
@@ -340,7 +384,7 @@ tmr4_pwm_err_t hw_tmr4_pwm_config(const tmr4_pwm_config_t *cfg)
             TMR4_OC_Cmd(CM_TMR4_3, pair->ocChL, ENABLE);
 
             s_occrH[i] = 0U;
-            OccrLWrite(i, pair->ocChL, s_ctx.periodTicks / 2U);
+            OccrLWrite(i, pair->ocChL, HighDutyToCmpH(50.0f));
 
             stcTmr4PwmInit.u16Mode = TMR4_PWM_MD_DEAD_TMR;
             polarity = ComplementaryPolarity((tmr4_pwm_channel_t)i, s_bActiveHigh);
@@ -349,8 +393,10 @@ tmr4_pwm_err_t hw_tmr4_pwm_config(const tmr4_pwm_config_t *cfg)
             TMR4_PWM_SetPolarity(CM_TMR4_3, pair->pwmCh, polarity);
             WriteDeadTimeForChannel(pair, deadTicks);
         } else {
-            stcTmr4OcInit.u16CompareValue        = stcTmr4Init.u16PeriodValue / 2U;
-            stcTmr4OcInit.u16CompareValueBufCond = TMR4_OC_BUF_COND_PEAK;
+            stcTmr4OcInit.u16CompareValue        = HighDutyToCmpH(50.0f);
+            stcTmr4OcInit.u16CompareValueBufCond = TMR4_OC_LOAD_COND();
+            stcTmr4OcInit.u16CompareModeBufCond  = TMR4_OC_LOAD_COND();
+            stcTmr4OcInit.u16BufLinkTransObject  = TMR4_OC_BUF_CMP_VALUE | TMR4_OC_BUF_CMP_MD;
 
             TMR4_OC_Init(CM_TMR4_3, pair->ocChH, &stcTmr4OcInit);
             TMR4_OC_Init(CM_TMR4_3, pair->ocChL, &stcTmr4OcInit);
@@ -361,9 +407,7 @@ tmr4_pwm_err_t hw_tmr4_pwm_config(const tmr4_pwm_config_t *cfg)
             ShadowApplyOC(pair->ocChH);
             ShadowApplyOC(pair->ocChL);
 
-            ApplySyncDutyWithDeadTime((tmr4_pwm_channel_t)i,
-                                      (uint16_t)(s_ctx.periodTicks / 2U),
-                                      deadTicks);
+            ApplySyncDutyWithDeadTime((tmr4_pwm_channel_t)i, 50.0f, deadTicks);
 
             stcTmr4PwmInit.u16Mode = TMR4_PWM_MD_THROUGH;
             polarity = s_bActiveHigh ? TMR4_PWM_OXH_HOLD_OXL_HOLD
@@ -381,9 +425,12 @@ tmr4_pwm_err_t hw_tmr4_pwm_config(const tmr4_pwm_config_t *cfg)
 
     (void)hw_tmr4_pwm_config_adc_trigger(true);
 
-    MAIN_D("[HW_TMR4] configured: period=%u polar=%s dt=%u ns (%u ticks), ADC trig=ON",
+    MAIN_D("[HW_TMR4] configured: period=%u polar=%s dt=%u ns (%u ticks), sample=%s, load=%s, ADC trig=%s",
            s_ctx.periodTicks, cfg->activeHigh ? "HIGH" : "LOW",
-           s_ctx.deadTimeNs, s_ctx.deadTicks);
+           s_ctx.deadTimeNs, s_ctx.deadTicks,
+           TMR4_SAMPLE_IS_HIGH_SIDE ? "HIGH(peak)" : "LOW(valley)",
+           TMR4_SAMPLE_IS_HIGH_SIDE ? "VALLEY" : "PEAK",
+           TMR4_SAMPLE_IS_HIGH_SIDE ? "PEAK" : "VALLEY");
 
     return TMR4_PWM_OK;
 }
@@ -632,31 +679,29 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_duty(tmr4_pwm_channel_t ch, uint16_t dutyU16)
 tmr4_pwm_err_t hw_tmr4_pwm_set_duty_float(tmr4_pwm_channel_t ch, float centerPct)
 {
     const pwm_pair_desc_t *pair;
-    uint16_t cmpTicks;
     uint16_t deadTicks;
 
     if (!s_bConfigured)      return TMR4_PWM_ERR_NOT_INIT;
     if (!ChannelIsValid(ch)) return TMR4_PWM_ERR_BAD_PARAM;
 
-    cmpTicks  = CenterPctToCompare(centerPct);
     deadTicks = s_ctx.deadTicks;
     pair      = &s_pairs[ch];
     s_centerPct[ch] = centerPct;
 
     if (s_outputType[ch] == TMR4_OUTPUT_COMPLEMENTARY) {
-        OccrLWrite((int)ch, pair->ocChL, cmpTicks);
+        OccrLWrite((int)ch, pair->ocChL, HighDutyToCmpH(centerPct));
         return TMR4_PWM_OK;
     }
 
     switch (s_chOpMode[ch]) {
     case TMR4_MODE_HIGH_SIDE:
-        OccrHWrite((int)ch, pair->ocChH, cmpTicks);
+        OccrHWrite((int)ch, pair->ocChH, HighDutyToCmpH(centerPct));
         break;
     case TMR4_MODE_LOW_SIDE:
         break;
     case TMR4_MODE_OFF:
     default:
-        ApplySyncDutyWithDeadTime(ch, cmpTicks, deadTicks);
+        ApplySyncDutyWithDeadTime(ch, centerPct, deadTicks);
         break;
     }
     return TMR4_PWM_OK;
@@ -677,18 +722,17 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_duty3(float duPct, float dvPct, float dwPct)
 
     for (i = 0; i < 3; i++) {
         const pwm_pair_desc_t *pair = &s_pairs[i];
-        uint16_t cmpTicks = CenterPctToCompare(duty[i]);
         s_centerPct[i] = duty[i];
 
         if (s_outputType[i] == TMR4_OUTPUT_COMPLEMENTARY) {
-            OccrLWrite(i, pair->ocChL, cmpTicks);
+            OccrLWrite(i, pair->ocChL, HighDutyToCmpH(duty[i]));
         } else {
             if (s_chOpMode[i] == TMR4_MODE_HIGH_SIDE) {
-                OccrHWrite(i, pair->ocChH, cmpTicks);
+                OccrHWrite(i, pair->ocChH, HighDutyToCmpH(duty[i]));
             } else if (s_chOpMode[i] == TMR4_MODE_LOW_SIDE) {
                 /* L fixed 100%, no update */
             } else {
-                ApplySyncDutyWithDeadTime((tmr4_pwm_channel_t)i, cmpTicks, deadTicks);
+                ApplySyncDutyWithDeadTime((tmr4_pwm_channel_t)i, duty[i], deadTicks);
             }
         }
     }
@@ -721,11 +765,8 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_duty3_deadtime(float highU, float highV, float hi
     dtPct = s_ctx.deadTimePct;
 
     for (i = 0; i < 3; i++) {
-        if (s_outputType[i] == TMR4_OUTPUT_COMPLEMENTARY) {
-            low[i] = 100.0f - high[i] - dtPct;
-        } else {
-            low[i] = high[i] - 2.0f * dtPct;
-        }
+        /* 两种模式的低侧导通占比都是 1 - 高侧 - 死区 */
+        low[i] = 100.0f - high[i] - dtPct;
         if (low[i] < 0.0f)   low[i] = 0.0f;
         if (low[i] > 100.0f) low[i] = 100.0f;
 
@@ -790,10 +831,12 @@ void hw_tmr4_pwm_get_state(tmr4_pwm_channel_t ch, tmr4_pwm_state_t *out)
     out->deadPct   = s_ctx.deadTimePct;
 
     if (s_outputType[ch] == TMR4_OUTPUT_COMPLEMENTARY) {
-        out->highPct = occrLPct - s_ctx.deadTimePct * 0.5f;
+        /* 高侧导通窗口 (Xh, CPSR]：占比 = 100 - Xh/周期，引脚再损失半个死区 */
+        out->highPct = 100.0f - occrLPct - s_ctx.deadTimePct * 0.5f;
         out->lowPct  = 100.0f - out->highPct - s_ctx.deadTimePct;
     } else {
-        out->highPct = occrHPct;
+        /* 高侧窗口 (Xh, CPSR]，低侧窗口 [0, Xl)，引脚无额外死区损失 */
+        out->highPct = 100.0f - occrHPct;
         out->lowPct  = occrLPct;
     }
 }
@@ -862,7 +905,7 @@ tmr4_pwm_err_t hw_tmr4_pwm_pin_set_duty(tmr4_pwm_channel_t ch, bool highSide, ui
     if (dutyU16 > TMR4_PWM_DUTY_MAX) dutyU16 = TMR4_PWM_DUTY_MAX;
 
     pct      = (float)dutyU16 * 100.0f / (float)TMR4_PWM_DUTY_MAX;
-    cmpTicks = CenterPctToCompare(pct);
+    cmpTicks = highSide ? HighDutyToCmpH(pct) : LowDutyToCmpL(pct);
     pair     = &s_pairs[ch];
     ocCh     = highSide ? pair->ocChH : pair->ocChL;
 
@@ -896,12 +939,10 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_channel_mode(tmr4_pwm_channel_t ch,
     const pwm_pair_desc_t *pair;
     stc_tmr4_pwm_init_t stcPwmInit;
     stc_tmr4_oc_init_t  stcOcInit;
-    uint16_t cmpTicks;
 
     if (!s_bConfigured)      return TMR4_PWM_ERR_NOT_INIT;
     if (!ChannelIsValid(ch)) return TMR4_PWM_ERR_BAD_PARAM;
 
-    cmpTicks = CenterPctToCompare(centerPct);
     pair     = &s_pairs[ch];
     s_chOpMode[ch]   = mode;
     s_centerPct[ch]  = centerPct;
@@ -921,12 +962,12 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_channel_mode(tmr4_pwm_channel_t ch,
 
     case TMR4_MODE_HIGH_SIDE:
         TMR4_OC_StructInit(&stcOcInit);
-        stcOcInit.u16CompareValue        = s_ctx.periodTicks / 2U;
-        stcOcInit.u16CompareValueBufCond = TMR4_OC_BUF_COND_PEAK;
+        stcOcInit.u16CompareValue        = HighDutyToCmpH(50.0f);
+        stcOcInit.u16CompareValueBufCond = TMR4_OC_LOAD_COND();
         TMR4_OC_Init(CM_TMR4_3, pair->ocChH, &stcOcInit);
         OCModeSyncHigh(CM_TMR4_3, pair->ocChH);
         TMR4_OC_Cmd(CM_TMR4_3, pair->ocChH, ENABLE);
-        OccrHWrite((int)ch, pair->ocChH, cmpTicks);
+        OccrHWrite((int)ch, pair->ocChH, HighDutyToCmpH(centerPct));
         ShadowApplyOC(pair->ocChH);
         TMR4_OC_Cmd(CM_TMR4_3, pair->ocChL, DISABLE);
         TMR4_OC_SetOcInvalidPolarity(CM_TMR4_3, pair->ocChL, TMR4_OC_INVD_LOW);
@@ -941,8 +982,8 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_channel_mode(tmr4_pwm_channel_t ch,
         TMR4_OC_Cmd(CM_TMR4_3, pair->ocChH, DISABLE);
         TMR4_OC_SetOcInvalidPolarity(CM_TMR4_3, pair->ocChH, TMR4_OC_INVD_LOW);
         TMR4_OC_StructInit(&stcOcInit);
-        stcOcInit.u16CompareValue        = s_ctx.periodTicks / 2U;
-        stcOcInit.u16CompareValueBufCond = TMR4_OC_BUF_COND_PEAK;
+        stcOcInit.u16CompareValue        = LowDutyToCmpL(100.0f);
+        stcOcInit.u16CompareValueBufCond = TMR4_OC_LOAD_COND();
         TMR4_OC_Init(CM_TMR4_3, pair->ocChL, &stcOcInit);
         OCModeSyncLow(CM_TMR4_3, pair->ocChL);
         TMR4_OC_Cmd(CM_TMR4_3, pair->ocChL, ENABLE);
@@ -988,8 +1029,8 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_output_type(tmr4_pwm_channel_t ch, tmr4_output_ty
     deadTicks = s_ctx.deadTicks;
 
     TMR4_OC_StructInit(&stcOcInit);
-    stcOcInit.u16CompareValue        = s_ctx.periodTicks / 2U;
-    stcOcInit.u16CompareValueBufCond = TMR4_OC_BUF_COND_PEAK;
+    stcOcInit.u16CompareValue        = HighDutyToCmpH(50.0f);
+    stcOcInit.u16CompareValueBufCond = TMR4_OC_LOAD_COND();
 
     d50 = s_centerPct[ch];
     if (d50 < 0.0f)   d50 = 0.0f;
@@ -1003,7 +1044,7 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_output_type(tmr4_pwm_channel_t ch, tmr4_output_ty
         TMR4_OC_Init(CM_TMR4_3, pair->ocChL, &stcOcInit);
         OCModeCompLow(CM_TMR4_3, pair->ocChL);
         ShadowApplyOC(pair->ocChL);
-        OccrLWrite((int)ch, pair->ocChL, CenterPctToCompare(d50));
+        OccrLWrite((int)ch, pair->ocChL, HighDutyToCmpH(d50));
 
         stcPwmInit.u16Mode     = TMR4_PWM_MD_DEAD_TMR;
         stcPwmInit.u16ClockDiv = TMR4_PWM_CLK_DIV1;
@@ -1022,7 +1063,7 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_output_type(tmr4_pwm_channel_t ch, tmr4_output_ty
         OCModeSyncLow (CM_TMR4_3, pair->ocChL);
         ShadowApplyOC(pair->ocChH);
         ShadowApplyOC(pair->ocChL);
-        ApplySyncDutyWithDeadTime(ch, CenterPctToCompare(d50), deadTicks);
+        ApplySyncDutyWithDeadTime(ch, d50, deadTicks);
 
         stcPwmInit.u16Mode     = TMR4_PWM_MD_THROUGH;
         stcPwmInit.u16ClockDiv = TMR4_PWM_CLK_DIV1;
@@ -1078,16 +1119,18 @@ tmr4_pwm_err_t hw_tmr4_pwm_config_adc_trigger(bool enable)
     stcEvtInit.u16Mode        = TMR4_EVT_MD_CMP;
     stcEvtInit.u16OutputEvent = TMR4_EVT_OUTPUT_EVT0;
 
-		if (FOC_CFG_SAMPLE_POINT == CFG_SAMPLE_UPPER) {
-				stcEvtInit.u16CompareValue = 0U;
-				stcEvtInit.u16MatchCond    = TMR4_EVT_MATCH_CNT_VALLEY;
-		} else {
-				stcEvtInit.u16CompareValue = (uint16_t)(s_ctx.periodTicks - 1U);
-				stcEvtInit.u16MatchCond    = TMR4_EVT_MATCH_CNT_PEAK;
-		}
+    /* 触发点只与采样臂有关，与输出模式（互补/同向）无关 */
+    if (TMR4_SAMPLE_IS_HIGH_SIDE) {
+        stcEvtInit.u16CompareValue = (uint16_t)(s_ctx.periodTicks - 1U);
+        stcEvtInit.u16MatchCond    = TMR4_EVT_MATCH_CNT_PEAK;
+    } else {
+        stcEvtInit.u16CompareValue = 0U;
+        stcEvtInit.u16MatchCond    = TMR4_EVT_MATCH_CNT_VALLEY;
+    }
 
     (void)TMR4_EVT_Init(CM_TMR4_3, TMR4_EVT_CH_UL, &stcEvtInit);
-    (void)enable;
+    TMR4_EVT_MatchCondCmd(CM_TMR4_3, TMR4_EVT_CH_UL, stcEvtInit.u16MatchCond,
+                          enable ? ENABLE : DISABLE);
     return TMR4_PWM_OK;
 }
 

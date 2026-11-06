@@ -339,7 +339,7 @@
               <MiscControls></MiscControls>
               <Define>__DEBUG,HC32F460,USE_DDL_DRIVER,</Define>
               <Undefine></Undefine>
-              <IncludePath>../source;../../../../drivers/cmsis/Device/HDSC/hc32f4xx/Include;../../../../drivers/cmsis/Include;../../../../drivers/hc32_ll_driver/inc;..\..\RTT;..\..\Dev;..\..\Adp;..\..\App;..\..\Utils;..\..\ws</IncludePath>
+              <IncludePath>../source;../../../../drivers/cmsis/Device/HDSC/hc32f4xx/Include;../../../../drivers/cmsis/Include;../../../../drivers/hc32_ll_driver/inc;..\..\RTT;..\..\Dev;..\..\Adp;..\..\App;..\..\Utils;..\..\ws;..\..\ws\cfg;..\..\ws\hw</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -714,11 +714,6 @@
               <FilePath>..\..\Adp\Comm_HAL.c</FilePath>
             </File>
             <File>
-              <FileName>tmr4_pwm.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\Adp\tmr4_pwm.c</FilePath>
-            </File>
-            <File>
               <FileName>Usart3_HW.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\Adp\Usart3_HW.c</FilePath>
@@ -742,11 +737,6 @@
               <FileName>Vofa.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\Adp\Vofa.c</FilePath>
-            </File>
-            <File>
-              <FileName>encoder.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\Adp\encoder.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -914,194 +904,89 @@
           <GroupName>ws</GroupName>
           <Files>
             <File>
-              <FileName>dev_commutation.c</FileName>
+              <FileName>cfg_foc_table.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\dev_commutation.c</FilePath>
+              <FilePath>..\..\ws\cfg\cfg_foc_table.c</FilePath>
             </File>
             <File>
-              <FileName>hall_sensor_3ch.c</FileName>
+              <FileName>cfg_motor.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\hall_sensor_3ch.c</FilePath>
+              <FilePath>..\..\ws\cfg\cfg_motor.c</FilePath>
             </File>
             <File>
-              <FileName>dev_comm_runner.c</FileName>
+              <FileName>cfg_sampling.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\dev_comm_runner.c</FilePath>
+              <FilePath>..\..\ws\cfg\cfg_sampling.c</FilePath>
             </File>
             <File>
-              <FileName>cur_loop.c</FileName>
+              <FileName>hw_board_pins.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\cur_loop.c</FilePath>
+              <FilePath>..\..\ws\hw\hw_board_pins.c</FilePath>
             </File>
             <File>
-              <FileName>I.c</FileName>
+              <FileName>hw_encoder.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\I.c</FilePath>
+              <FilePath>..\..\ws\hw\hw_encoder.c</FilePath>
             </File>
             <File>
-              <FileName>Bemf.c</FileName>
+              <FileName>hw_gpio_init.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\Bemf.c</FilePath>
+              <FilePath>..\..\ws\hw\hw_gpio_init.c</FilePath>
             </File>
             <File>
-              <FileName>pos_loop.c</FileName>
+              <FileName>hw_tmr4_pwm.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\pos_loop.c</FilePath>
+              <FilePath>..\..\ws\hw\hw_tmr4_pwm.c</FilePath>
             </File>
             <File>
-              <FileName>speed_loop.c</FileName>
+              <FileName>clarke_park.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\speed_loop.c</FilePath>
+              <FilePath>..\..\ws\clarke_park.c</FilePath>
             </File>
             <File>
-              <FileName>foc.c</FileName>
+              <FileName>encoder_calib.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc.c</FilePath>
+              <FilePath>..\..\ws\encoder_calib.c</FilePath>
             </File>
             <File>
-              <FileName>foc_math.c</FileName>
+              <FileName>foc_control.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_math.c</FilePath>
+              <FilePath>..\..\ws\foc_control.c</FilePath>
             </File>
             <File>
-              <FileName>foc_core.c</FileName>
+              <FileName>foc_current_loop.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_core.c</FilePath>
+              <FilePath>..\..\ws\foc_current_loop.c</FilePath>
             </File>
             <File>
-              <FileName>foc_curloop.c</FileName>
+              <FileName>foc_mode.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_curloop.c</FilePath>
+              <FilePath>..\..\ws\foc_mode.c</FilePath>
             </File>
             <File>
-              <FileName>foc_openloop.c</FileName>
+              <FileName>foc_protect.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_openloop.c</FilePath>
+              <FilePath>..\..\ws\foc_protect.c</FilePath>
             </File>
             <File>
-              <FileName>foc_scope.c</FileName>
+              <FileName>foc_sincos.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_scope.c</FilePath>
+              <FilePath>..\..\ws\foc_sincos.c</FilePath>
             </File>
             <File>
-              <FileName>foc_calib.c</FileName>
+              <FileName>motor_sampling.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_calib.c</FilePath>
+              <FilePath>..\..\ws\motor_sampling.c</FilePath>
             </File>
             <File>
-              <FileName>foc_obs.c</FileName>
+              <FileName>pid_ctrl.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_obs.c</FilePath>
+              <FilePath>..\..\ws\pid_ctrl.c</FilePath>
             </File>
             <File>
-              <FileName>foc_smo.c</FileName>
+              <FileName>svpwm.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_smo.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_pll.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_pll.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_20_cal.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_20_cal.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_51_rs.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_51_rs.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_52_ldlq.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_52_ldlq.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_53_flx.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_53_flx.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_luen.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_luen.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_60_luen.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_60_luen.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_24_dcal.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_24_dcal.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_25_calangle.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_25_calangle.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_26_olf.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_26_olf.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_27_dcl.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_27_dcl.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_28_dci.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_28_dci.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_29_drun.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_29_drun.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_30_ramp.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_30_ramp.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_31_iqpi.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_31_iqpi.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_32_lockiq.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_32_lockiq.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_40_speed.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_40_speed.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_41_drun.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_41_drun.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_5_svpwm.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_5_svpwm.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_45_smo.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_45_smo.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_47_smoif.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_47_smoif.c</FilePath>
+              <FilePath>..\..\ws\svpwm.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -1815,11 +1700,6 @@
               <FilePath>..\..\Adp\Comm_HAL.c</FilePath>
             </File>
             <File>
-              <FileName>tmr4_pwm.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\Adp\tmr4_pwm.c</FilePath>
-            </File>
-            <File>
               <FileName>Usart3_HW.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\Adp\Usart3_HW.c</FilePath>
@@ -1843,11 +1723,6 @@
               <FileName>Vofa.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\Adp\Vofa.c</FilePath>
-            </File>
-            <File>
-              <FileName>encoder.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\Adp\encoder.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -2015,194 +1890,89 @@
           <GroupName>ws</GroupName>
           <Files>
             <File>
-              <FileName>dev_commutation.c</FileName>
+              <FileName>cfg_foc_table.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\dev_commutation.c</FilePath>
+              <FilePath>..\..\ws\cfg\cfg_foc_table.c</FilePath>
             </File>
             <File>
-              <FileName>hall_sensor_3ch.c</FileName>
+              <FileName>cfg_motor.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\hall_sensor_3ch.c</FilePath>
+              <FilePath>..\..\ws\cfg\cfg_motor.c</FilePath>
             </File>
             <File>
-              <FileName>dev_comm_runner.c</FileName>
+              <FileName>cfg_sampling.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\dev_comm_runner.c</FilePath>
+              <FilePath>..\..\ws\cfg\cfg_sampling.c</FilePath>
             </File>
             <File>
-              <FileName>cur_loop.c</FileName>
+              <FileName>hw_board_pins.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\cur_loop.c</FilePath>
+              <FilePath>..\..\ws\hw\hw_board_pins.c</FilePath>
             </File>
             <File>
-              <FileName>I.c</FileName>
+              <FileName>hw_encoder.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\I.c</FilePath>
+              <FilePath>..\..\ws\hw\hw_encoder.c</FilePath>
             </File>
             <File>
-              <FileName>Bemf.c</FileName>
+              <FileName>hw_gpio_init.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\Bemf.c</FilePath>
+              <FilePath>..\..\ws\hw\hw_gpio_init.c</FilePath>
             </File>
             <File>
-              <FileName>pos_loop.c</FileName>
+              <FileName>hw_tmr4_pwm.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\pos_loop.c</FilePath>
+              <FilePath>..\..\ws\hw\hw_tmr4_pwm.c</FilePath>
             </File>
             <File>
-              <FileName>speed_loop.c</FileName>
+              <FileName>clarke_park.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\speed_loop.c</FilePath>
+              <FilePath>..\..\ws\clarke_park.c</FilePath>
             </File>
             <File>
-              <FileName>foc.c</FileName>
+              <FileName>encoder_calib.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc.c</FilePath>
+              <FilePath>..\..\ws\encoder_calib.c</FilePath>
             </File>
             <File>
-              <FileName>foc_math.c</FileName>
+              <FileName>foc_control.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_math.c</FilePath>
+              <FilePath>..\..\ws\foc_control.c</FilePath>
             </File>
             <File>
-              <FileName>foc_core.c</FileName>
+              <FileName>foc_current_loop.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_core.c</FilePath>
+              <FilePath>..\..\ws\foc_current_loop.c</FilePath>
             </File>
             <File>
-              <FileName>foc_curloop.c</FileName>
+              <FileName>foc_mode.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_curloop.c</FilePath>
+              <FilePath>..\..\ws\foc_mode.c</FilePath>
             </File>
             <File>
-              <FileName>foc_openloop.c</FileName>
+              <FileName>foc_protect.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_openloop.c</FilePath>
+              <FilePath>..\..\ws\foc_protect.c</FilePath>
             </File>
             <File>
-              <FileName>foc_scope.c</FileName>
+              <FileName>foc_sincos.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_scope.c</FilePath>
+              <FilePath>..\..\ws\foc_sincos.c</FilePath>
             </File>
             <File>
-              <FileName>foc_calib.c</FileName>
+              <FileName>motor_sampling.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_calib.c</FilePath>
+              <FilePath>..\..\ws\motor_sampling.c</FilePath>
             </File>
             <File>
-              <FileName>foc_obs.c</FileName>
+              <FileName>pid_ctrl.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_obs.c</FilePath>
+              <FilePath>..\..\ws\pid_ctrl.c</FilePath>
             </File>
             <File>
-              <FileName>foc_smo.c</FileName>
+              <FileName>svpwm.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_smo.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_pll.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_pll.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_20_cal.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_20_cal.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_51_rs.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_51_rs.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_52_ldlq.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_52_ldlq.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_53_flx.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_53_flx.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_luen.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_luen.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_60_luen.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_60_luen.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_24_dcal.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_24_dcal.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_25_calangle.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_25_calangle.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_26_olf.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_26_olf.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_27_dcl.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_27_dcl.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_28_dci.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_28_dci.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_29_drun.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_29_drun.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_30_ramp.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_30_ramp.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_31_iqpi.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_31_iqpi.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_32_lockiq.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_32_lockiq.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_40_speed.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_40_speed.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_41_drun.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_41_drun.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_5_svpwm.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_5_svpwm.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_45_smo.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_45_smo.c</FilePath>
-            </File>
-            <File>
-              <FileName>foc_47_smoif.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\ws\foc_47_smoif.c</FilePath>
+              <FilePath>..\..\ws\svpwm.c</FilePath>
             </File>
           </Files>
         </Group>

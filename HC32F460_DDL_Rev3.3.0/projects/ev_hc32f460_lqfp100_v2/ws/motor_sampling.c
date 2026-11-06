@@ -126,9 +126,9 @@ static void Motor_Sampling_AdcCfg(void)
     ADC_ChCmd(CM_ADC1, ADC_SEQ_A, HW_ADC_CH_IV, ENABLE);
 
     /* 设置采样时间 */
-    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_ITOTAL, 20U);
-    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IW,     20U);
-    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IV,     20U);
+    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_ITOTAL, 7U);
+    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IW,     7U);
+    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IV,     7U);
 
 #if (CFG_SAMPLING_USE_REAL_ADC != 0)
     if (s_scale.vbus_ch != 0U) {

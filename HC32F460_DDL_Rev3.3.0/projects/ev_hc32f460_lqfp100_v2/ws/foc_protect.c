@@ -307,22 +307,22 @@ void Foc_Protect_Task1ms(void)
         }
     }
 
-    /* ---- 诊断：每 500ms 打一次状态 ---- */
-    {
-        static uint32_t s_dbg_state_ms = 0;
-        uint32_t now = tickTimer_GetCount();
-        if ((now - s_dbg_state_ms) >= 500u) {
-            s_dbg_state_ms = now;
-            MAIN_D("[FP][STATE-DBG] state=%d fault=0x%08lX trip_cnt=%lu "
-                   "fast_max_x100=%ld slow_avg_x100=%ld en=%u",
-                   (int)g_fp_state,
-                   (unsigned long)g_fp_fault,
-                   (unsigned long)g_fp_trip_cnt,
-                   (long)(g_fp_fast_max * 100.0f),
-                   (long)(g_fp_slow_avg * 100.0f),
-                   (unsigned)s_enabled);
-        }
-    }
+//    /* ---- 诊断：每 500ms 打一次状态 ---- */
+//    {
+//        static uint32_t s_dbg_state_ms = 0;
+//        uint32_t now = tickTimer_GetCount();
+//        if ((now - s_dbg_state_ms) >= 500u) {
+//            s_dbg_state_ms = now;
+//            MAIN_D("[FP][STATE-DBG] state=%d fault=0x%08lX trip_cnt=%lu "
+//                   "fast_max_x100=%ld slow_avg_x100=%ld en=%u",
+//                   (int)g_fp_state,
+//                   (unsigned long)g_fp_fault,
+//                   (unsigned long)g_fp_trip_cnt,
+//                   (long)(g_fp_fast_max * 100.0f),
+//                   (long)(g_fp_slow_avg * 100.0f),
+//                   (unsigned)s_enabled);
+//        }
+//    }
 
     /* ---- LATCHED：可选自动恢复，否则只等手动复位 ---- */
     if (g_fp_state == FP_STATE_LATCHED) {

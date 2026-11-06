@@ -63,7 +63,7 @@
 /*=============================================================================
  * Watch 可写变量
  *=============================================================================*/
-volatile int32_t  g_mode_cmd       = 0;      /* 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP */
+volatile int32_t  g_mode_cmd       = 1;      /* 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP */
 volatile int32_t  g_ol_freq_mhz    = 3000;
 volatile int32_t  g_ol_vq_mv       = 700;
 volatile int32_t  g_vofa_adc_debug = 1;

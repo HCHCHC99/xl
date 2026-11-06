@@ -17,6 +17,11 @@
  *   只操作 TMR4_3 外设：计数OC 通道死区PWM 模式比较值
  *   不操作 GPIO：引脚复用由 hw_gpio_init_all() 配好
  *
+ * 波形约定（与 cfg_foc_table.h 的采样点语义一致）：
+ *   高侧导通居中于三角波峰值，低侧导通居中于谷底
+ *   命令占空比 = 高侧占空比；比较值 = 关断点（高侧） / 导通宽度（低侧）
+ *   前提：ACTIVE_HIGH 必须为 true（false 会使高/低侧窗口整体互换）
+ *
  * 边界钳位（硬件边界，非业务）：
  *   OCCR ticks : 0 .. periodTicks-1
  *   dead-time  : 0 .. TMR4_DEADTIME_TICKS_MAX
@@ -55,6 +60,14 @@ typedef enum {
     TMR4_OUTPUT_COMPLEMENTARY = 0,
     TMR4_OUTPUT_SYNC          = 1,
 } tmr4_output_type_t;
+
+/* 采样臂（语义：采哪一桥臂的导通区），由 cfg_foc_table.h 的采样点映射而来
+ *   高侧导通区居中于峰值，低侧导通区居中于谷底；
+ *   触发点只与采样臂有关，与输出模式（互补/同向）无关 */
+typedef enum {
+    TMR4_SAMPLE_HIGH_SIDE = 0,   /* 峰值触发：采上桥臂导通区 */
+    TMR4_SAMPLE_LOW_SIDE  = 1,   /* 谷底触发：采下桥臂导通区 */
+} tmr4_sample_point_t;
 
 typedef enum {
     TMR4_CHANNEL_U = 0,
@@ -116,6 +129,7 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_deadtime(uint16_t deadTimeNs);
 
 /*=============================================================================
  * Duty (center semantics)
+ *   centerPct = 命令值 = 高侧占空比（互补/同向两种模式语义一致）
  *=============================================================================*/
 tmr4_pwm_err_t hw_tmr4_pwm_set_duty(tmr4_pwm_channel_t channel, uint16_t dutyU16);
 tmr4_pwm_err_t hw_tmr4_pwm_set_duty_float(tmr4_pwm_channel_t channel, float centerPct);
@@ -125,7 +139,10 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_duty3(float duPct, float dvPct, float dwPct);
 tmr4_pwm_err_t hw_tmr4_pwm_set_duty3_deadtime(float highU, float highV, float highW);
 
 /*=============================================================================
- * ADC 采样触发事件（TMR4 三角波谷底 → EVT0）
+ * ADC 采样触发事件（EVT0 → AOS → ADC）
+ *   CFG_SAMPLE_UPPER：SCCR=峰值，上溢匹配（采样高侧导通区）
+ *   CFG_SAMPLE_LOWER：SCCR=0，下溢匹配（采样低侧导通区）
+ *   与输出模式无关
  *=============================================================================*/
 tmr4_pwm_err_t hw_tmr4_pwm_config_adc_trigger(bool enable);
 
