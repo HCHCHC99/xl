@@ -161,17 +161,18 @@ static void OCModeSyncHigh(CM_TMR4_TypeDef *TMR4x, uint32_t ch)
     m.OCMRx_f.OCFPKH  = TMR4_OC_OCF_SET;
     m.OCMRx_f.OCFUCH  = TMR4_OC_OCF_SET;
     m.OCMRx_f.OCFZRH  = TMR4_OC_OCF_SET;
-    m.OCMRx_f.OPDCH   = TMR4_OC_LOW;    /* 下计数匹配 -> LOW  */
+    /* 同向：上下管同相，导通窗口 [0, X)（居中谷底） */
+    m.OCMRx_f.OPDCH   = TMR4_OC_HIGH;   /* 下计数匹配 -> HIGH */
     m.OCMRx_f.OPPKH   = TMR4_OC_LOW;    /* 峰值匹配   -> LOW  */
-    m.OCMRx_f.OPUCH   = TMR4_OC_HIGH;   /* 上计数匹配 -> HIGH */
+    m.OCMRx_f.OPUCH   = TMR4_OC_LOW;    /* 上计数匹配 -> LOW  */
     m.OCMRx_f.OPZRH   = TMR4_OC_HIGH;   /* 谷底匹配   -> HIGH */
-    m.OCMRx_f.OPNPKH  = TMR4_OC_HIGH;   /* 峰值无匹配 -> HIGH */
-    m.OCMRx_f.OPNZRH  = TMR4_OC_LOW;    /* 谷底无匹配 -> LOW  */
+    m.OCMRx_f.OPNPKH  = TMR4_OC_LOW;    /* 峰值无匹配 -> LOW  */
+    m.OCMRx_f.OPNZRH  = TMR4_OC_HIGH;   /* 谷底无匹配 -> HIGH */
     TMR4_OC_SetHighChCompareMode(TMR4x, ch, m);
 }
 ```
 
-结果：高侧导通在 `(Xh, CPSR]`，`Dh = (CPSR−Xh)/CPSR`，与互补模式同几何。
+结果：上下管同相，导通窗口 `[0, X)`，`D = X/CPSR`，PB5 与 PB4 同高同低（死区为 0 时完全一致）。
 
 ### 2.6 `OCModeSyncLow`（同向模式下管）
 
@@ -217,20 +218,20 @@ static void ApplySyncDutyWithDeadTime(tmr4_pwm_channel_t ch,
                                       uint16_t deadTicks)
 {
     const pwm_pair_desc_t *pair = &s_pairs[ch];
-    uint16_t cpsr = (uint16_t)(s_ctx.periodTicks - 1U);
-    int32_t  xh = (int32_t)HighDutyToCmpH(dutyPct);
-    int32_t  xl = xh - (int32_t)deadTicks;
+    int32_t xh = (int32_t)LowDutyToCmpL(dutyPct);   /* 同向：上管也是谷底导通 */
+    int32_t xl = xh - (int32_t)deadTicks;
 
+    /* 死区为 0 时两路完全相同；非 0 时下管提前 deadTicks 关断 */
     if (xl < 1) xl = 1;
-    if (xl > xh - 1) xl = xh - 1;          /* 保证两边至少 1 tick 间隔 */
 
     OccrHWrite((int)ch, pair->ocChH, (uint16_t)xh);
     OccrLWrite((int)ch, pair->ocChL, (uint16_t)xl);
 }
 ```
 
-- 死区 = `Xh − Xl`，每个切换边各一次，总死区占比 = 2×deadTicks/(2×periodTicks)。
-- 死区为 0 时 `xl = xh`，上下管同一 tick 切换，只适合门极驱动本身有互锁的场合；表中同向配置建议改成非 0（200~500 ns）。
+- 上下管同相、同时上升（都居中谷底），下管比上管提前 `deadTicks` 关断。
+- 死区为 0 时 `Xh = Xl`，PB5 与 PB4 完全一致。
+- 同向模式下两管同时导通，仅适合台架波形验证或门极带互锁的驱动，不能直接带功率级。
 - `TMR4_DEADTIME_TICKS_MAX` 仍为 0x3FF，钳位保留。
 
 ### 2.8 `ShadowApplyOC`（影子装载点随采样点）
@@ -319,10 +320,10 @@ MAIN_D("[HW_TMR4] sample=%s trig=%s (%u)",
 
 - `hw_tmr4_pwm_get_state`（L772-L799）
   互补：`highPct = 100×(CPSR − X)/periodTicks − deadPct/2`；`lowPct = 100 − highPct − deadPct`。
-  同向：`highPct = 100×(CPSR − Xh)/periodTicks`（引脚无死区损失）；`lowPct = 100×Xl/periodTicks`。
+  同向：`highPct = 100×Xh/periodTicks`；`lowPct = 100×Xl/periodTicks`（引脚无死区延迟）。
 - `hw_tmr4_pwm_center_to_actual`
   互补保持 `high = center − dtPct/2`、`low = 100 − high − dtPct`。
-  同向改为 `high = center`（引脚本身无额外死区延迟）、`low = 100 − center − dtPct`。
+  同向改为 `high = center`、`low = center − dtPct`。
 - `hw_tmr4_pwm_actual_duty_to_center`
   互补：`center = high + dtPct/2`；同向：`center = high`。
 
@@ -335,7 +336,7 @@ MAIN_D("[HW_TMR4] sample=%s trig=%s (%u)",
 | 场景 | 寄存器 | OPU C/D | OPPK | OPZR | OPNPK | OPNZR | EOP* |
 |---|---|---|---|---|---|---|---|
 | 互补（OCMRL） | OCMRul/vl/wl | U=HIGH, D=LOW | LOW | HIGH | HIGH | LOW | 与 OP 镜像，bit19~16=0 |
-| 同向上管（OCMRH） | OCMRuh/vh/wh | U=HIGH, D=LOW | LOW | HIGH | HIGH | LOW | 无 |
+| 同向上管（OCMRH） | OCMRuh/vh/wh | U=LOW, D=HIGH | LOW | HIGH | LOW | HIGH | 无 |
 | 同向下管（OCMRL） | OCMRul/vl/wl | U=LOW, D=HIGH | LOW | HIGH | LOW | HIGH | 与 OP 镜像，bit19~16=0 |
 
 （HOLD=0，HIGH=1，LOW=2，INVT=3；互补与同向下管的 EOP 必须镜像 OP，且 bit19~16 为 0，保证独立操作模式。）
@@ -365,8 +366,8 @@ MAIN_D("[HW_TMR4] sample=%s trig=%s (%u)",
      - 谷底触发：CNT ≈ 0 + N。
    - 配合 PB5/PB4 电平确认采样瞬间落在对应导通区。
 3. 组合矩阵
-   - 配置 0：SYNC + UPPER → 峰值触发，PB5 为高时采样。
-   - 配置 1：SYNC + LOWER → 谷底触发，PB4 为高时采样。
+   - 配置 0：SYNC + UPPER → 峰值触发；同向模式下两管同相且居中谷底，峰值处两管都是关断，采样点落在关断区（“高侧采样”在同向模式下没有物理意义）。
+   - 配置 1：SYNC + LOWER → 谷底触发，两管同时导通，采样落在导通区。
    - 配置 2/4：COMP + LOWER → 谷底触发，PB4 为高时采样。
    - 配置 5：COMP + UPPER → 峰值触发，PB5 为高时采样。
 4. 装载点
@@ -380,7 +381,7 @@ MAIN_D("[HW_TMR4] sample=%s trig=%s (%u)",
 
 1. 死区由“名义值的一半”变成真实值，500 ns 配置下死区占比翻倍（20 kHz、50 µs 周期下 1%）。
 2. 非 50% 命令下的实际相电压方向会翻转回正确方向。若整机符号（电流采样方向、编码器 dir）此前是按“反相”标定的，改完后 mode 3 对齐、mode 4 的 iq 正负可能整体反向，需要重新跑一次对齐/校准，并复核 iq 反馈符号。
-3. 同向模式从“上下管同时导通”变为真正的软件互补，配置 0/1/3 才具备可用性；但表里同向配置的死区为 0，建议改成 200~500 ns。
+3. 同向模式保持“上下管同相”（PB4/PB5 同高同低），死区为 0 时两路完全相同；非 0 时下管提前 deadTicks 关断。注意：同向模式下上下管同时导通，只适合台架波形验证或门极带互锁的驱动，不能直接带功率级。同向模式下“高侧/低侧采样”没有物理区分，LOWER（谷底）落在导通区、UPPER（峰值）落在关断区。
 4. 采样点变为与模式无关，`cfg_foc_table.h` 里 `UPPER/LOWER` 的注释语义第一次真正成立。
 
 ---

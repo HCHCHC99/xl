@@ -17,10 +17,11 @@
  *   只操作 TMR4_3 外设：计数OC 通道死区PWM 模式比较值
  *   不操作 GPIO：引脚复用由 hw_gpio_init_all() 配好
  *
- * 波形约定（与 cfg_foc_table.h 的采样点语义一致）：
- *   高侧导通居中于三角波峰值，低侧导通居中于谷底
- *   命令占空比 = 高侧占空比；比较值 = 关断点（高侧） / 导通宽度（低侧）
- *   前提：ACTIVE_HIGH 必须为 true（false 会使高/低侧窗口整体互换）
+ * 波形约定：
+ *   互补模式：高侧导通居中于峰值（比较值=关断点），低侧由硬件取反、居中于谷底
+ *   同向模式：上下管同相，导通区居中于谷底（PB4/PB5 同高同低，比较值=导通宽度）
+ *   同向模式下死区体现为下管比上管提前 deadTicks 关断；死区为 0 时两路完全相同
+ *   前提：ACTIVE_HIGH 必须为 true（false 会使两路电平整体反相）
  *
  * 边界钳位（硬件边界，非业务）：
  *   OCCR ticks : 0 .. periodTicks-1
@@ -140,9 +141,9 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_duty3_deadtime(float highU, float highV, float hi
 
 /*=============================================================================
  * ADC 采样触发事件（EVT0 → AOS → ADC）
- *   CFG_SAMPLE_UPPER：SCCR=峰值，上溢匹配（采样高侧导通区）
- *   CFG_SAMPLE_LOWER：SCCR=0，下溢匹配（采样低侧导通区）
- *   与输出模式无关
+ *   CFG_SAMPLE_UPPER：SCCR=峰值，上溢匹配
+ *   CFG_SAMPLE_LOWER：SCCR=0，下溢匹配
+ *   与输出模式无关；同向模式下上下管同相，“高侧/低侧采样”没有物理区分
  *=============================================================================*/
 tmr4_pwm_err_t hw_tmr4_pwm_config_adc_trigger(bool enable);
 
