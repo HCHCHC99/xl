@@ -36,11 +36,11 @@ void hw_gpio_init_all(void)
     GPIO_Init(HW_PIN_ENC_Z_PORT, HW_PIN_ENC_Z_PIN, &stcGpio);
 
     /* ---- ADC 四路：模拟输入 ----
-     *   PA3 = 总电流, PA4 = W 相, PA5 = V 相, PA6 = 母线电压
+     *   PA3 = 母线电流 / U 相电流, PA4 = W 相, PA5 = V 相, PA6 = 母线电压
      */
     GPIO_StructInit(&stcGpio);
     stcGpio.u16PinAttr = PIN_ATTR_ANALOG;
-    GPIO_Init(HW_PIN_ADC_ITOTAL_PORT, HW_PIN_ADC_ITOTAL_PIN, &stcGpio);  /* PA3 */
+    GPIO_Init(HW_PIN_ADC_I3_PORT,     HW_PIN_ADC_I3_PIN,     &stcGpio);  /* PA3 */
     GPIO_Init(HW_PIN_ADC_IW_PORT,     HW_PIN_ADC_IW_PIN,     &stcGpio);  /* PA4 */
     GPIO_Init(HW_PIN_ADC_IV_PORT,     HW_PIN_ADC_IV_PIN,     &stcGpio);  /* PA5 */
     GPIO_Init(HW_PIN_ADC_VBUS_PORT,   HW_PIN_ADC_VBUS_PIN,   &stcGpio);  /* PA6 */

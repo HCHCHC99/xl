@@ -8,6 +8,7 @@
 #define HW_BOARD_PINS_H
 
 #include "hc32_ll.h"
+#include "cfg_sampling.h"
 
 /*=============================================================================
  * PWM 输出（TMR4_3 六路）
@@ -41,16 +42,23 @@
 
 /*=============================================================================
  * ADC 采样（ADC1 序列A）
- *   PA3 = CH3 (itotal)  总电流
+ *   PA3 = CH3 (I3)      母线电流 itotal 或 U 相电流 iu（由 CFG_SAMPLING_BOARD_IU_SENSOR 决定）
  *   PA4 = CH4 (iw)      W 相电流
  *   PA5 = CH5 (iv)      V 相电流
  *   PA6 = CH6 (vbus)    母线电压
  *
- *   U 相电流由 iu = 0 - iw - iv 计算，不占 ADC 通道
+ *   U 相电流：CFG_SAMPLING_BOARD_IU_SENSOR=0 时由 iu = 0 - iw - iv 计算
+ *            CFG_SAMPLING_BOARD_IU_SENSOR=1 时直接采 PA3
  *=============================================================================*/
-#define HW_PIN_ADC_ITOTAL_PORT   GPIO_PORT_A
-#define HW_PIN_ADC_ITOTAL_PIN    GPIO_PIN_03
-#define HW_ADC_CH_ITOTAL         ADC_CH3
+#define HW_PIN_ADC_I3_PORT       GPIO_PORT_A
+#define HW_PIN_ADC_I3_PIN        GPIO_PIN_03
+#define HW_ADC_CH_I3             ADC_CH3
+
+#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+#define HW_ADC_CH_IU             HW_ADC_CH_I3
+#else
+#define HW_ADC_CH_ITOTAL         HW_ADC_CH_I3
+#endif
 
 #define HW_PIN_ADC_IW_PORT       GPIO_PORT_A
 #define HW_PIN_ADC_IW_PIN        GPIO_PIN_04

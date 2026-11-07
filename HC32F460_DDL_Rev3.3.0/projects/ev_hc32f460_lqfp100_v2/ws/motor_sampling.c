@@ -1,10 +1,10 @@
 /*=============================================================================
- * motor_sampling.c  ¡ª  L1 ²ÉÑù²ãÊµÏÖ
+ * motor_sampling.c  â€”  L1 é‡‡æ ·å±‚å®ç°
  *
- * ±¾°æ¸Ä¶¯£º
- *   - µç½Ç¶È¶ÔÆë£¨DoAlignBlocking£©Ç¨ÖÁ encoder_calib.c
- *   - g_motor_is_aligned Ç¨ÖÁ encoder_calib.c
- *   - ÇåÀíÒò´Ë²»ÔÙĞèÒªµÄ include
+ * æœ¬ç‰ˆæ”¹åŠ¨ï¼š
+ *   - ç”µè§’åº¦å¯¹é½ï¼ˆDoAlignBlockingï¼‰è¿è‡³ encoder_calib.c
+ *   - g_motor_is_aligned è¿è‡³ encoder_calib.c
+ *   - æ¸…ç†å› æ­¤ä¸å†éœ€è¦çš„ include
  *=============================================================================*/
 
 #include "motor_sampling.h"
@@ -14,15 +14,15 @@
 #include "hc32_ll_fcg.h"
 #include "hc32_ll_gpio.h"
 #include "hc32_ll_tmr4.h"
-#include "hw_board_pins.h"      /* Í¨µÀ/Òı½Åºê¼¯ÖĞ */
-#include "cfg_sampling.h"       /* Ä£Ê½/±ê¶¨ºê */
+#include "hw_board_pins.h"      /* é€šé“/å¼•è„šå®é›†ä¸­ */
+#include "cfg_sampling.h"       /* æ¨¡å¼/æ ‡å®šå® */
 #include "TickTimer.h"          /* tickTimer_GetCount */
 #include "rtt_log.h"
 
 /*---------------------------------------------------------------------------
- * ÄÚ²¿×´Ì¬
+ * å†…éƒ¨çŠ¶æ€
  *---------------------------------------------------------------------------*/
-static volatile uint16_t s_u16AdcItotal = 0;   /* PA3 */
+static volatile uint16_t s_u16AdcItotal = 0;   /* PA3ï¼šæ¯çº¿ç”µæµ æˆ– U ç›¸ç”µæµ */
 static volatile uint16_t s_u16AdcIw     = 0;   /* PA4 */
 static volatile uint16_t s_u16AdcIv     = 0;   /* PA5 */
 static volatile uint16_t s_u16AdcVbus   = 0;   /* PA6 */
@@ -30,13 +30,13 @@ static volatile uint32_t s_u32Seq = 0;
 static volatile bool     s_bNewSample = false;
 
 /*---------------------------------------------------------------------------
- * ÉÏµçÁãµçÁ÷Æ«ÖÃĞ£×¼
- *   20kHz  100ms = 2000 µã
+ * ä¸Šç”µé›¶ç”µæµåç½®æ ¡å‡†
+ *   20kHz  100ms = 2000 ç‚¹
  *---------------------------------------------------------------------------*/
 #define FP_CAL_SAMPLES   2000u
 
-static volatile uint8_t  s_cal_active     = 0u;   /* 1 = ÕıÔÚĞ£×¼ */
-static volatile uint32_t s_cal_cnt        = 0u;   /* ÒÑÀÛ¼ÓµãÊı */
+static volatile uint8_t  s_cal_active     = 0u;   /* 1 = æ­£åœ¨æ ¡å‡† */
+static volatile uint32_t s_cal_cnt        = 0u;   /* å·²ç´¯åŠ ç‚¹æ•° */
 static volatile uint32_t s_cal_sum_itotal = 0u;
 static volatile uint32_t s_cal_sum_iw     = 0u;
 static volatile uint32_t s_cal_sum_iv     = 0u;
@@ -46,31 +46,37 @@ volatile uint16_t g_cal_offset_iw     = 2048u;
 volatile uint16_t g_cal_offset_iv     = 2048u;
 volatile uint32_t g_cal_sample_cnt    = 0u;
 
-/* Ğ£×¼×´Ì¬±êÖ¾£¨µôµçÄ¬ÈÏ 0£© */
+/* æ ¡å‡†çŠ¶æ€æ ‡å¿—ï¼ˆæ‰ç”µé»˜è®¤ 0ï¼‰ */
 volatile uint8_t g_motor_is_offset_calibrated = 0u;
 
 /*---------------------------------------------------------------------------
- * ADC Ô­Ê¼ÖµÈ«¾Ö¾µÏñ
+ * ADC åŸå§‹å€¼å…¨å±€é•œåƒ
  *---------------------------------------------------------------------------*/
 volatile uint16_t g_adc_raw_itotal = 0;
 volatile uint16_t g_adc_raw_iw     = 0;
 volatile uint16_t g_adc_raw_iv     = 0;
 volatile uint16_t g_adc_raw_vbus   = 0;
 
-/* Ä¬ÈÏ±ê¶¨£¨¿É±» Motor_Sampling_Init ¸²¸Ç£© */
+/* é»˜è®¤æ ‡å®šï¼ˆå¯è¢« Motor_Sampling_Init è¦†ç›–ï¼‰ */
 static MotorSamplingScale_t s_scale = {
     .current_scale  = CFG_SAMPLING_CURRENT_SCALE,
-    .current_offset = CFG_SAMPLING_CURRENT_OFFSET,
+    .current_offset = { CFG_SAMPLING_CURRENT_OFFSET,
+                        CFG_SAMPLING_CURRENT_OFFSET,
+                        CFG_SAMPLING_CURRENT_OFFSET },
     .vbus_scale     = CFG_SAMPLING_VBUS_SCALE,
     .vbus_ch        = HW_ADC_CH_VBUS,
 };
 
 /*---------------------------------------------------------------------------
- * EOCA ÖĞ¶Ï»Øµ÷
+ * EOCA ä¸­æ–­å›è°ƒ
  *---------------------------------------------------------------------------*/
 void Motor_Sampling_EocaCallback(void)
 {
+#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+    s_u16AdcItotal = ADC_GetValue(CM_ADC1, HW_ADC_CH_IU);
+#else
     s_u16AdcItotal = ADC_GetValue(CM_ADC1, HW_ADC_CH_ITOTAL);
+#endif
     s_u16AdcIw     = ADC_GetValue(CM_ADC1, HW_ADC_CH_IW);
     s_u16AdcIv     = ADC_GetValue(CM_ADC1, HW_ADC_CH_IV);
 
@@ -87,7 +93,7 @@ void Motor_Sampling_EocaCallback(void)
     g_adc_raw_iv     = s_u16AdcIv;
     g_adc_raw_vbus   = s_u16AdcVbus;
 
-    /* ÀÛ¼ÓĞ£×¼Êı¾İ */
+    /* ç´¯åŠ æ ¡å‡†æ•°æ® */
     if (s_cal_active) {
         s_cal_sum_itotal += s_u16AdcItotal;
         s_cal_sum_iw     += s_u16AdcIw;
@@ -104,7 +110,7 @@ void Motor_Sampling_EocaCallback(void)
 }
 
 /*---------------------------------------------------------------------------
- * ADC ÅäÖÃ
+ * ADC é…ç½®
  *---------------------------------------------------------------------------*/
 static void Motor_Sampling_AdcCfg(void)
 {
@@ -121,12 +127,20 @@ static void Motor_Sampling_AdcCfg(void)
     FCG_Fcg0PeriphClockCmd(FCG0_PERIPH_AOS, ENABLE);
     AOS_SetTriggerEventSrc(AOS_ADC1_0, EVT_SRC_TMR4_3_SCMP0);
 
+#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+    ADC_ChCmd(CM_ADC1, ADC_SEQ_A, HW_ADC_CH_IU, ENABLE);
+#else
     ADC_ChCmd(CM_ADC1, ADC_SEQ_A, HW_ADC_CH_ITOTAL, ENABLE);
+#endif
     ADC_ChCmd(CM_ADC1, ADC_SEQ_A, HW_ADC_CH_IW, ENABLE);
     ADC_ChCmd(CM_ADC1, ADC_SEQ_A, HW_ADC_CH_IV, ENABLE);
 
-    /* ÉèÖÃ²ÉÑùÊ±¼ä */
+    /* è®¾ç½®é‡‡æ ·æ—¶é—´ */
+#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IU,     7U);
+#else
     ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_ITOTAL, 7U);
+#endif
     ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IW,     7U);
     ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IV,     7U);
 
@@ -142,7 +156,7 @@ static void Motor_Sampling_AdcCfg(void)
 }
 
 /*---------------------------------------------------------------------------
- * ¶ÔÍâ£º³õÊ¼»¯
+ * å¯¹å¤–ï¼šåˆå§‹åŒ–
  *---------------------------------------------------------------------------*/
 void Motor_Sampling_Init(const MotorSamplingScale_t *scale)
 {
@@ -162,7 +176,7 @@ void Motor_Sampling_Init(const MotorSamplingScale_t *scale)
 }
 
 /*---------------------------------------------------------------------------
- * ¶ÔÍâ£ºÈ¡×î½üÒ»Ö¡
+ * å¯¹å¤–ï¼šå–æœ€è¿‘ä¸€å¸§
  *---------------------------------------------------------------------------*/
 void Motor_GetSample(MotorSample_t *s)
 {
@@ -172,17 +186,26 @@ void Motor_GetSample(MotorSample_t *s)
     if (s == NULL) return;
 
     raw = (float)s_u16AdcItotal;
-    s->i_total = (raw - s_scale.current_offset) * s_scale.current_scale;
+#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+    s->iu      = (raw - s_scale.current_offset[0]) * s_scale.current_scale;
+    s->i_total = 0.0f;   /* è¯¥æ¿æ²¡æœ‰æ¯çº¿ç”µæµä¼ æ„Ÿå™¨ */
+#else
+    s->i_total = (raw - s_scale.current_offset[0]) * s_scale.current_scale;
+#endif
 
     raw = (float)s_u16AdcIw;
-    iw = (raw - s_scale.current_offset) * s_scale.current_scale;
+    iw = (raw - s_scale.current_offset[1]) * s_scale.current_scale;
     s->iw = iw;
 
     raw = (float)s_u16AdcIv;
-    iv = (raw - s_scale.current_offset) * s_scale.current_scale;
+    iv = (raw - s_scale.current_offset[2]) * s_scale.current_scale;
     s->iv = iv;
 
+#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+    /* iu ç”± PA3 ç›´æ¥é‡‡æ ·ï¼Œä¸å†é‡æ„ */
+#else
     s->iu = 0.0f - iv - iw;
+#endif
 
 #if (CFG_SAMPLING_USE_REAL_ADC != 0)
     raw = (float)s_u16AdcVbus;
@@ -202,7 +225,7 @@ bool Motor_Sampling_HasNew(void)
 }
 
 /*=============================================================================
- * ÉÏµçÁãµçÁ÷Æ«ÖÃĞ£×¼
+ * ä¸Šç”µé›¶ç”µæµåç½®æ ¡å‡†
  *=============================================================================*/
 void Motor_Sampling_StartOffsetCal(void)
 {
@@ -223,7 +246,6 @@ void Motor_Sampling_ApplyOffsetCal(void)
 {
     uint32_t n;
     uint16_t off_i, off_w, off_v;
-    float    off_avg;
 
     if (!Motor_Sampling_IsOffsetCalDone()) return;
 
@@ -238,14 +260,18 @@ void Motor_Sampling_ApplyOffsetCal(void)
     g_cal_offset_iw     = off_w;
     g_cal_offset_iv     = off_v;
 
-    off_avg = (float)(off_i + off_w + off_v) / 3.0f;
-    s_scale.current_offset = off_avg;
+    s_scale.current_offset[0] = (float)off_i;
+    s_scale.current_offset[1] = (float)off_w;
+    s_scale.current_offset[2] = (float)off_v;
 
     MAIN_D("[CAL] done: N=%lu", (unsigned long)n);
+#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+    MAIN_D("[CAL]   iu    : raw=%4u", (unsigned)off_i);
+#else
     MAIN_D("[CAL]   itotal: raw=%4u", (unsigned)off_i);
+#endif
     MAIN_D("[CAL]   iw    : raw=%4u", (unsigned)off_w);
     MAIN_D("[CAL]   iv    : raw=%4u", (unsigned)off_v);
-    MAIN_D("[CAL]   avg offset = %d LSB", (int)off_avg);
 }
 
 bool Motor_Sampling_DoOffsetCalBlocking(uint32_t timeout_ms)
@@ -257,13 +283,13 @@ bool Motor_Sampling_DoOffsetCalBlocking(uint32_t timeout_ms)
 
     while (!Motor_Sampling_IsOffsetCalDone()) {
         if ((tickTimer_GetCount() - t0) > timeout_ms) {
-            return false; /* ³¬Ê± */
+            return false; /* è¶…æ—¶ */
         }
     }
 
     Motor_Sampling_ApplyOffsetCal();
     g_motor_is_offset_calibrated = 1u;
-    return true; /* ³É¹¦ */
+    return true; /* æˆåŠŸ */
 }
 
 /*******************************************************************************

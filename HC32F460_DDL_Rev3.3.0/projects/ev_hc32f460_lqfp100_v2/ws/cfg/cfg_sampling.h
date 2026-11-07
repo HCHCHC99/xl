@@ -8,6 +8,15 @@
 #define CFG_SAMPLING_H
 
 /*---------------------------------------------------------------------------
+ * 板型选择（换板子只改这里）
+ *   0 = 现板：PA3 = 母线电流 itotal，U 相电流由 iu = -iv - iw 计算
+ *             电流传感器灵敏度 26.4 mV/A，零点 1.65V
+ *   1 = IU 板：PA3/PA4/PA5 = iu/iv/iw，三相差分电流传感器
+ *             灵敏度 6 × 0.02Ω = 0.12 V/A，零点 1.25V
+ *---------------------------------------------------------------------------*/
+#define CFG_SAMPLING_BOARD_IU_SENSOR    1
+
+/*---------------------------------------------------------------------------
  * 采样模式
  *   1 = 真实模式：vbus 从 ADC 读，按 vbus_scale 换算
  *   0 = 模拟模式：vbus 固定 12.0V
@@ -19,20 +28,24 @@
 
 /*---------------------------------------------------------------------------
  * 电流标定
- *   硬件公式（来自原理图/传感器手册）：
- *     VOUT(mV) = 1650 + I(A) × 26.4
- *   反解：
- *     I(A) = (VOUT_mV - 1650) / 26.4
+ *   现板：   VOUT = 1.65V + I × 26.4mV/A
+ *   IU 板：  VOUT = 1.25V + I × (6 × 0.02Ω) = 1.25V + I × 0.12V/A
  *
- *   ADC 12bit / 3.3V 参考：
- *     VOUT_mV = adc_raw × (3300 / 4096) = adc_raw × 0.8056640625 mV
- *
- *   偏置 LSB：1650 / 0.8056640625 = 2048.0 LSB
- *   灵敏度：26.4 mV/A → scale = (3.3/4096) / 0.0264 = 0.0305176 A/LSB
- *   即 1 A 对应 32.8 LSB，满量程 62.5 A（1.65V 摆幅）
+ *   ADC 12bit / VREF = VDDA = 3.3V
+ *     1 LSB   = 3.3/4095 V
+ *     scale   = (VREF/4095) / 灵敏度        [A/LSB]
+ *     offset  = 零点电压 × 4095 / VREF     [LSB]
  *---------------------------------------------------------------------------*/
-#define CFG_SAMPLING_CURRENT_SCALE   (3.3f / 4096.0f / 0.0264f)   /* A / LSB */
-#define CFG_SAMPLING_CURRENT_OFFSET  2048.0f                       /* LSB = 1650 mV */
+#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+#define CFG_SAMPLING_IU_GAIN          6.0f
+#define CFG_SAMPLING_IU_SHUNT_OHM     0.02f
+#define CFG_SAMPLING_IU_ZERO_V        1.25f
+#define CFG_SAMPLING_CURRENT_SCALE    ((3.3f / 4095.0f) / (CFG_SAMPLING_IU_GAIN * CFG_SAMPLING_IU_SHUNT_OHM))  /* ≈0.006716 A/LSB */
+#define CFG_SAMPLING_CURRENT_OFFSET   (CFG_SAMPLING_IU_ZERO_V * 4095.0f / 3.3f)                                /* ≈1551 LSB */
+#else
+#define CFG_SAMPLING_CURRENT_SCALE    (3.3f / 4096.0f / 0.0264f)   /* A / LSB */
+#define CFG_SAMPLING_CURRENT_OFFSET   2048.0f                       /* LSB = 1650 mV */
+#endif
 
 /*---------------------------------------------------------------------------
  * 母线电压标定

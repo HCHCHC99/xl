@@ -23,8 +23,8 @@
 #include <stdint.h>
 
 typedef struct {
-    float i_total;  /* A，总电流（PA3） */
-    float iu;       /* A，U 相电流（计算：0 - iw - iv） */
+    float i_total;  /* A，总电流（PA3；CFG_SAMPLING_BOARD_IU_SENSOR=1 时恒为 0） */
+    float iu;       /* A，U 相电流（PA3 直接采样，或 CFG_SAMPLING_BOARD_IU_SENSOR=0 时 0 - iw - iv 计算） */
     float iv;       /* A，V 相电流（PA5） */
     float iw;       /* A，W 相电流（PA4） */
     float vbus;     /* V，母线电压（PA6） */
@@ -37,7 +37,7 @@ typedef struct {
  */
 typedef struct {
     float current_scale;   /* A / LSB */
-    float current_offset;  /* LSB，零电流偏置（上电校准后更新） */
+    float current_offset[3];  /* LSB，零电流偏置 [0]=PA3(iu/itotal) [1]=iw(PA4) [2]=iv(PA5)，上电校准后更新 */
     float vbus_scale;      /* V / LSB */
     uint16_t vbus_ch;      /* 母线电压 ADC 通道 */
 } MotorSamplingScale_t;

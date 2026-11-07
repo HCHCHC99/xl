@@ -64,7 +64,7 @@
  * Watch 可写变量
  *=============================================================================*/
 volatile int32_t  g_mode_cmd       = 0;      /* 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP */
-volatile int32_t  g_ol_freq_mhz    = 3000;
+volatile int32_t  g_ol_freq_mhz    = 700;
 volatile int32_t  g_ol_vq_mv       = 700;
 volatile int32_t  g_vofa_adc_debug = 1;
 
@@ -92,7 +92,9 @@ static uint8_t s_align_running = 0;
  *=============================================================================*/
 static const MotorSamplingScale_t g_scale = {
     .current_scale  = CFG_SAMPLING_CURRENT_SCALE,
-    .current_offset = CFG_SAMPLING_CURRENT_OFFSET,
+    .current_offset = { CFG_SAMPLING_CURRENT_OFFSET,
+                        CFG_SAMPLING_CURRENT_OFFSET,
+                        CFG_SAMPLING_CURRENT_OFFSET },
     .vbus_scale     = CFG_SAMPLING_VBUS_SCALE,
     .vbus_ch        = HW_ADC_CH_VBUS,
 };
@@ -203,7 +205,7 @@ static bool PowerOn_OffsetCal(void)
     if (ok) {
         MAIN_D("[CAL] Power-on offset cal OK: offset=%d LSB",
                (int)g_cal_offset_itotal);
-        MAIN_D("[CAL]   itotal=%u iw=%u iv=%u",
+        MAIN_D("[CAL]   PA3=%u iw=%u iv=%u",
                (unsigned)g_cal_offset_itotal,
                (unsigned)g_cal_offset_iw,
                (unsigned)g_cal_offset_iv);
@@ -276,7 +278,7 @@ int main(void)
 
     {
         Usart3_HW_Config_t cfg = USART3_HW_CONFIG_DEFAULT;
-        cfg.baudrate = 921600;
+        cfg.baudrate = 115200;//921600;
         Usart3_Vofa_Init(&cfg);
     }
 
