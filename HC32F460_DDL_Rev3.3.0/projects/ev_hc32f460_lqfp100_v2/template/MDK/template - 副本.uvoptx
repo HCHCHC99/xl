@@ -376,6 +376,11 @@
           <WinNumber>2</WinNumber>
           <ItemText>g_cl_ki</ItemText>
         </Ww>
+        <Ww>
+          <count>16</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_cl_iterm_max_watch</ItemText>
+        </Ww>
       </WatchWindow2>
       <Tracepoint>
         <THDelay>0</THDelay>

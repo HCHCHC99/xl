@@ -74,9 +74,12 @@ extern "C" {
 #define CL_BACK_GAIN_INIT     0.0f
 
 /* 积分项（ki*integral）电压限幅，单位 V。
- *   与参考工程 FOC31_INTEGRAL_MAX=3.0 的意图一致（积分项电压上限 3.0V）；
- *   参考工程的 dev_pid 实际限制的是积分量 A·s，未真正生效，这里按电压限幅实现。 */
-#define CL_ITERM_MAX_INIT     3.0f
+ *   参考工程注释要求"必须 > 运行时反电动势，否则高速段积分扛不住反电动势，
+ *   稳态 droop 回来"。参考的 FOC31_INTEGRAL_MAX=3.0 实际是积分量 A·s，
+ *   未真正生效，所以它等效于只受 3.5V 输出限幅约束。
+ *   这里取 3.5V（与输出限幅同值）：积分可以独自撑到满电压，不会因 3.0V
+ *   被截而让 P 项补差、造成 iq 平均值上不去；同时仍限制积分不会超过输出。 */
+#define CL_ITERM_MAX_INIT     3.5f
 
 /* id/iq 反馈 EMA 低通系数（1 = 关闭）。参考工程 FOC_CUR_FB_ALPHA=0.3。 */
 #define CL_FB_ALPHA_INIT      0.3f
