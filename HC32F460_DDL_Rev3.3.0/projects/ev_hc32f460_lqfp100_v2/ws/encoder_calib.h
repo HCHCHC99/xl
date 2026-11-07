@@ -73,6 +73,11 @@ extern volatile int32_t  g_sweep_theta[4];
 extern volatile uint8_t  g_sweep_idx;
 extern volatile uint8_t  g_sweep_done;
 
+/* 每段三相电流平均值（mA）
+ *   [idx][0..2] = BETA 段 iu, iv, iw
+ *   [idx][3..5] = ALPHA 段 iu, iv, iw */
+extern volatile int32_t  g_sweep_i_ma[4][6];
+
 #ifdef __cplusplus
 }
 #endif

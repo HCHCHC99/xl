@@ -19,8 +19,9 @@
  *
  * mode 5 扫角：
  *   StartSweep(): 同 StartAlign 但不走 ZERO，直接给第一段矢量
- *   每角度两段（BETA=起始角, ALPHA=起始角+90°）后记 g_sweep_*，
- *   切下一角度，4 个跑完 DONE
+ *   每角度两段（BETA=起始角, ALPHA=起始角-90°，与 mode 3 同为电角度减小）
+ *   后记 g_sweep_*，切下一角度，4 个跑完 DONE
+ *   两个模式的 moved 符号含义因此统一：moved > 0 => dir = -1
  *
  * 说明：ec_precompute_duty() 不再自行 +90°，s_th1/s_th2 由调用方
  *       给定"两个绝对电角度"，mode3 与 mode5 语义差异全部上移到调用点
@@ -67,6 +68,12 @@ volatile int32_t  g_sweep_theta[4] = { 0, 1570, 3141, 4712 };
 volatile uint8_t  g_sweep_idx      = 0u;
 volatile uint8_t  g_sweep_done     = 0u;
 
+/* mode5 每段电流平均值（mA）
+ *   [idx][0..2] = BETA  iu, iv, iw
+ *   [idx][3..5] = ALPHA iu, iv, iw
+ */
+volatile int32_t  g_sweep_i_ma[4][6] = { { 0 } };
+
 /*=============================================================================
  * 状态机
  *=============================================================================*/
@@ -94,6 +101,14 @@ static int64_t  s_zero_sum_w = 0;
 static volatile uint32_t s_hold_cnt = 0u;
 static uint32_t s_hold_ms_l = 200u;
 
+/* mode5 每段电流统计：20kHz 累加，前 100ms 跳过（等电流/转子稳定） */
+#define EC_SEG_SKIP_TICKS   2000u
+static float    s_seg_sum_u = 0.0f;
+static float    s_seg_sum_v = 0.0f;
+static float    s_seg_sum_w = 0.0f;
+static uint32_t s_seg_cnt   = 0u;
+static uint32_t s_seg_tick  = 0u;
+
 static int32_t s_beta_hw_l  = 0;
 static int32_t s_alpha_hw_l = 0;
 
@@ -103,7 +118,7 @@ static float s_alpha_du = 0.5f, s_alpha_dv = 0.5f, s_alpha_dw = 0.5f;
 
 /* 两个绝对电角度：s_th1 = BETA 角，s_th2 = ALPHA 角
  *   mode3: s_th1=90°, s_th2=0°
- *   mode5: s_th1=起始角, s_th2=起始角+90°
+ *   mode5: s_th1=起始角, s_th2=起始角-90°（与 mode3 同为电角度减小）
  *   由调用方在调 ec_precompute_duty() 之前设好 */
 static float s_th1 = 0.0f;
 static float s_th2 = 0.0f;
@@ -156,6 +171,29 @@ static void ec_output_second_segment(void)
     hw_tmr4_pwm_set_duty3(s_alpha_du * 100.0f,
                           s_alpha_dv * 100.0f,
                           s_alpha_dw * 100.0f);
+}
+
+/* mode5 每段电流统计：清零 / 取平均（输出 mA） */
+static void ec_seg_reset(void)
+{
+    s_seg_sum_u = 0.0f;
+    s_seg_sum_v = 0.0f;
+    s_seg_sum_w = 0.0f;
+    s_seg_cnt   = 0u;
+    s_seg_tick  = 0u;
+}
+
+static void ec_seg_snapshot(int32_t dst[3])
+{
+    if (s_seg_cnt == 0u) {
+        dst[0] = 0;
+        dst[1] = 0;
+        dst[2] = 0;
+        return;
+    }
+    dst[0] = (int32_t)(s_seg_sum_u / (float)s_seg_cnt * 1000.0f);
+    dst[1] = (int32_t)(s_seg_sum_v / (float)s_seg_cnt * 1000.0f);
+    dst[2] = (int32_t)(s_seg_sum_w / (float)s_seg_cnt * 1000.0f);
 }
 
 /*=============================================================================
@@ -223,9 +261,9 @@ void EncoderCalib_StartSweep(void)
     g_sweep_idx  = 0u;
     g_sweep_done = 0u;
 
-    /* mode 5：BETA=起始角0，ALPHA=起始角0+90° */
+    /* mode 5：BETA=起始角0，ALPHA=起始角0-90°（与 mode 3 同向） */
     s_th1 = s_sweep_th[0];
-    s_th2 = s_th1 + 1.5707963f;
+    s_th2 = s_th1 - 1.5707963f;
 
     s_hold_ms_l = g_align_hold_ms;
     if (s_hold_ms_l < 20u)    s_hold_ms_l = 20u;
@@ -239,6 +277,7 @@ void EncoderCalib_StartSweep(void)
     g_align_active = 1u;
     hw_tmr4_pwm_resume_output();
     ec_output_first_segment();
+    ec_seg_reset();
 
     s_hold_cnt = 0u;
     s_ec_state = EC_BETA;
@@ -255,6 +294,20 @@ void EncoderCalib_StartSweep(void)
  *=============================================================================*/
 void EncoderCalib_Task20k(void)
 {
+    /* mode5：BETA/ALPHA 段累计三相电流（跳过前 100ms，取后段平均） */
+    if (s_sweep_en) {
+        if ((s_ec_state == EC_BETA) || (s_ec_state == EC_ALPHA)) {
+            s_seg_tick++;
+            if (s_seg_tick > EC_SEG_SKIP_TICKS) {
+                s_seg_sum_u += g_fc_iu;
+                s_seg_sum_v += g_fc_iv;
+                s_seg_sum_w += g_fc_iw;
+                s_seg_cnt++;
+            }
+        }
+        return;   /* sweep 没有 ZERO 阶段 */
+    }
+
     if (s_ec_state != EC_ZERO) {
         return;
     }
@@ -321,6 +374,19 @@ void EncoderCalib_Task1ms(void)
         s_beta_hw_l     = hw_encoder_get_count();
         g_align_beta_hw = s_beta_hw_l;
 
+        /* mode5：结算 BETA 段平均电流，随后清零给 ALPHA 段 */
+        if (s_sweep_en) {
+            int32_t seg_i[3];
+
+            ec_seg_snapshot(seg_i);
+            if (g_sweep_idx < 4u) {
+                g_sweep_i_ma[g_sweep_idx][0] = seg_i[0];
+                g_sweep_i_ma[g_sweep_idx][1] = seg_i[1];
+                g_sweep_i_ma[g_sweep_idx][2] = seg_i[2];
+            }
+            ec_seg_reset();
+        }
+
         /* 切 ALPHA：给 ALPHA 矢量（s_th2，mode3 = 0°） */
         ec_output_second_segment();
 
@@ -344,7 +410,15 @@ void EncoderCalib_Task1ms(void)
 
         if (s_sweep_en) {
             uint8_t idx = g_sweep_idx;
+            int32_t seg_i[3];
+
+            /* 结算 ALPHA 段平均电流 */
+            ec_seg_snapshot(seg_i);
             if (idx < 4u) {
+                g_sweep_i_ma[idx][3] = seg_i[0];
+                g_sweep_i_ma[idx][4] = seg_i[1];
+                g_sweep_i_ma[idx][5] = seg_i[2];
+
                 g_sweep_beta[idx]  = s_beta_hw_l;
                 g_sweep_alpha[idx] = s_alpha_hw_l;
                 g_sweep_moved[idx] = moved;
@@ -354,11 +428,12 @@ void EncoderCalib_Task1ms(void)
             if (idx < 3u) {
                 g_sweep_idx = (uint8_t)(idx + 1u);
 
-                /* 下一段：BETA=下一起始角，ALPHA=BETA+90° */
+                /* 下一段：BETA=下一起始角，ALPHA=BETA-90°（与 mode 3 同向） */
                 s_th1 = s_sweep_th[g_sweep_idx];
-                s_th2 = s_th1 + 1.5707963f;
+                s_th2 = s_th1 - 1.5707963f;
                 ec_precompute_duty(g_align_volt);
                 ec_output_first_segment();
+                ec_seg_reset();
 
                 g_align_evt = EC_EVT_BETA_DONE;
                 s_hold_cnt  = 0u;
@@ -377,12 +452,19 @@ void EncoderCalib_Task1ms(void)
          *   物理：BETA(90°) -> ALPHA(0°)，电角度减小 90°
          *   moved > 0 : 电角度减小对应计数增 -> 计数增=电角度减 -> dir = -1
          *   moved < 0 : 电角度减小对应计数减 -> 计数增=电角度增 -> dir = +1
-         *   （moved == 0 的判据留待对齐判据问题单独处理，本次只统一符号）
+         *   moved == 0 : 转子未动，方向无法判定 -> 判失败，不写 dir
          */
         if (moved > 0) {
+            g_enc_elec_dir = -1;
+        } else if (moved < 0) {
             g_enc_elec_dir = +1;
         } else {
-            g_enc_elec_dir = -1;
+            s_align_ok     = 0u;
+            g_align_evt    = EC_EVT_DONE_FAIL;
+            g_align_active = 0u;
+            s_ec_state     = EC_DONE;
+            MAIN_E("[EC] ALPHA done: moved=0, direction undecidable -> FAIL");
+            return;
         }
 
         {

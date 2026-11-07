@@ -100,7 +100,7 @@ static const MotorSamplingScale_t g_scale = {
 };
 
 /*=============================================================================
- * VOFA+ 数据帧填充 (16ch)
+ * VOFA+ 数据帧填充 (17ch)
  *=============================================================================*/
 extern volatile float    g_fc_iu;
 extern volatile float    g_fc_iv;
@@ -153,7 +153,10 @@ static int Foc_AdcDebug_VofaFill(int32_t *cur)
         cur[15] = c * 1000;
     }
 
-    return 16;
+    /* ch16: IF 强拖电角度（0.001 rad），与 ch13 同单位，可直接对比 */
+    cur[16] = (int32_t)(g_fm_theta_e * 1000.0f);
+
+    return 17;
 }
 
 /*=============================================================================
@@ -457,6 +460,24 @@ int main(void)
                     MAIN_D("[SWEEP] done: moved = %ld, %ld, %ld, %ld",
                            (long)g_sweep_moved[0], (long)g_sweep_moved[1],
                            (long)g_sweep_moved[2], (long)g_sweep_moved[3]);
+
+                    /* 每段 BETA/ALPHA 的三相平均电流（mA），用于核对相序/极性 */
+                    {
+                        int i;
+                        for (i = 0; i < 4; i++) {
+                            MAIN_D("[SWEEP] i%d: BETA th=%lddeg iu=%ld iv=%ld iw=%ld | "
+                                   "ALPHA th=%lddeg iu=%ld iv=%ld iw=%ld",
+                                   i,
+                                   (long)((float)g_sweep_theta[i] * 0.0572958f),
+                                   (long)g_sweep_i_ma[i][0],
+                                   (long)g_sweep_i_ma[i][1],
+                                   (long)g_sweep_i_ma[i][2],
+                                   (long)((float)g_sweep_theta[i] * 0.0572958f) - 90,
+                                   (long)g_sweep_i_ma[i][3],
+                                   (long)g_sweep_i_ma[i][4],
+                                   (long)g_sweep_i_ma[i][5]);
+                        }
+                    }
                 } else if (EncoderCalib_IsAlignOk()) {
                     MAIN_D("[CAL] done: beta=%ld alpha=%ld moved=%ld offset=%ld dir=%d",
                            (long)g_align_beta_hw, (long)g_align_alpha_hw,
@@ -526,38 +547,39 @@ int main(void)
             }
         }
 
-        /* CURRENT 编码器失效监测 */
+        /* CURRENT 关键变量周期打印（10ms 一次，观察过流前的状态） */
         if (g_mode_cmd == 4) {
-            static int32_t  s_last_enc      = 0;
-            static uint32_t s_still_cnt     = 0;
-            static bool     s_cl_mon_init   = false;
+            static uint32_t s_last_cl_log_ms = 0;
+            uint32_t now_ms = tickTimer_GetCount();
 
-            if (!s_cl_mon_init) {
-                s_last_enc    = g_fc_enc_count;
-                s_still_cnt   = 0;
-                s_cl_mon_init = true;
-            }
-
-            if (g_fc_enc_count == s_last_enc) {
-                s_still_cnt++;
-            } else {
-                s_still_cnt = 0;
-                s_last_enc  = g_fc_enc_count;
-            }
-
-            if ((s_still_cnt > 100u) &&
-                (fabsf((float)g_cl_iq_ref_ma) > 50.0f) &&
-                (fabsf(g_fc_iq - (float)g_cl_iq_ref_ma / 1000.0f) > 0.5f)) {
-                MAIN_E("[CL] encoder may be dead: cnt still, iq_ref_mA=%ld iq_fb_mA=%ld",
-                       (long)g_cl_iq_ref_ma, (long)(g_fc_iq * 1000.0f));
+            if ((now_ms - s_last_cl_log_ms) >= 10u) {
+                s_last_cl_log_ms = now_ms;
+                MAIN_D("[CL] fp=%d flt=0x%08lX trip=%lu "
+                       "iq_r=%ld iq=%ld id=%ld iu=%ld iv=%ld iw=%ld "
+                       "th=%ld cnt=%ld dcnt=%ld spd=%ld vraw=%ld lim=%ld",
+                       (int)g_fp_state,
+                       (unsigned long)g_fp_fault,
+                       (unsigned long)g_fp_trip_cnt,
+                       (long)g_cl_iq_ref_ma,
+                       (long)(g_fc_iq * 1000.0f),
+                       (long)(g_fc_id * 1000.0f),
+                       (long)(g_fc_iu * 1000.0f),
+                       (long)(g_fc_iv * 1000.0f),
+                       (long)(g_fc_iw * 1000.0f),
+                       (long)g_fc_enc_elec_deg,
+                       (long)g_fc_enc_count,
+                       (long)g_fc_enc_delta,
+                       (long)g_fc_enc_speed_rpm,
+                       (long)(g_cl_vmag_raw * 100.0f),
+                       (long)g_cl_limit_reason);
             }
         }
 
-        /* VOFA 数据发送（非阻塞，16 通道） */
+        /* VOFA 数据发送（非阻塞，17 通道：ch0~15 原有 + ch16 IF 强拖角度） */
         if (!Usart3_Vofa_IsTxBusy() && g_vofa_adc_debug != 0) {
-            int32_t cur[16];
+            int32_t cur[17];
             Foc_AdcDebug_VofaFill(cur);
-            Usart3_Vofa_SendScaled(cur, 16, USART3_VOFA_SCALE_MILLI);
+            Usart3_Vofa_SendScaled(cur, 17, USART3_VOFA_SCALE_MILLI);
         }
     }
 }

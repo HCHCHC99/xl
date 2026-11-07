@@ -120,6 +120,7 @@
         <SetRegEntry>
           <Number>0</Number>
           <Key>DLGUARM</Key>
+          <Name>桡?I</Name>
         </SetRegEntry>
         <SetRegEntry>
           <Number>0</Number>
@@ -325,6 +326,31 @@
           <count>5</count>
           <WinNumber>2</WinNumber>
           <ItemText>g_ol_vq_mv,0x0A</ItemText>
+        </Ww>
+        <Ww>
+          <count>6</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_align_hold_ms,0x0A</ItemText>
+        </Ww>
+        <Ww>
+          <count>7</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_align_volt</ItemText>
+        </Ww>
+        <Ww>
+          <count>8</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_motor_is_aligned</ItemText>
+        </Ww>
+        <Ww>
+          <count>9</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_motor_is_dir</ItemText>
+        </Ww>
+        <Ww>
+          <count>10</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_fc_iq</ItemText>
         </Ww>
       </WatchWindow2>
       <Tracepoint>

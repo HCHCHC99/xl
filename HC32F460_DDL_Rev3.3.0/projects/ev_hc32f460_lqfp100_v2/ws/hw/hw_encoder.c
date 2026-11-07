@@ -156,7 +156,9 @@ void hw_encoder_update_count_from_isr(void)
     g_enc_count_f = (float)s_count;
 }
 
-/* 机械角 [0, 2π) */
+/* 机械角 [0, 2π)
+ *   计数方向由编码器接线决定；为与电角度（FOC 正方向）一致，
+ *   dir<0 时机械角取 2π - c，使"正向旋转"下机械角与电角度同向增大 */
 float hw_encoder_get_mech_angle_rad(void)
 {
     int32_t c = s_count % (int32_t)ENCODER_CPR;
@@ -164,6 +166,14 @@ float hw_encoder_get_mech_angle_rad(void)
     if (c < 0) {
         c += (int32_t)ENCODER_CPR;
     }
+
+    if (g_enc_elec_dir < 0) {
+        c = (int32_t)ENCODER_CPR - c;
+        if (c >= (int32_t)ENCODER_CPR) {
+            c -= (int32_t)ENCODER_CPR;
+        }
+    }
+
     return (float)c * (ENC_TWO_PI / (float)ENCODER_CPR);
 }
 
@@ -237,6 +247,10 @@ void hw_encoder_update(void)
     if (s_us_sum >= ENC_SPEED_WIN_US) {
         float rpm = (float)s_cnt_sum * 60000000.0f
                   / ((float)s_us_sum * (float)ENCODER_CPR);
+
+        /* 与电角度同一正方向：dir<0 时计数增对应电角度减，速度取反 */
+        rpm *= (float)g_enc_elec_dir;
+
         s_speed_rpm += ENC_SPEED_ALPHA * (rpm - s_speed_rpm);
 
         if (s_dir == 0) {
