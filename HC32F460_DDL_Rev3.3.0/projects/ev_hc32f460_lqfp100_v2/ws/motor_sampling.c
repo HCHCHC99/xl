@@ -242,15 +242,15 @@ bool Motor_Sampling_IsOffsetCalDone(void)
     return (s_cal_active == 0u) && (s_cal_cnt >= FP_CAL_SAMPLES);
 }
 
-void Motor_Sampling_ApplyOffsetCal(void)
+bool Motor_Sampling_ApplyOffsetCalSilent(void)
 {
     uint32_t n;
     uint16_t off_i, off_w, off_v;
 
-    if (!Motor_Sampling_IsOffsetCalDone()) return;
+    if (!Motor_Sampling_IsOffsetCalDone()) return false;
 
     n = s_cal_cnt;
-    if (n == 0u) return;
+    if (n == 0u) return false;
 
     off_i = (uint16_t)((s_cal_sum_itotal + n / 2u) / n);
     off_w = (uint16_t)((s_cal_sum_iw     + n / 2u) / n);
@@ -264,14 +264,21 @@ void Motor_Sampling_ApplyOffsetCal(void)
     s_scale.current_offset[1] = (float)off_w;
     s_scale.current_offset[2] = (float)off_v;
 
-    MAIN_D("[CAL] done: N=%lu", (unsigned long)n);
+    return true;
+}
+
+void Motor_Sampling_ApplyOffsetCal(void)
+{
+    if (!Motor_Sampling_ApplyOffsetCalSilent()) return;
+
+    MAIN_D("[CAL] done: N=%lu", (unsigned long)s_cal_cnt);
 #if (CFG_SAMPLING_BOARD_IU_SENSOR)
-    MAIN_D("[CAL]   iu    : raw=%4u", (unsigned)off_i);
+    MAIN_D("[CAL]   iu    : raw=%4u", (unsigned)g_cal_offset_itotal);
 #else
-    MAIN_D("[CAL]   itotal: raw=%4u", (unsigned)off_i);
+    MAIN_D("[CAL]   itotal: raw=%4u", (unsigned)g_cal_offset_itotal);
 #endif
-    MAIN_D("[CAL]   iw    : raw=%4u", (unsigned)off_w);
-    MAIN_D("[CAL]   iv    : raw=%4u", (unsigned)off_v);
+    MAIN_D("[CAL]   iw    : raw=%4u", (unsigned)g_cal_offset_iw);
+    MAIN_D("[CAL]   iv    : raw=%4u", (unsigned)g_cal_offset_iv);
 }
 
 bool Motor_Sampling_DoOffsetCalBlocking(uint32_t timeout_ms)

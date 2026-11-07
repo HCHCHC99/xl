@@ -63,15 +63,15 @@
 /*=============================================================================
  * Watch 可写变量
  *=============================================================================*/
-volatile int32_t  g_mode_cmd       = 0;      /* 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP */
+volatile int32_t  g_mode_cmd       = 0;      /* 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV */
 volatile int32_t  g_ol_freq_mhz    = 700;
 volatile int32_t  g_ol_vq_mv       = 700;
 volatile int32_t  g_vofa_adc_debug = 1;
 
 volatile int32_t  g_cl_id_ref_ma   = 0;
-volatile int32_t  g_cl_iq_ref_ma   = 500;
-volatile float    g_cl_kp          = 0.1f;
-volatile float    g_cl_ki          = 10.0f;
+volatile int32_t  g_cl_iq_ref_ma   = 1500;
+volatile float    g_cl_kp          = 0.27f;
+volatile float    g_cl_ki          = 630.0f;
 volatile float    g_cl_kd          = 0.0f;
 
 volatile int32_t  g_cl_limit_reason = 0;
@@ -334,8 +334,8 @@ int main(void)
     /* ---- 7. 上电零偏校准 ---- */
     (void)PowerOn_OffsetCal();
 
-    MAIN_D(" Ready! g_mode_cmd: 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP");
-    MAIN_D(" Mode 3 = align (ZERO->BETA->ALPHA), Mode 4 = current, Mode 5 = sweep.");
+    MAIN_D(" Ready! g_mode_cmd: 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP");
+    MAIN_D(" Mode 3 = align, Mode 4 = current, Mode 5 = sweep, Mode 6 = rev-count, Mode 7 = ramp-align.");
 
     /* ---- 主循环 ---- */
     while (1) {
@@ -422,6 +422,33 @@ int main(void)
                 s_align_running = 1;
                 break;
 
+            case 6:
+                MAIN_D("[REV] request: fp_state=%d fault=0x%08lX trip_cnt=%lu",
+                       (int)g_fp_state,
+                       (unsigned long)g_fp_fault,
+                       (unsigned long)g_fp_trip_cnt);
+                MAIN_D("[REV] align %lums -> drag %u elec revs -> align %lums",
+                       (unsigned long)g_rev_align_ms,
+                       (unsigned)CFG_MOTOR_POLE_PAIRS,
+                       (unsigned long)g_rev_align_ms);
+                Foc_Mode_SetMode(FOC_MODE_IDLE);
+                EncoderCalib_StartRevMeasure();
+                s_align_running = 1;
+                break;
+
+            case 7:
+                MAIN_D("[CAL7] request: fp_state=%d fault=0x%08lX trip_cnt=%lu",
+                       (int)g_fp_state,
+                       (unsigned long)g_fp_fault,
+                       (unsigned long)g_fp_trip_cnt);
+                MAIN_D("[CAL7] ramp 0->90->0 deg, ramp_ms=%lu hold_ms=%lu",
+                       (unsigned long)g_align_ramp_ms,
+                       (unsigned long)g_align_hold_ms);
+                Foc_Mode_SetMode(FOC_MODE_IDLE);
+                EncoderCalib_StartAlign7();
+                s_align_running = 1;
+                break;
+
             default:
                 Foc_Mode_SetMode(FOC_MODE_IDLE);
                 break;
@@ -478,6 +505,32 @@ int main(void)
                                    (long)g_sweep_i_ma[i][5]);
                         }
                     }
+                } else if (EncoderCalib_IsRevMeasureDone()) {
+                    MAIN_D("[REV] start=%ld end=%ld delta=%ld pp_x100=%ld slip=%u "
+                           "cyc_min=%ld cyc_max=%ld",
+                           (long)g_rev_start_cnt,
+                           (long)g_rev_end_cnt,
+                           (long)g_rev_delta,
+                           (long)(g_rev_pp_meas * 100.0f),
+                           (unsigned)g_rev_slip,
+                           (long)g_rev_cyc_min,
+                           (long)g_rev_cyc_max);
+                    MAIN_D("[REV] pp_meas = CPR*pp_cfg/|delta| = %ld.%02ld",
+                           (long)(g_rev_pp_meas),
+                           (long)((g_rev_pp_meas - (float)(long)g_rev_pp_meas) * 100.0f));
+                } else if (EncoderCalib_IsAlign7Done()) {
+                    if (EncoderCalib_IsAlignOk()) {
+                        MAIN_D("[CAL7] done: beta=%ld alpha=%ld moved=%ld offset=%ld dir=%d",
+                               (long)g_align_beta_hw, (long)g_align_alpha_hw,
+                               (long)g_align_moved, (long)g_align_offset,
+                               (int)g_enc_elec_dir);
+                        MAIN_D("[CAL7] Align OK");
+                    } else {
+                        MAIN_D("[CAL7] failed: beta=%ld alpha=%ld moved=%ld",
+                               (long)g_align_beta_hw, (long)g_align_alpha_hw,
+                               (long)g_align_moved);
+                        MAIN_E("[CAL7] ramp align failed! Check voltage/ramp/hold.");
+                    }
                 } else if (EncoderCalib_IsAlignOk()) {
                     MAIN_D("[CAL] done: beta=%ld alpha=%ld moved=%ld offset=%ld dir=%d",
                            (long)g_align_beta_hw, (long)g_align_alpha_hw,
@@ -518,6 +571,15 @@ int main(void)
             if (g_cl_vmax_watch != s_last_vmax) {
                 s_last_vmax = g_cl_vmax_watch;
                 Foc_CurrentLoop_SetVmax(g_cl_vmax_watch);
+            }
+        }
+
+        /* 积分项限幅在线同步 */
+        {
+            static float s_last_iterm = 0.0f;
+            if (g_cl_iterm_max_watch != s_last_iterm) {
+                s_last_iterm = g_cl_iterm_max_watch;
+                Foc_CurrentLoop_SetITermMax(g_cl_iterm_max_watch);
             }
         }
 

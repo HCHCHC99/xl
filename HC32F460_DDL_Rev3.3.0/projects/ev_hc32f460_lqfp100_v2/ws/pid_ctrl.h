@@ -119,6 +119,7 @@ struct pid_priv {
 	float		out_max;
 	float		out_min;
 	float		back_gain;
+	float		i_term_max;	/* 积分项（ki*integral）输出限幅，0 = 不限 */
 
 	float		setpoint;
 	float		feedback;
@@ -154,6 +155,7 @@ struct pid_ops {
 	int	(*set_diff_filter)(struct pid_priv *priv, float alpha);
 	int	(*set_limit)(struct pid_priv *priv, float out_min, float out_max,
 			     float back_gain);
+	int	(*set_iterm_limit)(struct pid_priv *priv, float i_term_max);
 	int	(*set_ref)(struct pid_priv *priv, float ref);
 
 	/*

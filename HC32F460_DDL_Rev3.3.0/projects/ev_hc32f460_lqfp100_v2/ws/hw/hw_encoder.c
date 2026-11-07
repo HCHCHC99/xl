@@ -201,20 +201,19 @@ float hw_encoder_get_elec_angle_rad(uint8_t pole_pairs)
 
     e = (float)c * (ENC_TWO_PI / (float)ENCODER_CPR) * (float)pole_pairs;
 
-    /* 方向翻转：-1 时 e -> 2π - e */
+    /* 方向翻转：-1 时取反。必须先翻转再折叠，
+     * 否则 c 较大时 e 变成大负数，只加一次 2π 折不回来 */
     if (g_enc_elec_dir < 0) {
-        e = ENC_TWO_PI - e;
+        e = -e;
     }
 
-    /* 折回 [0, 2π) */
-    if (e >= ENC_TWO_PI) {
-        e -= ENC_TWO_PI * (float)(int32_t)(e * (1.0f / ENC_TWO_PI));
-        if (e >= ENC_TWO_PI) {
-            e -= ENC_TWO_PI;
-        }
-    }
+    /* 恒定时间折回 [0, 2π) */
+    e -= ENC_TWO_PI * (float)(int32_t)(e * (1.0f / ENC_TWO_PI));
     if (e < 0.0f) {
         e += ENC_TWO_PI;
+    }
+    if (e >= ENC_TWO_PI) {
+        e -= ENC_TWO_PI;
     }
     return e;
 }

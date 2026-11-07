@@ -38,6 +38,7 @@ static void pid_priv_clear(struct pid_priv *priv)
 	priv->out_max		= 1.0f;
 	priv->out_min		= -1.0f;
 	priv->back_gain		= 0.8f;
+	priv->i_term_max	= 0.0f;
 	priv->setpoint		= 0.0f;
 	priv->feedback		= 0.0f;
 	priv->err		= 0.0f;
@@ -155,6 +156,27 @@ static int pid_set_limit(struct pid_priv *priv, float out_min, float out_max,
 }
 
 /**
+ * pid_set_iterm_limit() - 设置积分项输出限幅（ki*integral，单位与控制量一致）
+ * @priv:	PID 私有结构体
+ * @i_term_max:	积分项电压限幅，0 = 不限
+ *
+ * 返回 0 成功，-1 参数非法。
+ */
+static int pid_set_iterm_limit(struct pid_priv *priv, float i_term_max)
+{
+	if (!priv)
+		return -1;
+	if (i_term_max < 0.0f)
+		return -1;
+
+	PID_LOCK(&priv->lock);
+	priv->i_term_max = i_term_max;
+	PID_UNLOCK(&priv->lock);
+
+	return 0;
+}
+
+/**
  * pid_set_ref() - 单独设置目标给定
  * @priv:	PID 私有结构体
  * @ref:	目标值
@@ -215,6 +237,7 @@ static float pid_calc(struct pid_priv *priv, float fb, float ref,
 	float pid_out   = 0.0f;
 	float ff_out    = 0.0f;
 	float final_out;
+	float i_term    = 0.0f;
 	bool  saturated = false;
 
 	if (!priv)
@@ -238,11 +261,22 @@ static float pid_calc(struct pid_priv *priv, float fb, float ref,
 		priv->diff_filtered = priv->diff_alpha * priv->diff_raw
 				    + (1.0f - priv->diff_alpha) * priv->diff_filtered;
 
-		/* 积分累加（含 dt 因子） */
+		/* 积分累加（含 dt 因子），并对 I 项输出做限幅 */
 		priv->integral += priv->err * dt;
 
+		i_term = priv->ki * priv->integral;
+		if ((priv->i_term_max > 0.0f) && (priv->ki > 0.0f)) {
+			if (i_term > priv->i_term_max) {
+				i_term = priv->i_term_max;
+				priv->integral = i_term / priv->ki;
+			} else if (i_term < -priv->i_term_max) {
+				i_term = -priv->i_term_max;
+				priv->integral = i_term / priv->ki;
+			}
+		}
+
 		pid_out = priv->kp * priv->err
-			+ priv->ki * priv->integral
+			+ i_term
 			+ priv->kd * priv->diff_filtered;
 	} else {
 		float delta_err = priv->err - priv->err_last;
@@ -323,6 +357,7 @@ static const struct pid_ops pid_default_ops = {
 	.set_feedforward = pid_set_feedforward,
 	.set_diff_filter = pid_set_diff_filter,
 	.set_limit	 = pid_set_limit,
+	.set_iterm_limit = pid_set_iterm_limit,
 	.set_ref	 = pid_set_ref,
 	.calc		 = pid_calc,
 	.get_raw_output	 = pid_get_raw_output,

@@ -65,6 +65,10 @@ void Motor_Sampling_StartOffsetCal(void);
 bool Motor_Sampling_IsOffsetCalDone(void);
 void Motor_Sampling_ApplyOffsetCal(void);
 
+/* 非打印版：校准完成后静默更新零偏，可在 ISR 内调用。
+ * 返回 true = 本次已应用（或应用成功）。 */
+bool Motor_Sampling_ApplyOffsetCalSilent(void);
+
 /* 
  * 阻塞式零电流校准：包含 启动校准等待采样满应用校准值超时保护
  * timeout_ms: 超时时间（建议 200ms，理论需要 100ms）

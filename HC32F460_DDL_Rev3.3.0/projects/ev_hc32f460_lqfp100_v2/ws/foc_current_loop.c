@@ -23,6 +23,7 @@
 #include "cfg_sampling.h"
 #include "clarke_park.h"     /* ONE_DIV_SQRT3_F */
 #include "foc_protect.h"     /* g_fp_state, FP_STATE_NORMAL */
+#include "motor_sampling.h"  /* 进 mode4 时做 PWM 在线零偏校准 */
 #include "rtt_log.h"
 
 #include <math.h>            /* sqrtf */
@@ -33,6 +34,8 @@
  *=============================================================================*/
 volatile float    g_cl_ref_slew     = CL_REF_SLEW_INIT;
 volatile float    g_cl_vq_slew      = CL_VQ_SLEW_INIT;
+volatile float    g_cl_fb_alpha     = CL_FB_ALPHA_INIT;
+volatile float    g_cl_iterm_max_watch = CL_ITERM_MAX_INIT;
 volatile uint16_t g_cl_warmup_ticks = CL_WARMUP_INIT;
 volatile float    g_cl_iref_max     = CL_IREF_MAX_INIT;
 volatile float    g_cl_vmax_watch   = CL_VMAX_INIT;
@@ -41,10 +44,13 @@ volatile float    g_cl_vmax_watch   = CL_VMAX_INIT;
  * 编译期常量（不需要在线调的）
  *---------------------------------------------------------------------------*/
 #define CL_DT_S              (1.0f / 20000.0f)   /* 20kHz ISR 周期 */
-#define CL_VLIM_RATIO        0.9f                /* PID 限幅 = vmax*0.9 */
+#define CL_VLIM_RATIO        1.0f                /* PID 限幅 = vmax（参考工程 ±3.5V） */
 
 /* 受限告警阈值：4000 拍 = 200ms */
 #define CL_SAT_WARN_TICKS    4000u
+
+/* mode4 进环前在 50/50 零矢量下重校电流零偏的超时（6000 拍 = 300ms） */
+#define CL_OFFCAL_TIMEOUT_TICKS  6000u
 
 /*---------------------------------------------------------------------------
  * 静态实例
@@ -74,8 +80,16 @@ static volatile float             s_vmag_raw     = 0.0f;
 /* 输出斜率限制上一拍 vq */
 static float s_vq_prev = 0.0f;
 
+/* id/iq 反馈 EMA 状态 */
+static float s_id_f = 0.0f;
+static float s_iq_f = 0.0f;
+
 /* 进入预热计数 */
 static uint16_t s_warmup_cnt = 0u;
+
+/* 进 mode4 时的 PWM 在线零偏校准状态 */
+static uint8_t  s_offcal_done  = 0u;
+static uint32_t s_offcal_ticks = 0u;
 
 /*---------------------------------------------------------------------------
  * L5 反馈镜像
@@ -157,6 +171,9 @@ void Foc_CurrentLoop_Init(void)
     (void)s_pid_d.ops->set_limit(&s_priv_d, -s_vlim, s_vlim, CL_BACK_GAIN_INIT);
     (void)s_pid_q.ops->set_limit(&s_priv_q, -s_vlim, s_vlim, CL_BACK_GAIN_INIT);
 
+    (void)s_pid_d.ops->set_iterm_limit(&s_priv_d, g_cl_iterm_max_watch);
+    (void)s_pid_q.ops->set_iterm_limit(&s_priv_q, g_cl_iterm_max_watch);
+
     (void)s_pid_d.ops->set_diff_filter(&s_priv_d, CL_DIFF_ALPHA_INIT);
     (void)s_pid_q.ops->set_diff_filter(&s_priv_q, CL_DIFF_ALPHA_INIT);
 
@@ -171,12 +188,16 @@ void Foc_CurrentLoop_Init(void)
     s_sat_cnt        = 0u;
     s_vmag_raw       = 0.0f;
     s_vq_prev        = 0.0f;
+    s_id_f           = 0.0f;
+    s_iq_f           = 0.0f;
     s_warmup_cnt     = 0u;
+    s_offcal_done    = 1u;   /* 未进 CURRENT 前不做在线校准 */
+    s_offcal_ticks   = 0u;
     s_ready          = true;
 
     MAIN_D("[CL] current loop ready: vmax_x100=%ld vlim_x100=%ld dt_us_x10=%ld "
            "kp_x10000=%ld ki_x100=%ld ref_slew_x1e6=%ld vq_slew_x1e6=%ld "
-           "warmup=%u iref_max_x100=%ld",
+           "iterm_x100=%ld fb_alpha_x100=%ld warmup=%u iref_max_x100=%ld",
            (long)(s_vmax * 100.0f),
            (long)(s_vlim * 100.0f),
            (long)(CL_DT_S * 1e6f * 10.0f),
@@ -184,6 +205,8 @@ void Foc_CurrentLoop_Init(void)
            (long)(CL_KI_INIT * 100.0f),
            (long)(g_cl_ref_slew * 1000000.0f),
            (long)(g_cl_vq_slew  * 1000000.0f),
+           (long)(g_cl_iterm_max_watch * 100.0f),
+           (long)(g_cl_fb_alpha * 100.0f),
            (unsigned)g_cl_warmup_ticks,
            (long)(g_cl_iref_max * 100.0f));
 }
@@ -205,7 +228,19 @@ void Foc_CurrentLoop_Reset(void)
     s_sat_cnt       = 0u;
     s_vmag_raw      = 0.0f;
     s_vq_prev       = 0.0f;
+    s_id_f          = 0.0f;
+    s_iq_f          = 0.0f;
     s_warmup_cnt    = 0u;   /* 重新预热，用当前 g_cl_warmup_ticks */
+
+    /* 进 CURRENT 后在 50/50 零矢量窗口重校三相电流零偏，
+     * 消除上电（PWM 关闭）校准与运行中采样点之间的偏置差。
+     * 转子还在明显转动时不重校，避免把真实电流当成零偏。 */
+    s_offcal_done   = 1u;
+    s_offcal_ticks  = 0u;
+    if (fabsf(hw_encoder_get_speed_rpm()) < 50.0f) {
+        s_offcal_done = 0u;
+        Motor_Sampling_StartOffsetCal();
+    }
 }
 
 /*=============================================================================
@@ -229,6 +264,19 @@ void Foc_CurrentLoop_SetGains(float kp, float ki, float kd)
     }
     (void)s_pid_d.ops->set_param(&s_priv_d, kp, ki, kd);
     (void)s_pid_q.ops->set_param(&s_priv_q, kp, ki, kd);
+}
+
+void Foc_CurrentLoop_SetITermMax(float v)
+{
+    if (v < 0.0f) {
+        v = 0.0f;
+    }
+    g_cl_iterm_max_watch = v;
+    if (!s_ready) {
+        return;
+    }
+    (void)s_pid_d.ops->set_iterm_limit(&s_priv_d, v);
+    (void)s_pid_q.ops->set_iterm_limit(&s_priv_q, v);
 }
 
 void Foc_CurrentLoop_SetVmax(float vmax_v)
@@ -263,19 +311,43 @@ void Foc_CurrentLoop_Step(float *vd, float *vq, float *theta_e)
 
     th = hw_encoder_get_elec_angle_rad(CFG_MOTOR_POLE_PAIRS);
 
-    /* ---- 进入预热：前 N 拍强制零输出，等 PWM/反馈稳定 ---- */
-    if (s_warmup_cnt < g_cl_warmup_ticks) {
-        s_warmup_cnt++;
+    /* ---- 进入预热：零矢量 + PWM 在线零偏校准 ---- */
+    if ((s_warmup_cnt < g_cl_warmup_ticks) || (!s_offcal_done)) {
+        if (s_warmup_cnt < g_cl_warmup_ticks) {
+            s_warmup_cnt++;
+        }
         s_vq_prev = 0.0f;
         *vd = 0.0f;
         *vq = 0.0f;
         *theta_e = th;
+
+        /* 50/50 零矢量期间累计原始采样，满 2000 点后静默更新零偏 */
+        if (!s_offcal_done) {
+            s_offcal_ticks++;
+            if (Motor_Sampling_ApplyOffsetCalSilent()) {
+                s_offcal_done = 1u;
+            } else if (s_offcal_ticks >= CL_OFFCAL_TIMEOUT_TICKS) {
+                s_offcal_done = 1u;   /* 超时保留上电校准值 */
+            }
+        }
         return;
     }
 
     /* ---- 反馈 ---- */
     fb_d = g_fc_id;
     fb_q = g_fc_iq;
+
+    /* id/iq 反馈 EMA（参考工程 FOC_CUR_FB_ALPHA=0.3，1 = 关闭） */
+    {
+        float a = g_cl_fb_alpha;
+
+        if (a < 0.0f) a = 0.0f;
+        if (a > 1.0f) a = 1.0f;
+        s_id_f += a * (fb_d - s_id_f);
+        s_iq_f += a * (fb_q - s_iq_f);
+        fb_d = s_id_f;
+        fb_q = s_iq_f;
+    }
 
     /* ---- ref 斜坡：目标 -> 实际，防电流阶跃冲击 ---- */
     s_id_ref_ramped = cl_ramp(s_id_ref, s_id_ref_ramped, g_cl_ref_slew);

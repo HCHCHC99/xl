@@ -46,7 +46,6 @@
 #define CFG_SAMPLING_CURRENT_SCALE    ((CFG_SAMPLING_CURRENT_SIGN) * (3.3f / 4095.0f) / (CFG_SAMPLING_IU_GAIN * CFG_SAMPLING_IU_SHUNT_OHM))  /* ≈-0.006716 A/LSB */
 #define CFG_SAMPLING_CURRENT_OFFSET   (CFG_SAMPLING_IU_ZERO_V * 4095.0f / 3.3f)                                /* ≈1551 LSB */
 #else
-#define CFG_SAMPLING_CURRENT_SIGN     (1.0f)
 #define CFG_SAMPLING_CURRENT_SCALE    (3.3f / 4096.0f / 0.0264f)   /* A / LSB */
 #define CFG_SAMPLING_CURRENT_OFFSET   2048.0f                       /* LSB = 1650 mV */
 #endif

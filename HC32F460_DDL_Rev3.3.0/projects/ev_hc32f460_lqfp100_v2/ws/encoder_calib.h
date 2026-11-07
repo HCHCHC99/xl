@@ -30,6 +30,14 @@ uint8_t EncoderCalib_IsAlignOk(void);
 void    EncoderCalib_StartSweep(void);
 uint8_t EncoderCalib_IsSweepDone(void);
 
+/* ---- 一圈计数测量（mode 6）---- */
+void    EncoderCalib_StartRevMeasure(void);
+uint8_t EncoderCalib_IsRevMeasureDone(void);
+
+/* ---- 斜坡对齐（mode 7）：0°->90° 慢转，再 90°->0° 慢转 ---- */
+void    EncoderCalib_StartAlign7(void);
+uint8_t EncoderCalib_IsAlign7Done(void);
+
 /* ---- 共用 ---- */
 void    EncoderCalib_Task20k(void);   /* 20kHz ISR 调用：ZERO 阶段零偏采样 */
 void    EncoderCalib_Task1ms(void);   /* 1ms 中断调用：BETA/ALPHA 保持计时 */
@@ -53,6 +61,8 @@ extern volatile uint8_t g_motor_is_aligned;
 extern volatile float    g_align_volt;       /* 强拖电压幅值 V，默认 0.6 */
 extern volatile float    g_align_theta;      /* mode 5 扫角用；mode 3 固定 90° */
 extern volatile uint32_t g_align_hold_ms;    /* BETA/ALPHA 保持时间 ms，默认 200 */
+extern volatile uint32_t g_align_ramp_ms;    /* mode7 斜坡时间 ms，默认 500 */
+extern volatile uint8_t  g_a7_done;          /* mode7 完成标志 */
 
 extern volatile int32_t  g_align_zero_u_ma;  /* ZERO 阶段 U 相残余零位（mA） */
 extern volatile int32_t  g_align_zero_v_ma;
@@ -77,6 +87,23 @@ extern volatile uint8_t  g_sweep_done;
  *   [idx][0..2] = BETA 段 iu, iv, iw
  *   [idx][3..5] = ALPHA 段 iu, iv, iw */
 extern volatile int32_t  g_sweep_i_ma[4][6];
+
+/* mode6 一圈计数测量：对齐1s -> 强拖 pp_cfg*360° -> 对齐1s
+ *   delta    = 结束计数 - 开始计数（累加计数，可为负）
+ *   pp_meas  = CPR * pp_cfg / |delta|（实际极对数估计）
+ *   slip=1   = 每个电周期计数增量差异过大，疑似失步，结果不可信 */
+extern volatile float    g_rev_volt;
+extern volatile float    g_rev_freq_hz;
+extern volatile uint32_t g_rev_align_ms;
+extern volatile uint32_t g_rev_ramp_ms;
+extern volatile int32_t  g_rev_start_cnt;
+extern volatile int32_t  g_rev_end_cnt;
+extern volatile int32_t  g_rev_delta;
+extern volatile float    g_rev_pp_meas;
+extern volatile int32_t  g_rev_cyc_min;
+extern volatile int32_t  g_rev_cyc_max;
+extern volatile uint8_t  g_rev_done;
+extern volatile uint8_t  g_rev_slip;
 
 #ifdef __cplusplus
 }

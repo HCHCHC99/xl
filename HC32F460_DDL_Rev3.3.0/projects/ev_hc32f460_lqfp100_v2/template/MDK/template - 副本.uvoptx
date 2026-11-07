@@ -120,7 +120,6 @@
         <SetRegEntry>
           <Number>0</Number>
           <Key>DLGUARM</Key>
-          <Name>桡?I</Name>
         </SetRegEntry>
         <SetRegEntry>
           <Number>0</Number>
@@ -351,6 +350,31 @@
           <count>10</count>
           <WinNumber>2</WinNumber>
           <ItemText>g_fc_iq</ItemText>
+        </Ww>
+        <Ww>
+          <count>11</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_align_hold_ms,0x0A</ItemText>
+        </Ww>
+        <Ww>
+          <count>12</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_align_volt</ItemText>
+        </Ww>
+        <Ww>
+          <count>13</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_cl_iq_ref_ma,0x0A</ItemText>
+        </Ww>
+        <Ww>
+          <count>14</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_cl_kp</ItemText>
+        </Ww>
+        <Ww>
+          <count>15</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_cl_ki</ItemText>
         </Ww>
       </WatchWindow2>
       <Tracepoint>

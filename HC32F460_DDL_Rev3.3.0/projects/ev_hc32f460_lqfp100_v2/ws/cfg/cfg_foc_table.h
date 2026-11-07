@@ -63,7 +63,7 @@ typedef enum {
 #define FOC_CFG_2_PWM_FREQ      20000u
 #define FOC_CFG_2_OUTPUT_TYPE   TMR4_OUTPUT_COMPLEMENTARY
 #define FOC_CFG_2_SAMPLE_POINT  CFG_SAMPLE_LOWER
-#define FOC_CFG_2_DEADTIME_NS   500u
+#define FOC_CFG_2_DEADTIME_NS   50u
 #define FOC_CFG_2_ACTIVE_HIGH   true
 
 /* ---- 配置 3：10kHz 同相 下桥臂采样 ---- */

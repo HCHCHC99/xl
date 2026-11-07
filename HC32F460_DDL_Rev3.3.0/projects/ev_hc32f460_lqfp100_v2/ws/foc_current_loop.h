@@ -40,31 +40,46 @@ extern "C" {
  *=============================================================================*/
 
 /* ref 斜坡：每拍 ref 最大变化量（A/拍）。
- *   20kHz 下 0.001A/拍 = 20A/s；0→1A 需 50ms。
- *   推杆可更慢：0.0005A/拍 = 10A/s；设 0 关闭斜坡。 */
-#define CL_REF_SLEW_INIT      0.0001f
+ *   20kHz 下 0.00005A/拍 = 1A/s（参考工程 FOC31_IQ_RAMP_MA_S=1000mA/s）。
+ *   设 0 关闭斜坡。 */
+#define CL_REF_SLEW_INIT      0.00005f
 
 /* 输出斜率限制：每拍 vq 最大变化量（V/拍）。
- *   20kHz 下 0.005V/拍 = 100V/s；设 0 关闭。 */
-#define CL_VQ_SLEW_INIT       0.005f
+ *   参考工程的 PI 输出无斜率限制，默认置 0 关闭；
+ *   需要抑制机械冲击时可在 Watch 中临时加大。 */
+#define CL_VQ_SLEW_INIT       0.0f
 
-/* 进入预热拍数：100 拍 = 5ms，期间强制 vd=vq=0。
+/* 进入预热拍数：4200 拍 = 210ms（与参考工程零矢量校准窗口一致），
+ *   期间强制 vd=vq=0，让电流/PWM 稳定后再闭环。
  *   运行中改只影响下一次 Foc_CurrentLoop_Reset 后的进入。 */
 #define CL_WARMUP_INIT        4200u
 
 /* 目标电流 clamp 上限（A），SetRef 内部用 */
 #define CL_IREF_MAX_INIT      50.0f
 
-/* 物理电压上限（V），默认 12/√3≈6.928V。
+/* 物理电压上限（V），与参考工程 FOC31_PI_UMAX_V=3.5V 一致。
+ *   PID 输出限幅 = vmax × 1.0（CL_VLIM_RATIO=1.0）。
  *   主循环同步到 Foc_CurrentLoop_SetVmax() 生效。 */
-#define CL_VMAX_INIT          3.9f//6.9282032f
+#define CL_VMAX_INIT          3.5f
 
-/* PID 初值（保守，先能稳住再往上调；ki 量纲见 pid_ctrl.h 提示） */
-#define CL_KP_INIT            0.1f
-#define CL_KI_INIT            10.0f
+/* PID 初值：与参考工程 foc_31_iqpi（同电机 3505-KV650，Rs=0.1Ω，Ls=42.3µH，
+ *   PWM 20kHz）一致：
+ *     kp = 0.27 V/A      -> 电流环带宽 fc ≈ kp/(2π·Ls) ≈ 1kHz
+ *     ki = 630 V/A/s     -> 零极点对消 ki = kp·Rs/Ls
+ *   如振荡，Watch 下调到 kp=0.10 / ki=240（参考工程已验证）。 */
+#define CL_KP_INIT            0.27f
+#define CL_KI_INIT            630.0f
 #define CL_KD_INIT            0.0f
 #define CL_DIFF_ALPHA_INIT    0.2f
-#define CL_BACK_GAIN_INIT     0.8f
+#define CL_BACK_GAIN_INIT     0.0f
+
+/* 积分项（ki*integral）电压限幅，单位 V。
+ *   与参考工程 FOC31_INTEGRAL_MAX=3.0 的意图一致（积分项电压上限 3.0V）；
+ *   参考工程的 dev_pid 实际限制的是积分量 A·s，未真正生效，这里按电压限幅实现。 */
+#define CL_ITERM_MAX_INIT     3.0f
+
+/* id/iq 反馈 EMA 低通系数（1 = 关闭）。参考工程 FOC_CUR_FB_ALPHA=0.3。 */
+#define CL_FB_ALPHA_INIT      0.3f
 
 /*=============================================================================
  * 二、可调参数变量声明（初值在 .c 由上面的宏赋）
@@ -73,6 +88,8 @@ extern "C" {
  *=============================================================================*/
 extern volatile float    g_cl_ref_slew;      /* A/拍，下一拍生效 */
 extern volatile float    g_cl_vq_slew;       /* V/拍，下一拍生效 */
+extern volatile float    g_cl_fb_alpha;      /* id/iq 反馈 EMA，1=关闭 */
+extern volatile float    g_cl_iterm_max_watch; /* 积分项电压限幅 V，主循环同步 */
 extern volatile uint16_t g_cl_warmup_ticks;  /* 拍，下次 Reset 生效 */
 extern volatile float    g_cl_iref_max;      /* A，下一次 SetRef 生效 */
 extern volatile float    g_cl_vmax_watch;    /* V，主循环检测变化后生效 */
@@ -94,6 +111,7 @@ void Foc_CurrentLoop_Init(void);
 void Foc_CurrentLoop_Reset(void);
 void Foc_CurrentLoop_SetRef(float id_ref_a, float iq_ref_a);
 void Foc_CurrentLoop_SetGains(float kp, float ki, float kd);
+void Foc_CurrentLoop_SetITermMax(float v);   /* 积分项电压限幅 V，0=不限 */
 void Foc_CurrentLoop_SetVmax(float vmax_v);
 void Foc_CurrentLoop_Step(float *vd, float *vq, float *theta_e);
 
