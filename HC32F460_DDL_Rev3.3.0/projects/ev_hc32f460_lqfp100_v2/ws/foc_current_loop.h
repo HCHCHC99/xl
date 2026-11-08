@@ -84,6 +84,14 @@ extern "C" {
 /* id/iq 反馈 EMA 低通系数（1 = 关闭）。参考工程 FOC_CUR_FB_ALPHA=0.3。 */
 #define CL_FB_ALPHA_INIT      0.3f
 
+/* dq 解耦 + 反电动势前馈参数（参考工程 mode41 / motor_config.h，同一台 3505 电机）：
+ *   vd_ff = -we * Ls * iq
+ *   vq_ff =  we * Ls * id + we * flux + Rs * iq_ref
+ *   mode8 使用，mode4 保持纯 PI，方便对比。 */
+#define CL_FF_RS_OHM_INIT     0.1f       /* 相电阻 Ω */
+#define CL_FF_LS_UH_INIT      42.3f      /* 相电感 µH */
+#define CL_FF_FLUX_VS_INIT    0.00084f   /* 磁链 V·s（相峰值） */
+
 /*=============================================================================
  * 二、可调参数变量声明（初值在 .c 由上面的宏赋）
  *
@@ -96,6 +104,15 @@ extern volatile float    g_cl_iterm_max_watch; /* 积分项电压限幅 V，主�
 extern volatile uint16_t g_cl_warmup_ticks;  /* 拍，下次 Reset 生效 */
 extern volatile float    g_cl_iref_max;      /* A，下一次 SetRef 生效 */
 extern volatile float    g_cl_vmax_watch;    /* V，主循环检测变化后生效 */
+
+/* dq 解耦 + 反电动势前馈（mode8） */
+extern volatile uint8_t  g_cl_ff_enable;     /* 1 = 开启 */
+extern volatile float    g_cl_ff_rs_ohm;     /* Ω */
+extern volatile float    g_cl_ff_ls_uh;      /* µH */
+extern volatile float    g_cl_ff_flux_vs;    /* V·s */
+extern volatile float    g_cl_we_rad_s;      /* 观测：电角速度 */
+extern volatile float    g_cl_vd_ff;         /* 观测：d 轴前馈 V */
+extern volatile float    g_cl_vq_ff;         /* 观测：q 轴前馈 V */
 
 /*=============================================================================
  * 三、受限原因枚举
@@ -113,12 +130,27 @@ typedef enum {
 void Foc_CurrentLoop_Init(void);
 void Foc_CurrentLoop_Reset(void);
 void Foc_CurrentLoop_SetRef(float id_ref_a, float iq_ref_a);
+
+/* 直接写目标电流：同时把斜坡值同步为目标，绕过 g_cl_ref_slew 斜坡。
+ * 供速度环每 5ms 下发 iq_ref 用，避免 1A/s 斜坡把外环输出拖慢。 */
+void Foc_CurrentLoop_SetRefDirect(float id_ref_a, float iq_ref_a);
+
 void Foc_CurrentLoop_SetGains(float kp, float ki, float kd);
 void Foc_CurrentLoop_SetITermMax(float v);   /* 积分项电压限幅 V，0=不限 */
+void Foc_CurrentLoop_SetFF(uint8_t en);      /* 1 = 开启 dq 解耦/反电动势前馈 */
 void Foc_CurrentLoop_SetVmax(float vmax_v);
+
+/* 一次性下发整套参数：增益 / 电压上限 / 积分项上限 / 反馈 EMA。
+ * 只作用于当前 PID 实例，不改写 g_cl_* Watch 变量，供模式切换用。 */
+void Foc_CurrentLoop_ApplyParams(float kp, float ki, float kd,
+                                 float vmax_v, float iterm_max_v, float fb_alpha);
+
 void Foc_CurrentLoop_Step(float *vd, float *vq, float *theta_e);
 
 bool Foc_CurrentLoop_IsReady(void);
+
+/* 预热与在线零偏校准都已完成、电流环真正闭环中 */
+bool Foc_CurrentLoop_IsActive(void);
 bool Foc_CurrentLoop_IsLimited(void);
 cl_limit_reason_t Foc_CurrentLoop_GetLimitReason(void);
 uint16_t Foc_CurrentLoop_GetSatCnt(void);

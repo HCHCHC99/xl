@@ -1,4 +1,4 @@
-/*=============================================================================
+                                                                                                                                                                                                                                                                                                                                                                                               /*=============================================================================
  * foc_current_loop.c  —  L6.5 电流闭环层实现（力矩模式，有感）
  *
  * 数据流（20kHz ISR）：
@@ -36,6 +36,13 @@ volatile float    g_cl_ref_slew     = CL_REF_SLEW_INIT;
 volatile float    g_cl_vq_slew      = CL_VQ_SLEW_INIT;
 volatile float    g_cl_fb_alpha     = CL_FB_ALPHA_INIT;
 volatile float    g_cl_iterm_max_watch = CL_ITERM_MAX_INIT;
+volatile uint8_t  g_cl_ff_enable   = 0u;
+volatile float    g_cl_ff_rs_ohm   = CL_FF_RS_OHM_INIT;
+volatile float    g_cl_ff_ls_uh    = CL_FF_LS_UH_INIT;
+volatile float    g_cl_ff_flux_vs  = CL_FF_FLUX_VS_INIT;
+volatile float    g_cl_we_rad_s    = 0.0f;
+volatile float    g_cl_vd_ff       = 0.0f;
+volatile float    g_cl_vq_ff       = 0.0f;
 volatile uint16_t g_cl_warmup_ticks = CL_WARMUP_INIT;
 volatile float    g_cl_iref_max     = CL_IREF_MAX_INIT;
 volatile float    g_cl_vmax_watch   = CL_VMAX_INIT;
@@ -45,6 +52,7 @@ volatile float    g_cl_vmax_watch   = CL_VMAX_INIT;
  *---------------------------------------------------------------------------*/
 #define CL_DT_S              (1.0f / 20000.0f)   /* 20kHz ISR 周期 */
 #define CL_VLIM_RATIO        1.0f                /* PID 限幅 = vmax（参考工程 ±3.5V） */
+#define CL_TWO_PI            6.28318530f
 
 /* 受限告警阈值：4000 拍 = 200ms */
 #define CL_SAT_WARN_TICKS    4000u
@@ -138,6 +146,19 @@ static float cl_ramp(float target, float current, float slew)
     if (target > current + slew) return current + slew;
     if (target < current - slew) return current - slew;
     return target;
+}
+
+/* 积分项限幅只作用于 PID 实例，不改写 g_cl_iterm_max_watch */
+static void cl_set_iterm(float v)
+{
+    if (v < 0.0f) {
+        v = 0.0f;
+    }
+    if (!s_ready) {
+        return;
+    }
+    (void)s_pid_d.ops->set_iterm_limit(&s_priv_d, v);
+    (void)s_pid_q.ops->set_iterm_limit(&s_priv_q, v);
 }
 
 /*=============================================================================
@@ -257,6 +278,19 @@ void Foc_CurrentLoop_SetRef(float id_ref_a, float iq_ref_a)
     s_iq_ref = cl_clampf(iq_ref_a, -lim, lim);
 }
 
+void Foc_CurrentLoop_SetRefDirect(float id_ref_a, float iq_ref_a)
+{
+    float lim = g_cl_iref_max;
+
+    if (lim < 0.0f) {
+        lim = 0.0f;
+    }
+    s_id_ref        = cl_clampf(id_ref_a, -lim, lim);
+    s_iq_ref        = cl_clampf(iq_ref_a, -lim, lim);
+    s_id_ref_ramped = s_id_ref;
+    s_iq_ref_ramped = s_iq_ref;
+}
+
 void Foc_CurrentLoop_SetGains(float kp, float ki, float kd)
 {
     if (!s_ready) {
@@ -268,15 +302,12 @@ void Foc_CurrentLoop_SetGains(float kp, float ki, float kd)
 
 void Foc_CurrentLoop_SetITermMax(float v)
 {
-    if (v < 0.0f) {
-        v = 0.0f;
-    }
-    g_cl_iterm_max_watch = v;
-    if (!s_ready) {
-        return;
-    }
-    (void)s_pid_d.ops->set_iterm_limit(&s_priv_d, v);
-    (void)s_pid_q.ops->set_iterm_limit(&s_priv_q, v);
+    cl_set_iterm(v);
+}
+
+void Foc_CurrentLoop_SetFF(uint8_t en)
+{
+    g_cl_ff_enable = (en != 0u) ? 1u : 0u;
 }
 
 void Foc_CurrentLoop_SetVmax(float vmax_v)
@@ -288,6 +319,29 @@ void Foc_CurrentLoop_SetVmax(float vmax_v)
     cl_refresh_limits();
 }
 
+void Foc_CurrentLoop_ApplyParams(float kp, float ki, float kd,
+                                 float vmax_v, float iterm_max_v, float fb_alpha)
+{
+    if (!s_ready) {
+        return;
+    }
+
+    if (vmax_v < 1.0f) {
+        vmax_v = CL_VMAX_INIT;
+    }
+    s_vmax = vmax_v;
+    cl_refresh_limits();
+
+    (void)s_pid_d.ops->set_param(&s_priv_d, kp, ki, kd);
+    (void)s_pid_q.ops->set_param(&s_priv_q, kp, ki, kd);
+
+    cl_set_iterm(iterm_max_v);
+
+    if (fb_alpha < 0.0f) fb_alpha = 0.0f;
+    if (fb_alpha > 1.0f) fb_alpha = 1.0f;
+    g_cl_fb_alpha = fb_alpha;
+}
+
 /*=============================================================================
  * 每拍计算
  *=============================================================================*/
@@ -295,7 +349,8 @@ void Foc_CurrentLoop_Step(float *vd, float *vq, float *theta_e)
 {
     float fb_d, fb_q, th;
     float out_d, out_q;
-    float vd_raw, vq_raw;
+    float vd_tot, vq_tot;
+    float vd_ff = 0.0f, vq_ff = 0.0f;
     cl_limit_reason_t reason = CL_LIMIT_NONE;
 
     if ((vd == NULL) || (vq == NULL) || (theta_e == NULL)) {
@@ -353,14 +408,34 @@ void Foc_CurrentLoop_Step(float *vd, float *vq, float *theta_e)
     s_id_ref_ramped = cl_ramp(s_id_ref, s_id_ref_ramped, g_cl_ref_slew);
     s_iq_ref_ramped = cl_ramp(s_iq_ref, s_iq_ref_ramped, g_cl_ref_slew);
 
-    /* ---- PID 计算（用斜坡后的 ref，前馈关闭）---- */
+    /* ---- PID 计算（PID 自身前馈关闭；dq 前馈在下面单独加）---- */
     out_d = s_pid_d.ops->calc(&s_priv_d, fb_d, s_id_ref_ramped, 0.0f, 0.0f, CL_DT_S);
     out_q = s_pid_q.ops->calc(&s_priv_q, fb_q, s_iq_ref_ramped, 0.0f, 0.0f, CL_DT_S);
 
-    /* ---- 未限幅输出 -> 合成幅值 -> 物理电压判断 ---- */
-    vd_raw = s_pid_d.ops->get_raw_output(&s_priv_d);
-    vq_raw = s_pid_q.ops->get_raw_output(&s_priv_q);
-    s_vmag_raw = sqrtf(vd_raw * vd_raw + vq_raw * vq_raw);
+    /* ---- dq 解耦 + 反电动势前馈（mode8，Watch 可开关）---- */
+    g_cl_we_rad_s = 0.0f;
+    g_cl_vd_ff    = 0.0f;
+    g_cl_vq_ff    = 0.0f;
+    if (g_cl_ff_enable) {
+        float rpm  = hw_encoder_get_speed_rpm();
+        float we   = rpm * (CL_TWO_PI * (float)CFG_MOTOR_POLE_PAIRS / 60.0f);
+        float ls   = g_cl_ff_ls_uh * 1e-6f;
+        float rs   = g_cl_ff_rs_ohm;
+        float flux = g_cl_ff_flux_vs;
+
+        vd_ff = -we * ls * fb_q;
+        vq_ff =  we * ls * fb_d + we * flux + rs * s_iq_ref_ramped;
+
+        g_cl_we_rad_s = we;
+        g_cl_vd_ff    = vd_ff;
+        g_cl_vq_ff    = vq_ff;
+    }
+
+    vd_tot = out_d + vd_ff;
+    vq_tot = out_q + vq_ff;
+
+    /* ---- 未限幅总输出 -> 合成幅值 -> 物理电压判断 ---- */
+    s_vmag_raw = sqrtf(vd_tot * vd_tot + vq_tot * vq_tot);
 
     /* ---- 受限判定（优先级：保护 > 电压 > 自身限幅）---- */
     if (g_fp_state != FP_STATE_NORMAL) {
@@ -384,12 +459,23 @@ void Foc_CurrentLoop_Step(float *vd, float *vq, float *theta_e)
         s_sat_cnt = 0u;
     }
 
-    /* ---- 输出斜率限制（防机械冲击）---- */
-    out_q = cl_slew(out_q, s_vq_prev, g_cl_vq_slew);
-    s_vq_prev = out_q;
+    /* ---- 输出斜率限制 + 最终矢量限幅 ---- */
+    vq_tot = cl_slew(vq_tot, s_vq_prev, g_cl_vq_slew);
+    s_vq_prev = vq_tot;
 
-    *vd      = out_d;
-    *vq      = out_q;
+    {
+        float vmag = sqrtf(vd_tot * vd_tot + vq_tot * vq_tot);
+
+        if (vmag > s_vlim) {
+            float k = s_vlim / vmag;
+
+            vd_tot *= k;
+            vq_tot *= k;
+        }
+    }
+
+    *vd      = vd_tot;
+    *vq      = vq_tot;
     *theta_e = th;
 }
 
@@ -399,6 +485,14 @@ void Foc_CurrentLoop_Step(float *vd, float *vq, float *theta_e)
 bool Foc_CurrentLoop_IsReady(void)
 {
     return s_ready;
+}
+
+bool Foc_CurrentLoop_IsActive(void)
+{
+    if (!s_ready) {
+        return false;
+    }
+    return (s_warmup_cnt >= g_cl_warmup_ticks) && (s_offcal_done != 0u);
 }
 
 bool Foc_CurrentLoop_IsLimited(void)

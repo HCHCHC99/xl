@@ -974,6 +974,11 @@
               <FilePath>..\..\ws\foc_sincos.c</FilePath>
             </File>
             <File>
+              <FileName>foc_speed_loop.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\ws\foc_speed_loop.c</FilePath>
+            </File>
+            <File>
               <FileName>motor_sampling.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\ws\motor_sampling.c</FilePath>
@@ -1958,6 +1963,11 @@
               <FileName>foc_sincos.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\ws\foc_sincos.c</FilePath>
+            </File>
+            <File>
+              <FileName>foc_speed_loop.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\ws\foc_speed_loop.c</FilePath>
             </File>
             <File>
               <FileName>motor_sampling.c</FileName>

@@ -50,6 +50,7 @@
 #include "foc_mode.h"
 #include "foc_protect.h"
 #include "foc_current_loop.h"
+#include "foc_speed_loop.h"
 
 /* ---- VOFA+ / 日志 ---- */
 #include "Usart3_Vofa.h"
@@ -63,7 +64,7 @@
 /*=============================================================================
  * Watch 可写变量
  *=============================================================================*/
-volatile int32_t  g_mode_cmd       = 0;      /* 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV */
+volatile int32_t  g_mode_cmd       = 0;      /* 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP 8=CURRENT_FF 9=SPEED */
 volatile int32_t  g_ol_freq_mhz    = 700;
 volatile int32_t  g_ol_vq_mv       = 700;
 volatile int32_t  g_vofa_adc_debug = 1;
@@ -87,6 +88,10 @@ volatile uint8_t  g_poweron_cal_ok = 0;
 /* 非阻塞对齐/扫角运行标志（主循环内部） */
 static uint8_t s_align_running = 0;
 
+/* 速度模式电流环参数已下发值（用于 Watch 改动检测） */
+static float s_spd_vmax_applied  = 0.0f;
+static float s_spd_iterm_applied = 0.0f;
+
 /*=============================================================================
  * 采样标定
  *=============================================================================*/
@@ -100,7 +105,7 @@ static const MotorSamplingScale_t g_scale = {
 };
 
 /*=============================================================================
- * VOFA+ 数据帧填充 (17ch)
+ * VOFA+ 数据帧填充 (19ch)
  *=============================================================================*/
 extern volatile float    g_fc_iu;
 extern volatile float    g_fc_iv;
@@ -156,7 +161,11 @@ static int Foc_AdcDebug_VofaFill(int32_t *cur)
     /* ch16: IF 强拖电角度（0.001 rad），与 ch13 同单位，可直接对比 */
     cur[16] = (int32_t)(g_fm_theta_e * 1000.0f);
 
-    return 17;
+    /* ch17~18: 速度环斜坡目标速度 / 实测速度（mRPM，接收端乘 0.001） */
+    cur[17] = (int32_t)(g_spd_ramp_rpm * 1000.0f);
+    cur[18] = (int32_t)(g_spd_filt_rpm * 1000.0f);
+
+    return 19;
 }
 
 /*=============================================================================
@@ -263,6 +272,101 @@ static bool CurrentLoop_EntryCheck(void)
 }
 
 /*=============================================================================
+ * 进入 CURRENT：mode4 = 纯 PI；mode8 = PI + dq 解耦/反电动势前馈
+ *=============================================================================*/
+static bool Enter_CurrentLoop(uint8_t ff_enable)
+{
+    if (!CurrentLoop_EntryCheck()) {
+        g_mode_cmd = 0;
+        Foc_Mode_SetMode(FOC_MODE_IDLE);
+        return false;
+    }
+
+    Foc_CurrentLoop_SetFF(ff_enable);
+    Foc_CurrentLoop_SetGains(g_cl_kp, g_cl_ki, g_cl_kd);
+    Foc_CurrentLoop_SetRef((float)g_cl_id_ref_ma / 1000.0f,
+                           (float)g_cl_iq_ref_ma / 1000.0f);
+
+    /* 从速度模式返回时，恢复 mode 4/8 自己的电压上限 / 积分项限幅 / 反馈 EMA */
+    Foc_CurrentLoop_SetVmax(g_cl_vmax_watch);
+    Foc_CurrentLoop_SetITermMax(g_cl_iterm_max_watch);
+    g_cl_fb_alpha = CL_FB_ALPHA_INIT;
+
+    MAIN_D("[CL] ---- enter CURRENT%s, params ----", ff_enable ? "_FF" : "");
+    MAIN_D("[CL] PID:   kp_x10000=%ld ki_x100=%ld kd_x10000=%ld",
+           (long)(g_cl_kp * 10000.0f),
+           (long)(g_cl_ki * 100.0f),
+           (long)(g_cl_kd * 10000.0f));
+    MAIN_D("[CL] REF:   id_ref_mA=%ld iq_ref_mA=%ld",
+           (long)g_cl_id_ref_ma, (long)g_cl_iq_ref_ma);
+    MAIN_D("[CL] RAMP:  ref_slew_x1e6=%ld A/tick, vq_slew_x1e6=%ld V/tick",
+           (long)(g_cl_ref_slew * 1000000.0f),
+           (long)(g_cl_vq_slew  * 1000000.0f));
+    MAIN_D("[CL] WARM:  warmup_ticks=%u", (unsigned)g_cl_warmup_ticks);
+    MAIN_D("[CL] LIMIT: iref_max_x100=%ld A, vmax_x100=%ld V, iterm_x100=%ld V",
+           (long)(g_cl_iref_max * 100.0f),
+           (long)(g_cl_vmax_watch * 100.0f),
+           (long)(g_cl_iterm_max_watch * 100.0f));
+    if (ff_enable) {
+        MAIN_D("[CL] FF:    Rs_x1000=%ld Ls_uh_x10=%ld flux_mVs=%ld",
+               (long)(g_cl_ff_rs_ohm * 1000.0f),
+               (long)(g_cl_ff_ls_uh * 10.0f),
+               (long)(g_cl_ff_flux_vs * 1000000.0f));
+    }
+    MAIN_D("[CL] STATE: aligned=%u offset_cal=%u fp_state=%d",
+           (unsigned)g_motor_is_aligned,
+           (unsigned)g_motor_is_offset_calibrated,
+           (int)g_fp_state);
+    MAIN_D("[CL] ------------------------------");
+
+    Foc_Mode_SetMode(FOC_MODE_CURRENT);
+    MAIN_D("[CL] current loop%s entered (ref id=%ldmA iq=%ldmA, ramp from 0).",
+           ff_enable ? "_FF" : "",
+           (long)g_cl_id_ref_ma, (long)g_cl_iq_ref_ma);
+    return true;
+}
+
+/*=============================================================================
+ * 进入 SPEED：速度外环 + 电流环串级（mode 9）
+ *=============================================================================*/
+static bool Enter_SpeedLoop(void)
+{
+    if (!CurrentLoop_EntryCheck()) {
+        g_mode_cmd = 0;
+        Foc_Mode_SetMode(FOC_MODE_IDLE);
+        return false;
+    }
+
+    /* 切到参考 mode 40 的电流环参数（0.1/300、6.2V、无反馈 EMA），关 dq 前馈 */
+    Foc_Speed_ConfigCurrentLoop();
+    s_spd_vmax_applied  = g_spd_cur_vmax_v;
+    s_spd_iterm_applied = g_spd_cur_iterm_v;
+
+    Foc_Speed_Start();
+
+    MAIN_D("[SPD] ---- enter SPEED, params ----");
+    MAIN_D("[SPD] PI: kp_x10000=%ld ki_x10000=%ld accel_rpm_s=%ld tgt_max_rpm=%ld",
+           (long)(g_spd_kp * 10000.0f),
+           (long)(g_spd_ki * 10000.0f),
+           (long)g_spd_accel_rpm_s,
+           (long)SPD_TARGET_MAX_RPM);
+    MAIN_D("[SPD] LIMIT: iq_mA=%ld iterm_mA=%ld",
+           (long)g_spd_iq_limit_ma, (long)g_spd_iterm_max_ma);
+    MAIN_D("[SPD] CUR: kp_x10000=%ld ki_x100=%ld vmax_x100=%ld iterm_x100=%ld "
+           "fb_alpha_x100=%ld ff=0",
+           (long)(g_spd_cur_kp * 10000.0f),
+           (long)(g_spd_cur_ki * 100.0f),
+           (long)(g_spd_cur_vmax_v * 100.0f),
+           (long)(g_spd_cur_iterm_v * 100.0f),
+           (long)(g_spd_cur_fb_alpha * 100.0f));
+    MAIN_D("[SPD] ------------------------------");
+
+    Foc_Mode_SetMode(FOC_MODE_SPEED);
+    MAIN_D("[SPD] speed loop entered, target reset to 0 (set g_spd_target_rpm in Watch).");
+    return true;
+}
+
+/*=============================================================================
  * main
  *=============================================================================*/
 int main(void)
@@ -323,10 +427,11 @@ int main(void)
 
     (void)hw_tmr4_pwm_set_all_low();
 
-    /* ---- 5. 模式 / 保护 / 电流环 ---- */
+    /* ---- 5. 模式 / 保护 / 电流环 / 速度环 ---- */
     Foc_Mode_Init();
     Foc_Protect_Init(NULL);
     Foc_CurrentLoop_Init();
+    Foc_Speed_Init();
 
     /* ---- 6. 控制层（EOCA 中断使能）---- */
     Foc_Control_Init();
@@ -334,8 +439,8 @@ int main(void)
     /* ---- 7. 上电零偏校准 ---- */
     (void)PowerOn_OffsetCal();
 
-    MAIN_D(" Ready! g_mode_cmd: 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP");
-    MAIN_D(" Mode 3 = align, Mode 4 = current, Mode 5 = sweep, Mode 6 = rev-count, Mode 7 = ramp-align.");
+    MAIN_D(" Ready! g_mode_cmd: 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP 8=CURRENT_FF 9=SPEED");
+    MAIN_D(" Mode 3 = align, Mode 4 = current, Mode 5 = sweep, Mode 6 = rev-count, Mode 7 = ramp-align, Mode 8 = current+FF, Mode 9 = speed+current.");
 
     /* ---- 主循环 ---- */
     while (1) {
@@ -375,40 +480,25 @@ int main(void)
                 break;
 
             case 4:
-                if (!CurrentLoop_EntryCheck()) {
-                    g_mode_cmd    = 0;
+                if (!Enter_CurrentLoop(0u)) {
                     last_mode_cmd = 0;
-                    Foc_Mode_SetMode(FOC_MODE_IDLE);
-                    break;
                 }
+                break;
 
-                Foc_CurrentLoop_SetGains(g_cl_kp, g_cl_ki, g_cl_kd);
-                Foc_CurrentLoop_SetRef((float)g_cl_id_ref_ma / 1000.0f,
-                                       (float)g_cl_iq_ref_ma / 1000.0f);
+            case 8:
+                MAIN_D("[CL8] request: fp_state=%d fault=0x%08lX trip_cnt=%lu",
+                       (int)g_fp_state,
+                       (unsigned long)g_fp_fault,
+                       (unsigned long)g_fp_trip_cnt);
+                if (!Enter_CurrentLoop(1u)) {
+                    last_mode_cmd = 0;
+                }
+                break;
 
-                MAIN_D("[CL] ---- enter CURRENT, params ----");
-                MAIN_D("[CL] PID:   kp_x10000=%ld ki_x100=%ld kd_x10000=%ld",
-                       (long)(g_cl_kp * 10000.0f),
-                       (long)(g_cl_ki * 100.0f),
-                       (long)(g_cl_kd * 10000.0f));
-                MAIN_D("[CL] REF:   id_ref_mA=%ld iq_ref_mA=%ld",
-                       (long)g_cl_id_ref_ma, (long)g_cl_iq_ref_ma);
-                MAIN_D("[CL] RAMP:  ref_slew_x1e6=%ld A/tick, vq_slew_x1e6=%ld V/tick",
-                       (long)(g_cl_ref_slew * 1000000.0f),
-                       (long)(g_cl_vq_slew  * 1000000.0f));
-                MAIN_D("[CL] WARM:  warmup_ticks=%u", (unsigned)g_cl_warmup_ticks);
-                MAIN_D("[CL] LIMIT: iref_max_x100=%ld A, vmax_x100=%ld V",
-                       (long)(g_cl_iref_max * 100.0f),
-                       (long)(g_cl_vmax_watch * 100.0f));
-                MAIN_D("[CL] STATE: aligned=%u offset_cal=%u fp_state=%d",
-                       (unsigned)g_motor_is_aligned,
-                       (unsigned)g_motor_is_offset_calibrated,
-                       (int)g_fp_state);
-                MAIN_D("[CL] ------------------------------");
-
-                Foc_Mode_SetMode(FOC_MODE_CURRENT);
-                MAIN_D("[CL] current loop entered (ref id=%ldmA iq=%ldmA, ramp from 0).",
-                       (long)g_cl_id_ref_ma, (long)g_cl_iq_ref_ma);
+            case 9:
+                if (!Enter_SpeedLoop()) {
+                    last_mode_cmd = 0;
+                }
                 break;
 
             case 5:
@@ -559,10 +649,25 @@ int main(void)
         }
 
         /* CURRENT 参数实时同步 */
-        if (g_mode_cmd == 4) {
+        if ((g_mode_cmd == 4) || (g_mode_cmd == 8)) {
             Foc_CurrentLoop_SetRef((float)g_cl_id_ref_ma / 1000.0f,
                                    (float)g_cl_iq_ref_ma / 1000.0f);
             Foc_CurrentLoop_SetGains(g_cl_kp, g_cl_ki, g_cl_kd);
+        }
+
+        /* SPEED 模式电流环参数实时同步（速度环自身参数在 ISR 内每 5ms 同步） */
+        if (g_mode_cmd == 9) {
+            Foc_CurrentLoop_SetGains(g_spd_cur_kp, g_spd_cur_ki, 0.0f);
+            g_cl_fb_alpha = g_spd_cur_fb_alpha;
+
+            if (g_spd_cur_vmax_v != s_spd_vmax_applied) {
+                s_spd_vmax_applied = g_spd_cur_vmax_v;
+                Foc_CurrentLoop_SetVmax(g_spd_cur_vmax_v);
+            }
+            if (g_spd_cur_iterm_v != s_spd_iterm_applied) {
+                s_spd_iterm_applied = g_spd_cur_iterm_v;
+                Foc_CurrentLoop_SetITermMax(g_spd_cur_iterm_v);
+            }
         }
 
         /* vmax 在线同步 */
@@ -592,7 +697,8 @@ int main(void)
         g_cl_iq_ref_ramped_ma = (int32_t)(Foc_CurrentLoop_GetIqRefRamped() * 1000.0f);
 
         /* 电流环受限告警 */
-        if (g_mode_cmd == 4 && Foc_CurrentLoop_GetSatCnt() > 4000u) {
+        if (((g_mode_cmd == 4) || (g_mode_cmd == 8)) &&
+            Foc_CurrentLoop_GetSatCnt() > 4000u) {
             static uint32_t s_last_warn_ms = 0;
             uint32_t now_ms = tickTimer_GetCount();
 
@@ -610,7 +716,7 @@ int main(void)
         }
 
         /* CURRENT 关键变量周期打印（10ms 一次，观察过流前的状态） */
-        if (g_mode_cmd == 4) {
+        if ((g_mode_cmd == 4) || (g_mode_cmd == 8)) {
             static uint32_t s_last_cl_log_ms = 0;
             uint32_t now_ms = tickTimer_GetCount();
 
@@ -618,7 +724,8 @@ int main(void)
                 s_last_cl_log_ms = now_ms;
                 MAIN_D("[CL] fp=%d flt=0x%08lX trip=%lu "
                        "iq_r=%ld iq=%ld id=%ld iu=%ld iv=%ld iw=%ld "
-                       "th=%ld cnt=%ld dcnt=%ld spd=%ld vraw=%ld lim=%ld",
+                       "th=%ld cnt=%ld dcnt=%ld spd=%ld vraw=%ld lim=%ld "
+                       "ff=%u we=%ld vffd=%ld vffq=%ld",
                        (int)g_fp_state,
                        (unsigned long)g_fp_fault,
                        (unsigned long)g_fp_trip_cnt,
@@ -633,15 +740,43 @@ int main(void)
                        (long)g_fc_enc_delta,
                        (long)g_fc_enc_speed_rpm,
                        (long)(g_cl_vmag_raw * 100.0f),
-                       (long)g_cl_limit_reason);
+                       (long)g_cl_limit_reason,
+                       (unsigned)g_cl_ff_enable,
+                       (long)g_cl_we_rad_s,
+                       (long)(g_cl_vd_ff * 1000.0f),
+                       (long)(g_cl_vq_ff * 1000.0f));
             }
         }
 
-        /* VOFA 数据发送（非阻塞，17 通道：ch0~15 原有 + ch16 IF 强拖角度） */
+        /* SPEED 关键变量周期打印（10ms 一次） */
+        if (g_mode_cmd == 9) {
+            static uint32_t s_last_spd_log_ms = 0;
+            uint32_t now_ms = tickTimer_GetCount();
+
+            if ((now_ms - s_last_spd_log_ms) >= 10u) {
+                s_last_spd_log_ms = now_ms;
+                MAIN_D("[SPD] tgt=%ld ramp=%ld spd=%ld raw=%ld err=%ld "
+                       "out=%ld I=%ld iq_r=%ld iq=%ld vraw=%ld lim=%ld itlim=%ld",
+                       (long)g_spd_target_rpm,
+                       (long)g_spd_ramp_rpm,
+                       (long)g_spd_filt_rpm,
+                       (long)g_spd_raw_rpm,
+                       (long)g_spd_err_rpm,
+                       (long)g_spd_out_ma,
+                       (long)g_spd_iterm_ma,
+                       (long)g_cl_iq_ref_ramped_ma,
+                       (long)(g_fc_iq * 1000.0f),
+                       (long)(g_cl_vmag_raw * 100.0f),
+                       (long)g_cl_limit_reason,
+                       (long)g_spd_iterm_max_ma);
+            }
+        }
+
+        /* VOFA 数据发送（非阻塞，19 通道：ch0~16 原有 + ch17~18 速度环） */
         if (!Usart3_Vofa_IsTxBusy() && g_vofa_adc_debug != 0) {
-            int32_t cur[17];
+            int32_t cur[19];
             Foc_AdcDebug_VofaFill(cur);
-            Usart3_Vofa_SendScaled(cur, 17, USART3_VOFA_SCALE_MILLI);
+            Usart3_Vofa_SendScaled(cur, 19, USART3_VOFA_SCALE_MILLI);
         }
     }
 }
