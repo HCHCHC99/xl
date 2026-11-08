@@ -1,5 +1,5 @@
 /*=============================================================================
- * foc_mode.h  —  L6 模式层（IDLE / LOCK / IF / CALIB / CURRENT / SPEED）
+ * foc_mode.h  —  L6 模式层（IDLE / LOCK / IF / CALIB / CURRENT / SPEED / POSITION）
  *
  * 职责：
  *   - 维护当前模式与 IF 参数（freq / vq / vd）
@@ -7,6 +7,7 @@
  *   - IF 模式：角度自增，输出 vd/vq + theta_e，enable=true
  *   - CURRENT 模式：调用 L6.5 Foc_CurrentLoop_Step 产出 vd/vq/theta_e，enable=true
  *   - SPEED 模式：先跑 L7 速度外环（5ms 抽稀），再跑电流环，enable=true
+ *   - POSITION 模式：位置环（10ms）-> 速度环（5ms）-> 电流环，enable=true
  *   - IDLE/LOCK/CALIB：输出零，enable=false，由 L5 走静态输出分支
  *=============================================================================*/
 
@@ -23,6 +24,7 @@ typedef enum {
     FOC_MODE_CALIB   = 3,   /* 仅用作主循环触发校准的标志；输出全低，动作由主循环接管 */
     FOC_MODE_CURRENT = 4,   /* 有感闭环电流环（依赖编码器电角度已对齐） */
     FOC_MODE_SPEED   = 9,   /* 速度外环 + 有感电流环串级 */
+    FOC_MODE_POSITION = 10, /* 位置外环 + 速度环 + 电流环三环串级 */
 } foc_mode_t;
 
 /* L6 每拍产出的控制指令 */

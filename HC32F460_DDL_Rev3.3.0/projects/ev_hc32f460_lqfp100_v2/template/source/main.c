@@ -51,6 +51,7 @@
 #include "foc_protect.h"
 #include "foc_current_loop.h"
 #include "foc_speed_loop.h"
+#include "foc_position_loop.h"
 
 /* ---- VOFA+ / 日志 ---- */
 #include "Usart3_Vofa.h"
@@ -64,7 +65,7 @@
 /*=============================================================================
  * Watch 可写变量
  *=============================================================================*/
-volatile int32_t  g_mode_cmd       = 0;      /* 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP 8=CURRENT_FF 9=SPEED */
+volatile int32_t  g_mode_cmd       = 0;      /* 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP 8=CURRENT_FF 9=SPEED 10=POSITION */
 volatile int32_t  g_ol_freq_mhz    = 700;
 volatile int32_t  g_ol_vq_mv       = 700;
 volatile int32_t  g_vofa_adc_debug = 1;
@@ -111,9 +112,6 @@ extern volatile float    g_fc_iu;
 extern volatile float    g_fc_iv;
 extern volatile float    g_fc_iw;
 extern volatile float    g_fc_i_total;
-extern volatile uint16_t g_adc_raw_itotal;
-extern volatile uint16_t g_adc_raw_iv;
-extern volatile uint16_t g_adc_raw_iw;
 extern volatile float    g_fc_id;
 extern volatile float    g_fc_iq;
 extern volatile float    g_fc_enc_elec_deg;
@@ -122,10 +120,11 @@ extern volatile int32_t  g_fc_enc_count;
 
 static int Foc_AdcDebug_VofaFill(int32_t *cur)
 {
-    /* ch0~2: ADC raw (传 raw*1000, 接收端乘 0.001) */
-    cur[0] = (int32_t)g_adc_raw_itotal * 1000;
-    cur[1] = (int32_t)g_adc_raw_iv     * 1000;
-    cur[2] = (int32_t)g_adc_raw_iw     * 1000;
+    /* ch0~2: 位置环 最终目标 / 有效给定 / 当前位置（mrev，接收端乘 0.001）
+     *   有效给定 = 当前 pos + 限幅/死区后的 err，即 PI 实际跟踪的位置 */
+    cur[0] = (int32_t)(g_pos_target_rev * 1000.0f);
+    cur[1] = (int32_t)((g_pos_fb_rev + g_pos_err_rev) * 1000.0f);
+    cur[2] = (int32_t)(g_pos_fb_rev * 1000.0f);
 
     /* ch3~6: 电流 A (传 mA, 接收端乘 0.001) */
     cur[3] = (int32_t)(g_fc_i_total * 1000.0f);
@@ -367,6 +366,43 @@ static bool Enter_SpeedLoop(void)
 }
 
 /*=============================================================================
+ * 进入 POSITION：位置环 + 速度环 + 电流环三环串级（mode 10）
+ *=============================================================================*/
+static bool Enter_PositionLoop(void)
+{
+    if (!CurrentLoop_EntryCheck()) {
+        g_mode_cmd = 0;
+        Foc_Mode_SetMode(FOC_MODE_IDLE);
+        return false;
+    }
+
+    /* 速度内环沿用 mode 9 的电流环参数（0.1/300、6.2V、无反馈 EMA） */
+    Foc_Speed_ConfigCurrentLoop();
+    s_spd_vmax_applied  = g_spd_cur_vmax_v;
+    s_spd_iterm_applied = g_spd_cur_iterm_v;
+
+    /* SetMode 内部会：清速度环 -> 复位电流环 -> 以当前位置为目标复位位置环 */
+    Foc_Mode_SetMode(FOC_MODE_POSITION);
+
+    MAIN_D("[POS] ---- enter POSITION, params ----");
+    MAIN_D("[POS] hold_pos_x1000=%ld rev", (long)(g_pos_fb_rev * 1000.0f));
+    MAIN_D("[POS] PD: kp_x10=%ld ki_x10=%ld kd_x10=%ld spd_lim=%ld iterm=%ld",
+           (long)(g_pos_kp * 10.0f),
+           (long)(g_pos_ki * 10.0f),
+           (long)(g_pos_kd * 10.0f),
+           (long)g_pos_speed_limit_rpm,
+           (long)g_pos_iterm_max_rpm);
+    MAIN_D("[POS] LIMIT: err_max_x1000=%ld db_x1000=%ld trip_rev=%ld back_gain_x100=%ld",
+           (long)(g_pos_err_max_rev * 1000.0f),
+           (long)(g_pos_deadband_rev * 1000.0f),
+           (long)g_pos_limit_rev,
+           (long)(g_pos_back_gain * 100.0f));
+    MAIN_D("[POS] ------------------------------");
+    MAIN_D("[POS] set g_pos_target_rev in Watch; g_pos_zero_req=1 for zero.");
+    return true;
+}
+
+/*=============================================================================
  * main
  *=============================================================================*/
 int main(void)
@@ -427,11 +463,12 @@ int main(void)
 
     (void)hw_tmr4_pwm_set_all_low();
 
-    /* ---- 5. 模式 / 保护 / 电流环 / 速度环 ---- */
+    /* ---- 5. 模式 / 保护 / 电流环 / 速度环 / 位置环 ---- */
     Foc_Mode_Init();
     Foc_Protect_Init(NULL);
     Foc_CurrentLoop_Init();
     Foc_Speed_Init();
+    Foc_Position_Init();
 
     /* ---- 6. 控制层（EOCA 中断使能）---- */
     Foc_Control_Init();
@@ -439,8 +476,8 @@ int main(void)
     /* ---- 7. 上电零偏校准 ---- */
     (void)PowerOn_OffsetCal();
 
-    MAIN_D(" Ready! g_mode_cmd: 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP 8=CURRENT_FF 9=SPEED");
-    MAIN_D(" Mode 3 = align, Mode 4 = current, Mode 5 = sweep, Mode 6 = rev-count, Mode 7 = ramp-align, Mode 8 = current+FF, Mode 9 = speed+current.");
+    MAIN_D(" Ready! g_mode_cmd: 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP 8=CURRENT_FF 9=SPEED 10=POSITION");
+    MAIN_D(" Mode 3 = align, Mode 4 = current, Mode 5 = sweep, Mode 6 = rev-count, Mode 7 = ramp-align, Mode 8 = current+FF, Mode 9 = speed+current, Mode 10 = position+speed+current.");
 
     /* ---- 主循环 ---- */
     while (1) {
@@ -497,6 +534,12 @@ int main(void)
 
             case 9:
                 if (!Enter_SpeedLoop()) {
+                    last_mode_cmd = 0;
+                }
+                break;
+
+            case 10:
+                if (!Enter_PositionLoop()) {
                     last_mode_cmd = 0;
                 }
                 break;
@@ -655,8 +698,8 @@ int main(void)
             Foc_CurrentLoop_SetGains(g_cl_kp, g_cl_ki, g_cl_kd);
         }
 
-        /* SPEED 模式电流环参数实时同步（速度环自身参数在 ISR 内每 5ms 同步） */
-        if (g_mode_cmd == 9) {
+        /* SPEED/POSITION 模式电流环参数实时同步（速度环自身参数在 ISR 内每 5ms 同步） */
+        if ((g_mode_cmd == 9) || (g_mode_cmd == 10)) {
             Foc_CurrentLoop_SetGains(g_spd_cur_kp, g_spd_cur_ki, 0.0f);
             g_cl_fb_alpha = g_spd_cur_fb_alpha;
 
@@ -772,7 +815,33 @@ int main(void)
             }
         }
 
-        /* VOFA 数据发送（非阻塞，19 通道：ch0~16 原有 + ch17~18 速度环） */
+        /* POSITION 参数与位置周期打印（500ms 一次） */
+        if (g_mode_cmd == 10) {
+            static uint32_t s_last_pos_log_ms = 0;
+            uint32_t now_ms = tickTimer_GetCount();
+
+            if ((now_ms - s_last_pos_log_ms) >= 500u) {
+                s_last_pos_log_ms = now_ms;
+                MAIN_D("[POS] kp_x10=%ld ki_x10=%ld kd_x10=%ld spd_lim=%ld iterm=%ld "
+                       "err_max_x1000=%ld db_x1000=%ld trip_rev=%ld bg_x100=%ld",
+                       (long)(g_pos_kp * 10.0f),
+                       (long)(g_pos_ki * 10.0f),
+                       (long)(g_pos_kd * 10.0f),
+                       (long)g_pos_speed_limit_rpm,
+                       (long)g_pos_iterm_max_rpm,
+                       (long)(g_pos_err_max_rev * 1000.0f),
+                       (long)(g_pos_deadband_rev * 1000.0f),
+                       (long)g_pos_limit_rev,
+                       (long)(g_pos_back_gain * 100.0f));
+                MAIN_D("[POS] tgt_x1000=%ld ref_x1000=%ld pos_x1000=%ld rev, cmd=%ld rpm",
+                       (long)(g_pos_target_rev * 1000.0f),
+                       (long)((g_pos_fb_rev + g_pos_err_rev) * 1000.0f),
+                       (long)(g_pos_fb_rev * 1000.0f),
+                       (long)g_pos_cmd_rpm);
+            }
+        }
+
+        /* VOFA 数据发送（非阻塞，19 通道：ch0~2 位置环，ch3~16 原有，ch17~18 速度环） */
         if (!Usart3_Vofa_IsTxBusy() && g_vofa_adc_debug != 0) {
             int32_t cur[19];
             Foc_AdcDebug_VofaFill(cur);

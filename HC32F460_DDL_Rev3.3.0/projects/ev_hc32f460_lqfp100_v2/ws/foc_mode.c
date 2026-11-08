@@ -12,6 +12,7 @@
 #include "foc_mode.h"
 #include "foc_current_loop.h"   /* FOC_MODE_CURRENT / FOC_MODE_SPEED 分支用 */
 #include "foc_speed_loop.h"
+#include "foc_position_loop.h"
 #include <stddef.h>
 
 #define FM_TWO_PI  6.28318530f
@@ -56,8 +57,16 @@ void Foc_Mode_SetMode(foc_mode_t m)
     }
 
     /* 进入闭环模式时复位 PID，防止从 IF 切来时的旧积分残留冲击 */
-    if ((m == FOC_MODE_CURRENT) || (m == FOC_MODE_SPEED)) {
+    if ((m == FOC_MODE_CURRENT) || (m == FOC_MODE_SPEED) ||
+        (m == FOC_MODE_POSITION)) {
         Foc_CurrentLoop_Reset();
+    }
+
+    /* 位置模式：进入时以当前位置为目标保持；离开时清位置环输出 */
+    if (m == FOC_MODE_POSITION) {
+        Foc_Position_Reset();
+    } else {
+        Foc_Position_Stop();
     }
 }
 
@@ -104,6 +113,14 @@ void Foc_Mode_Step(float ts, FocCmd_t *out)
 
     case FOC_MODE_SPEED:
         /* 速度外环（5ms 抽稀）先算 iq_ref，再跑电流环 */
+        Foc_Speed_Task20k();
+        Foc_CurrentLoop_Step(&out->vd, &out->vq, &out->theta_e);
+        out->enable = true;
+        break;
+
+    case FOC_MODE_POSITION:
+        /* 位置环（10ms）-> 速度环（5ms）-> 电流环 */
+        Foc_Position_Task20k();
         Foc_Speed_Task20k();
         Foc_CurrentLoop_Step(&out->vd, &out->vq, &out->theta_e);
         out->enable = true;

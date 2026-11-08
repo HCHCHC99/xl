@@ -9,9 +9,9 @@
  *   正方向与速度环一致，可超出一圈，适合丝杆行程。
  *   写 g_pos_zero_req=1 可把当前位置设为 0 并保持。
  *
- * 位置 PI：
+ * 位置环控制律：
  *   err = target - pos，先限幅 ±g_pos_err_max_rev
- *   speed_cmd = kp × err + ki × ∫err dt，输出限幅 ±g_pos_speed_limit_rpm
+ *   speed_cmd = kp × err + kd × d(-pos)/dt，输出限幅 ±g_pos_speed_limit_rpm
  *   输出直接写 g_spd_target_rpm，由速度环的 1950 rpm/s 斜坡平滑
  *
  * 参数初值集中在下方 *_INIT 宏；运行时可在 Keil Watch 改 g_pos_* 变量。
@@ -30,9 +30,12 @@
 /* 位置环执行周期：200 拍 = 10ms（20kHz ISR） */
 #define POS_CTRL_DIV                (200u)
 
-/* 位置 PI，输出单位 rpm，误差单位 圈 */
+/* 位置 PD，输出单位 rpm，误差单位 圈
+ *   速度内环自带积分，位置环用 PD 即可做到稳态无静差；
+ *   D 项对位置反馈微分（微分先行），等效为速度阻尼。 */
 #define POS_KP_INIT                 (60.0f)    /* rpm/rev */
-#define POS_KI_INIT                 (60.0f)    /* rpm/rev/s，Ti = kp/ki ≈ 1s */
+#define POS_KI_INIT                 (0.0f)     /* rpm/rev/s，PD 默认关闭 */
+#define POS_KD_INIT                 (20.0f)    /* rpm/(rev/s) */
 
 /* 速度指令限幅，rpm */
 #define POS_SPEED_LIMIT_RPM_INIT    (300.0f)
@@ -57,7 +60,8 @@
  *=============================================================================*/
 extern volatile float   g_pos_target_rev;        /* 目标位置，圈 */
 extern volatile float   g_pos_kp;                /* rpm/rev */
-extern volatile float   g_pos_ki;                /* rpm/rev/s */
+extern volatile float   g_pos_ki;                /* rpm/rev/s，0 = 纯 PD */
+extern volatile float   g_pos_kd;                /* rpm/(rev/s)，位置反馈微分阻尼 */
 extern volatile float   g_pos_speed_limit_rpm;   /* 速度指令限幅 rpm */
 extern volatile float   g_pos_iterm_max_rpm;     /* 积分项限幅 rpm */
 extern volatile float   g_pos_err_max_rev;       /* 误差限幅 圈 */
