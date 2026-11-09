@@ -21,6 +21,8 @@
 #include "cfg_motor.h"        /* CFG_ENCODER_CPR */
 #include "rtt_log.h"
 
+#include <math.h>             /* fabsf */
+
 /*---------------------------------------------------------------------------
  * 编译期常量
  *---------------------------------------------------------------------------*/
@@ -36,6 +38,11 @@ volatile float   g_pos_ki                = POS_KI_INIT;
 volatile float   g_pos_kd                = POS_KD_INIT;
 volatile float   g_pos_speed_limit_rpm   = POS_SPEED_LIMIT_RPM_INIT;
 volatile float   g_pos_decel_rev         = POS_DECEL_REV_INIT;
+volatile float   g_pos_seg1_rev          = POS_SEG1_REV_INIT;
+volatile float   g_pos_seg2_rev          = POS_SEG2_REV_INIT;
+volatile float   g_pos_spd_high_rpm      = POS_SPD_HIGH_RPM_INIT;
+volatile float   g_pos_spd_mid_rpm       = POS_SPD_MID_RPM_INIT;
+volatile float   g_pos_spd_low_rpm       = POS_SPD_LOW_RPM_INIT;
 volatile float   g_pos_iterm_max_rpm     = POS_ITERM_MAX_RPM_INIT;
 volatile float   g_pos_err_max_rev       = POS_ERR_MAX_REV_INIT;
 volatile float   g_pos_deadband_rev      = POS_DEADBAND_REV_INIT;
@@ -58,6 +65,7 @@ volatile float   g_pos_fb_rev   = 0.0f;
 volatile float   g_pos_err_rev  = 0.0f;
 volatile float   g_pos_cmd_rpm  = 0.0f;
 volatile float   g_pos_kp_used  = POS_KP_INIT;
+volatile float   g_pos_vprof_rpm = 0.0f;
 
 /*---------------------------------------------------------------------------
  * 内部状态
@@ -79,6 +87,27 @@ static float pos_read_rev(void)
               / (float)CFG_ENCODER_CPR;
 
     return raw - s_pos_offset_rev;
+}
+
+/* 三段速度规划（线性过渡），输入为误差绝对值，返回速度幅值 rpm
+ *   a >= s1        : vh
+ *   s2 <= a < s1   : vm -> vh 线性
+ *   a < s2         : vl -> 0 线性
+ */
+static float pos_profile_abs(float a, float s1, float s2,
+                             float vh, float vm, float vl)
+{
+    if (a >= s1) {
+        return vh;
+    }
+    if (a >= s2) {
+        float k = (a - s2) / (s1 - s2);   /* 0..1 */
+        return vm + (vh - vm) * k;
+    }
+    if (s2 > 0.0f) {
+        return vl * (a / s2);
+    }
+    return 0.0f;
 }
 
 /*=============================================================================
@@ -198,6 +227,12 @@ void Foc_Position_Task20k(void)
     float hyst;
     float decel;
     float kp_eff;
+    float seg1;
+    float seg2;
+    float vh;
+    float vm;
+    float vl;
+    bool  profile_on;
     uint8_t brake_en;
 
     if (!s_ready) {
@@ -271,9 +306,28 @@ void Foc_Position_Task20k(void)
     } else {
         kp_eff = g_pos_kp;
     }
-    g_pos_kp_used = kp_eff;
 
-    (void)s_pid_pos.ops->set_param(&s_priv_pos, kp_eff, g_pos_ki, g_pos_kd);
+    /* 三段速度规划参数：seg1 > seg2 > 0 且高速 > 0 时启用 */
+    seg1 = g_pos_seg1_rev;
+    seg2 = g_pos_seg2_rev;
+    vh   = g_pos_spd_high_rpm;
+    vm   = g_pos_spd_mid_rpm;
+    vl   = g_pos_spd_low_rpm;
+    profile_on = ((seg1 > seg2) && (seg2 > 0.0f) && (vh > 0.0f)) ? true : false;
+
+    if (profile_on) {
+        if (vm < 0.0f) vm = 0.0f;
+        if (vl < 0.0f) vl = 0.0f;
+        if (vm > vh) vm = vh;
+        if (vl > vm) vl = vm;
+        g_pos_kp_used = 0.0f;
+        /* 三段模式只保留 D 项作阻尼，速度幅值由规划给出 */
+        (void)s_pid_pos.ops->set_param(&s_priv_pos, 0.0f, 0.0f, g_pos_kd);
+    } else {
+        g_pos_kp_used = kp_eff;
+        g_pos_vprof_rpm = 0.0f;
+        (void)s_pid_pos.ops->set_param(&s_priv_pos, kp_eff, g_pos_ki, g_pos_kd);
+    }
     (void)s_pid_pos.ops->set_limit(&s_priv_pos, -spd_lim, spd_lim, bg);
     (void)s_pid_pos.ops->set_iterm_limit(&s_priv_pos, iterm);
 
@@ -335,8 +389,31 @@ void Foc_Position_Task20k(void)
         err = 0.0f;
     }
 
-    /* ---- 位置 PI：把限幅后的误差作为给定 ---- */
-    cmd = s_pid_pos.ops->calc(&s_priv_pos, pos, pos + err, 0.0f, 0.0f, POS_DT_S);
+    /* ---- 位置输出：三段速度规划 + D 阻尼，或退回 PD ---- */
+    if (profile_on) {
+        float vmag = pos_profile_abs(fabsf(err), seg1, seg2, vh, vm, vl);
+        float vprof;
+        float dterm;
+
+        if (err > 0.0f) {
+            vprof =  vmag;
+        } else if (err < 0.0f) {
+            vprof = -vmag;
+        } else {
+            vprof = 0.0f;
+        }
+
+        /* PID 只剩 D 项：对位置反馈微分，起阻尼作用 */
+        dterm = s_pid_pos.ops->calc(&s_priv_pos, pos, pos, 0.0f, 0.0f, POS_DT_S);
+
+        cmd = vprof + dterm;
+        if (cmd >  vh) cmd =  vh;
+        if (cmd < -vh) cmd = -vh;
+
+        g_pos_vprof_rpm = vprof;
+    } else {
+        cmd = s_pid_pos.ops->calc(&s_priv_pos, pos, pos + err, 0.0f, 0.0f, POS_DT_S);
+    }
 
     /* ---- 爬行下限：误差超出死区且实际速度接近 0 时，强制最低速度 ---- */
     if ((g_pos_creep_enable != 0u) && (err != 0.0f)) {

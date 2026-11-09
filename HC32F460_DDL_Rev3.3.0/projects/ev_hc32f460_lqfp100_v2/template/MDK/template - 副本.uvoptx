@@ -506,6 +506,16 @@
           <WinNumber>2</WinNumber>
           <ItemText>g_spd_ki</ItemText>
         </Ww>
+        <Ww>
+          <count>42</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_pos_decel_rev</ItemText>
+        </Ww>
+        <Ww>
+          <count>43</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_pos_speed_limit_rpm</ItemText>
+        </Ww>
       </WatchWindow2>
       <Tracepoint>
         <THDelay>0</THDelay>

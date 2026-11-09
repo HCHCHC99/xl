@@ -839,10 +839,18 @@ int main(void)
                        (long)g_spd_ff_ma,
                        (long)(g_pos_decel_rev * 1000.0f),
                        (long)(g_pos_kp_used * 10.0f));
-                MAIN_D("[POS] tgt_x1000=%ld ref_x1000=%ld pos_x1000=%ld rev, cmd=%ld rpm brake=%u",
+                MAIN_D("[POS] seg_x1000=%ld/%ld vh=%ld vm=%ld vl=%ld rpm",
+                       (long)(g_pos_seg1_rev * 1000.0f),
+                       (long)(g_pos_seg2_rev * 1000.0f),
+                       (long)g_pos_spd_high_rpm,
+                       (long)g_pos_spd_mid_rpm,
+                       (long)g_pos_spd_low_rpm);
+                MAIN_D("[POS] tgt_x1000=%ld ref_x1000=%ld pos_x1000=%ld rev, "
+                       "vprof=%ld cmd=%ld rpm brake=%u",
                        (long)(g_pos_target_rev * 1000.0f),
                        (long)((g_pos_fb_rev + g_pos_err_rev) * 1000.0f),
                        (long)(g_pos_fb_rev * 1000.0f),
+                       (long)g_pos_vprof_rpm,
                        (long)g_pos_cmd_rpm,
                        (unsigned)g_pos_brake);
             }

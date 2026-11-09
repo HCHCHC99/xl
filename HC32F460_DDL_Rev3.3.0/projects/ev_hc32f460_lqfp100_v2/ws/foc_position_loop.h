@@ -43,8 +43,21 @@
 /* 减速距离，圈：误差大于此值时按速度限幅全速接近，
  * 小于后按 (速度限幅 / 减速距离) 的比例线性减速。
  * 该值 > 0 时等效位置增益 kp = 速度限幅 / 减速距离，g_pos_kp 不再参与；
- * 设为 0 则退回纯 PD（用 g_pos_kp）。 */
+ * 设为 0 则退回纯 PD（用 g_pos_kp）。
+ * 启用三段速度后本参数不再生效。 */
 #define POS_DECEL_REV_INIT          (5.0f)
+
+/* 三段速度（距离分段 + 线性过渡），输出速度指令 rpm：
+ *   |误差| >= seg1_rev          : 高速 spd_high_rpm
+ *   seg2_rev <= |误差| < seg1   : 中速到高速线性过渡
+ *   0 <= |误差| < seg2_rev      : 低速 spd_low_rpm 线性减到 0
+ * 要求 seg1_rev > seg2_rev > 0，否则退回 decel/kp 的老逻辑。
+ * 仅由位置环产生速度指令，不直接给 iq；iq 仍由速度环产生。 */
+#define POS_SEG1_REV_INIT           (8.0f)
+#define POS_SEG2_REV_INIT           (2.0f)
+#define POS_SPD_HIGH_RPM_INIT       (600.0f)
+#define POS_SPD_MID_RPM_INIT        (250.0f)
+#define POS_SPD_LOW_RPM_INIT        (60.0f)
 
 /* 积分项（ki*integral）限幅，rpm */
 #define POS_ITERM_MAX_RPM_INIT      (100.0f)
@@ -81,6 +94,11 @@ extern volatile float   g_pos_ki;                /* rpm/rev/s，0 = 纯 PD */
 extern volatile float   g_pos_kd;                /* rpm/(rev/s)，位置反馈微分阻尼 */
 extern volatile float   g_pos_speed_limit_rpm;   /* 速度指令限幅 rpm */
 extern volatile float   g_pos_decel_rev;         /* 减速距离 圈，0 = 用 g_pos_kp */
+extern volatile float   g_pos_seg1_rev;          /* 高速/中速分界 圈 */
+extern volatile float   g_pos_seg2_rev;          /* 中速/低速分界 圈 */
+extern volatile float   g_pos_spd_high_rpm;      /* 段1 速度 rpm */
+extern volatile float   g_pos_spd_mid_rpm;       /* 段2 中速 rpm（过渡起点） */
+extern volatile float   g_pos_spd_low_rpm;       /* 段3 低速 rpm（seg2 处） */
 extern volatile float   g_pos_iterm_max_rpm;     /* 积分项限幅 rpm */
 extern volatile float   g_pos_err_max_rev;       /* 误差限幅 圈 */
 extern volatile float   g_pos_deadband_rev;      /* 位置死区 圈 */
@@ -102,7 +120,8 @@ extern volatile uint8_t g_pos_brake;       /* 1 = 当前处于到位刹车 */
 extern volatile float   g_pos_fb_rev;      /* 当前位置，圈 */
 extern volatile float   g_pos_err_rev;     /* 限幅/死区后的位置误差，圈 */
 extern volatile float   g_pos_cmd_rpm;     /* 位置 PI 输出速度指令，rpm */
-extern volatile float   g_pos_kp_used;     /* 实际生效的位置增益 rpm/rev */
+extern volatile float   g_pos_kp_used;     /* 实际生效的位置增益 rpm/rev（三段模式下为 0） */
+extern volatile float   g_pos_vprof_rpm;   /* 三段速度规划给出的速度 rpm */
 
 /*=============================================================================
  * 四、API
