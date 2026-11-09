@@ -46,8 +46,13 @@
 /* 位置误差限幅，圈（同时限制最大速度指令） */
 #define POS_ERR_MAX_REV_INIT        (3.0f)
 
-/* 位置死区，圈（约 8 counts） */
-#define POS_DEADBAND_REV_INIT       (0.002f)
+/* 位置死区，圈（约 8 counts）。带爬行速度后要略大于刹车距离 */
+#define POS_DEADBAND_REV_INIT       (0.03f)
+
+/* 爬行下限：误差超出死区且实际速度接近 0 时，强制最低速度，防静摩擦停住 */
+#define POS_CREEP_RPM_INIT          (50.0f)
+#define POS_STALL_RPM_INIT          (20.0f)    /* 实际速度低于此值才允许强制爬行 */
+#define POS_CREEP_EN_INIT           (1u)       /* 1 = 开启爬行下限 */
 
 /* 软行程限位，圈（对称 ±） */
 #define POS_LIMIT_REV_INIT          (100.0f)
@@ -66,6 +71,9 @@ extern volatile float   g_pos_speed_limit_rpm;   /* 速度指令限幅 rpm */
 extern volatile float   g_pos_iterm_max_rpm;     /* 积分项限幅 rpm */
 extern volatile float   g_pos_err_max_rev;       /* 误差限幅 圈 */
 extern volatile float   g_pos_deadband_rev;      /* 位置死区 圈 */
+extern volatile float   g_pos_creep_rpm;         /* 爬行下限 rpm */
+extern volatile float   g_pos_stall_rpm;         /* 爬行生效的实际速度门限 rpm */
+extern volatile uint8_t g_pos_creep_enable;      /* 1 = 开启爬行下限 */
 extern volatile float   g_pos_limit_rev;         /* 软行程限位 圈（±） */
 extern volatile float   g_pos_back_gain;         /* 抗饱和回退系数 */
 extern volatile uint8_t g_pos_zero_req;          /* 写 1 把当前位置设为 0 并保持 */

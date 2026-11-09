@@ -405,72 +405,72 @@
         <Ww>
           <count>21</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_spd_iterm_max_ma</ItemText>
+          <ItemText>g_spd_ki</ItemText>
         </Ww>
         <Ww>
           <count>22</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_spd_ki</ItemText>
+          <ItemText>g_spd_kp</ItemText>
         </Ww>
         <Ww>
           <count>23</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_spd_kp</ItemText>
+          <ItemText>g_spd_accel_rpm_s</ItemText>
         </Ww>
         <Ww>
           <count>24</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_spd_accel_rpm_s</ItemText>
+          <ItemText>g_pos_zero_req</ItemText>
         </Ww>
         <Ww>
           <count>25</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_pos_zero_req</ItemText>
+          <ItemText>g_pos_target_rev</ItemText>
         </Ww>
         <Ww>
           <count>26</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_pos_target_rev</ItemText>
+          <ItemText>g_pos_kp</ItemText>
         </Ww>
         <Ww>
           <count>27</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_pos_kp</ItemText>
+          <ItemText>g_pos_ki</ItemText>
         </Ww>
         <Ww>
           <count>28</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_pos_ki</ItemText>
+          <ItemText>g_pos_kd</ItemText>
         </Ww>
         <Ww>
           <count>29</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_pos_kd</ItemText>
+          <ItemText>g_pos_speed_limit_rpm</ItemText>
         </Ww>
         <Ww>
           <count>30</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_pos_speed_limit_rpm</ItemText>
+          <ItemText>g_pos_iterm_max_rpm</ItemText>
         </Ww>
         <Ww>
           <count>31</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_pos_iterm_max_rpm</ItemText>
+          <ItemText>g_pos_back_gain</ItemText>
         </Ww>
         <Ww>
           <count>32</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_pos_back_gain</ItemText>
+          <ItemText>g_pos_err_max_rev</ItemText>
         </Ww>
         <Ww>
           <count>33</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_pos_err_max_rev</ItemText>
+          <ItemText>g_pos_limit_rev</ItemText>
         </Ww>
         <Ww>
           <count>34</count>
           <WinNumber>2</WinNumber>
-          <ItemText>g_pos_limit_rev</ItemText>
+          <ItemText>g_spd_iterm_max_ma</ItemText>
         </Ww>
       </WatchWindow2>
       <Tracepoint>

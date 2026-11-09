@@ -38,6 +38,9 @@ volatile float   g_pos_speed_limit_rpm   = POS_SPEED_LIMIT_RPM_INIT;
 volatile float   g_pos_iterm_max_rpm     = POS_ITERM_MAX_RPM_INIT;
 volatile float   g_pos_err_max_rev       = POS_ERR_MAX_REV_INIT;
 volatile float   g_pos_deadband_rev      = POS_DEADBAND_REV_INIT;
+volatile float   g_pos_creep_rpm         = POS_CREEP_RPM_INIT;
+volatile float   g_pos_stall_rpm         = POS_STALL_RPM_INIT;
+volatile uint8_t g_pos_creep_enable      = POS_CREEP_EN_INIT;
 volatile float   g_pos_limit_rev         = POS_LIMIT_REV_INIT;
 volatile float   g_pos_back_gain         = POS_BACK_GAIN_INIT;
 volatile uint8_t g_pos_zero_req          = 0u;
@@ -173,6 +176,9 @@ void Foc_Position_Task20k(void)
     float db;
     float err_max;
     float spd_lim;
+    float creep;
+    float stall;
+    float spd_abs;
 
     if (!s_ready) {
         return;
@@ -256,6 +262,28 @@ void Foc_Position_Task20k(void)
 
     /* ---- 位置 PI：把限幅后的误差作为给定 ---- */
     cmd = s_pid_pos.ops->calc(&s_priv_pos, pos, pos + err, 0.0f, 0.0f, POS_DT_S);
+
+    /* ---- 爬行下限：误差超出死区且实际速度接近 0 时，强制最低速度 ---- */
+    if ((g_pos_creep_enable != 0u) && (err != 0.0f)) {
+        creep = g_pos_creep_rpm;
+        stall = g_pos_stall_rpm;
+        if (creep < 0.0f) {
+            creep = 0.0f;
+        }
+        if (stall < 0.0f) {
+            stall = 0.0f;
+        }
+        spd_abs = g_spd_filt_rpm;
+        if (spd_abs < 0.0f) {
+            spd_abs = -spd_abs;
+        }
+
+        if ((creep > 0.0f) && (spd_abs < stall)) {
+            if ((cmd < creep) && (cmd > -creep)) {
+                cmd = (err > 0.0f) ? creep : -creep;
+            }
+        }
+    }
 
     s_err_rev     = err;
     g_pos_err_rev = err;

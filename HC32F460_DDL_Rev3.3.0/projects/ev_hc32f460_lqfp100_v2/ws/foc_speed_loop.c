@@ -41,6 +41,7 @@ volatile float g_spd_ki            = SPD_KI_INIT;
 volatile float g_spd_accel_rpm_s   = SPD_ACCEL_RPM_S_INIT;
 volatile float g_spd_iq_limit_ma   = SPD_IQ_LIMIT_MA_INIT;
 volatile float g_spd_iterm_max_ma  = SPD_ITERM_MAX_MA_INIT;
+volatile float g_spd_ff_ma         = SPD_FF_MA_INIT;
 volatile float g_spd_back_gain     = 0.0f;
 
 volatile float g_spd_cur_kp        = SPD_CUR_KP_INIT;
@@ -200,6 +201,7 @@ void Foc_Speed_Task20k(void)
     float   iq_lim;
     float   iterm;
     float   bg;
+    float   ff;
     float   out_ma;
 
     if (!s_ready) {
@@ -270,6 +272,19 @@ void Foc_Speed_Task20k(void)
     /* ---- 速度 PI：输出 mA ---- */
     out_ma = s_pid_spd.ops->calc(&s_priv_spd, s_filt_rpm, s_ramp_rpm,
                                  0.0f, 0.0f, SPD_DT_S);
+
+    /* ---- 库仑摩擦前馈：按速度指令方向叠固定偏置，帮助低速起步 ---- */
+    ff = g_spd_ff_ma;
+    if (ff < 0.0f) {
+        ff = 0.0f;
+    }
+    if (s_ramp_rpm > SPD_FF_DEADBAND_RPM) {
+        out_ma += ff;
+    } else if (s_ramp_rpm < -SPD_FF_DEADBAND_RPM) {
+        out_ma -= ff;
+    }
+    if (out_ma >  iq_lim) out_ma =  iq_lim;
+    if (out_ma < -iq_lim) out_ma = -iq_lim;
 
     g_spd_ramp_rpm = s_ramp_rpm;
     g_spd_err_rpm  = s_ramp_rpm - s_filt_rpm;

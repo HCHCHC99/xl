@@ -39,11 +39,17 @@
 #define SPD_IQ_LIMIT_MA_INIT        (3400.0f)
 
 /* 积分项（ki*integral）限幅，mA。
- *   参考 integral_max=3400 rpm·s，乘以 ki=0.03 得 102mA；
- *   pid_ctrl 会把 integral 反算回 i_term/ki，等价于参考的积分状态限幅。 */
+ *   参考 integral_max=3400 rpm·s 等效 102mA，但那是空载值；
+ *   带丝杆负载时零速保持力矩需要更大，默认放到 1000mA。
+ *   pid_ctrl 会把 integral 反算回 i_term/ki，等价于积分状态限幅。 */
 #define SPD_ITERM_MAX_MA_INIT       (1000.0f)
 
-/* 目标加速度斜坡，rpm/s（每 5ms 步进 9.75 rpm） */
+/* 库仑摩擦前馈，mA：速度指令方向明确时在 iq_ref 上叠一个固定偏置，
+ *   让低速/起步不必靠速度误差慢慢憋力矩。0 = 关闭。 */
+#define SPD_FF_MA_INIT              (200.0f)
+#define SPD_FF_DEADBAND_RPM         (2.0f)
+
+/* 目标加速度斜坡，rpm/s（2500 时每 5ms 步进 12.5 rpm） */
 #define SPD_ACCEL_RPM_S_INIT        (2500.0f)
 
 /* 目标转速限幅，rpm */
@@ -74,6 +80,7 @@ extern volatile float   g_spd_ki;              /* mA/rpm/s */
 extern volatile float   g_spd_accel_rpm_s;     /* rpm/s，0 = 无斜坡 */
 extern volatile float   g_spd_iq_limit_ma;     /* 输出限幅 mA */
 extern volatile float   g_spd_iterm_max_ma;    /* 积分项限幅 mA，0 = 不限 */
+extern volatile float   g_spd_ff_ma;           /* 库仑摩擦前馈 mA，0 = 关闭 */
 extern volatile float   g_spd_back_gain;       /* 反计算抗饱和回退系数，0 = 关闭 */
 
 /* 速度模式电流环参数 */
