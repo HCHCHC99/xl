@@ -12,9 +12,14 @@
  *   0 = 现板：PA3 = 母线电流 itotal，U 相电流由 iu = -iv - iw 计算
  *             电流传感器灵敏度 26.4 mV/A，零点 1.65V
  *   1 = IU 板：PA3/PA4/PA5 = iu/iv/iw，三相差分电流传感器
+ *             U 相电流直接用 PA3 采样值
  *             灵敏度 6 × 0.02Ω = 0.12 V/A，零点 1.25V
+ *   2 = IU 重构板：硬件与 1 相同（PA3/PA4/PA5 = iu/iw/iv），
+ *             但 PA3 只采样不使用（仅供观测），
+ *             U 相电流由 iu = -iv - iw 重构
+ *             传感器参数与板型 1 相同
  *---------------------------------------------------------------------------*/
-#define CFG_SAMPLING_BOARD_IU_SENSOR    1
+#define CFG_SAMPLING_BOARD_IU_SENSOR    2
 
 /*---------------------------------------------------------------------------
  * 采样模式
@@ -36,7 +41,7 @@
  *     scale   = (VREF/4095) / 灵敏度        [A/LSB]
  *     offset  = 零点电压 × 4095 / VREF     [LSB]
  *---------------------------------------------------------------------------*/
-#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+#if (CFG_SAMPLING_BOARD_IU_SENSOR != 0)
 #define CFG_SAMPLING_IU_GAIN          6.0f
 #define CFG_SAMPLING_IU_SHUNT_OHM     0.02f
 #define CFG_SAMPLING_IU_ZERO_V        1.25f

@@ -72,7 +72,8 @@ static MotorSamplingScale_t s_scale = {
  *---------------------------------------------------------------------------*/
 void Motor_Sampling_EocaCallback(void)
 {
-#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+#if (CFG_SAMPLING_BOARD_IU_SENSOR != 0)
+    /* 板型 1：PA3 为 iu 直接使用；板型 2：PA3 只采样观测，iu 后续由 -iw-iv 重构 */
     s_u16AdcItotal = ADC_GetValue(CM_ADC1, HW_ADC_CH_IU);
 #else
     s_u16AdcItotal = ADC_GetValue(CM_ADC1, HW_ADC_CH_ITOTAL);
@@ -127,7 +128,7 @@ static void Motor_Sampling_AdcCfg(void)
     FCG_Fcg0PeriphClockCmd(FCG0_PERIPH_AOS, ENABLE);
     AOS_SetTriggerEventSrc(AOS_ADC1_0, EVT_SRC_TMR4_3_SCMP0);
 
-#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+#if (CFG_SAMPLING_BOARD_IU_SENSOR != 0)
     ADC_ChCmd(CM_ADC1, ADC_SEQ_A, HW_ADC_CH_IU, ENABLE);
 #else
     ADC_ChCmd(CM_ADC1, ADC_SEQ_A, HW_ADC_CH_ITOTAL, ENABLE);
@@ -136,7 +137,7 @@ static void Motor_Sampling_AdcCfg(void)
     ADC_ChCmd(CM_ADC1, ADC_SEQ_A, HW_ADC_CH_IV, ENABLE);
 
     /* 设置采样时间 */
-#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+#if (CFG_SAMPLING_BOARD_IU_SENSOR != 0)
     ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IU,     7U);
 #else
     ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_ITOTAL, 7U);
@@ -186,9 +187,13 @@ void Motor_GetSample(MotorSample_t *s)
     if (s == NULL) return;
 
     raw = (float)s_u16AdcItotal;
-#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+#if (CFG_SAMPLING_BOARD_IU_SENSOR == 1)
     s->iu      = (raw - s_scale.current_offset[0]) * s_scale.current_scale;
     s->i_total = 0.0f;   /* 该板没有母线电流传感器 */
+#elif (CFG_SAMPLING_BOARD_IU_SENSOR == 2)
+    /* PA3 只采样不使用（raw 供观测），iu 由 -iw-iv 重构 */
+    s->iu      = 0.0f;
+    s->i_total = 0.0f;
 #else
     s->i_total = (raw - s_scale.current_offset[0]) * s_scale.current_scale;
 #endif
@@ -201,9 +206,10 @@ void Motor_GetSample(MotorSample_t *s)
     iv = (raw - s_scale.current_offset[2]) * s_scale.current_scale;
     s->iv = iv;
 
-#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+#if (CFG_SAMPLING_BOARD_IU_SENSOR == 1)
     /* iu 由 PA3 直接采样，不再重构 */
 #else
+    /* 板型 0/2：iu = 0 - iv - iw */
     s->iu = 0.0f - iv - iw;
 #endif
 
@@ -272,8 +278,10 @@ void Motor_Sampling_ApplyOffsetCal(void)
     if (!Motor_Sampling_ApplyOffsetCalSilent()) return;
 
     MAIN_D("[CAL] done: N=%lu", (unsigned long)s_cal_cnt);
-#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+#if (CFG_SAMPLING_BOARD_IU_SENSOR == 1)
     MAIN_D("[CAL]   iu    : raw=%4u", (unsigned)g_cal_offset_itotal);
+#elif (CFG_SAMPLING_BOARD_IU_SENSOR == 2)
+    MAIN_D("[CAL]   iu(raw,unused): raw=%4u", (unsigned)g_cal_offset_itotal);
 #else
     MAIN_D("[CAL]   itotal: raw=%4u", (unsigned)g_cal_offset_itotal);
 #endif

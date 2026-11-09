@@ -47,14 +47,16 @@
  *   PA5 = CH5 (iv)      V 相电流
  *   PA6 = CH6 (vbus)    母线电压
  *
- *   U 相电流：CFG_SAMPLING_BOARD_IU_SENSOR=0 时由 iu = 0 - iw - iv 计算
- *            CFG_SAMPLING_BOARD_IU_SENSOR=1 时直接采 PA3
+ *   U 相电流：
+ *     CFG_SAMPLING_BOARD_IU_SENSOR=0  PA3 为母线电流，iu = 0 - iw - iv
+ *     CFG_SAMPLING_BOARD_IU_SENSOR=1  PA3 直接采样 iu 并使用
+ *     CFG_SAMPLING_BOARD_IU_SENSOR=2  PA3 仍采样但只观测，iu = 0 - iw - iv
  *=============================================================================*/
 #define HW_PIN_ADC_I3_PORT       GPIO_PORT_A
 #define HW_PIN_ADC_I3_PIN        GPIO_PIN_03
 #define HW_ADC_CH_I3             ADC_CH3
 
-#if (CFG_SAMPLING_BOARD_IU_SENSOR)
+#if (CFG_SAMPLING_BOARD_IU_SENSOR != 0)
 #define HW_ADC_CH_IU             HW_ADC_CH_I3
 #else
 #define HW_ADC_CH_ITOTAL         HW_ADC_CH_I3

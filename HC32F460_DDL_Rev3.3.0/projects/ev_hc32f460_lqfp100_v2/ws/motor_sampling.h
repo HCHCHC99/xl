@@ -23,8 +23,8 @@
 #include <stdint.h>
 
 typedef struct {
-    float i_total;  /* A，总电流（PA3；CFG_SAMPLING_BOARD_IU_SENSOR=1 时恒为 0） */
-    float iu;       /* A，U 相电流（PA3 直接采样，或 CFG_SAMPLING_BOARD_IU_SENSOR=0 时 0 - iw - iv 计算） */
+    float i_total;  /* A，母线电流（仅板型 0 有效，板型 1/2 恒为 0） */
+    float iu;       /* A，U 相电流（板型 1 用 PA3 直接采样；板型 0/2 由 0 - iw - iv 计算） */
     float iv;       /* A，V 相电流（PA5） */
     float iw;       /* A，W 相电流（PA4） */
     float vbus;     /* V，母线电压（PA6） */

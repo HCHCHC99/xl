@@ -120,7 +120,7 @@
         <SetRegEntry>
           <Number>0</Number>
           <Key>DLGUARM</Key>
-          <Name></Name>
+          <Name>??I</Name>
         </SetRegEntry>
         <SetRegEntry>
           <Number>0</Number>
@@ -471,6 +471,31 @@
           <count>34</count>
           <WinNumber>2</WinNumber>
           <ItemText>g_spd_iterm_max_ma</ItemText>
+        </Ww>
+        <Ww>
+          <count>35</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_spd_ff_ma</ItemText>
+        </Ww>
+        <Ww>
+          <count>36</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_pos_creep_rpm</ItemText>
+        </Ww>
+        <Ww>
+          <count>37</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_pos_stall_rpm</ItemText>
+        </Ww>
+        <Ww>
+          <count>38</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_pos_creep_enable</ItemText>
+        </Ww>
+        <Ww>
+          <count>39</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_pos_deadband_rev</ItemText>
         </Ww>
       </WatchWindow2>
       <Tracepoint>
