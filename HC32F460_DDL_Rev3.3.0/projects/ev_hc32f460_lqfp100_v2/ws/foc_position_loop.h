@@ -37,8 +37,14 @@
 #define POS_KI_INIT                 (0.0f)     /* rpm/rev/s，PD 默认关闭 */
 #define POS_KD_INIT                 (20.0f)    /* rpm/(rev/s) */
 
-/* 速度指令限幅，rpm */
+/* 速度指令限幅，rpm（远距离段的最大接近速度） */
 #define POS_SPEED_LIMIT_RPM_INIT    (300.0f)
+
+/* 减速距离，圈：误差大于此值时按速度限幅全速接近，
+ * 小于后按 (速度限幅 / 减速距离) 的比例线性减速。
+ * 该值 > 0 时等效位置增益 kp = 速度限幅 / 减速距离，g_pos_kp 不再参与；
+ * 设为 0 则退回纯 PD（用 g_pos_kp）。 */
+#define POS_DECEL_REV_INIT          (5.0f)
 
 /* 积分项（ki*integral）限幅，rpm */
 #define POS_ITERM_MAX_RPM_INIT      (100.0f)
@@ -74,6 +80,7 @@ extern volatile float   g_pos_kp;                /* rpm/rev */
 extern volatile float   g_pos_ki;                /* rpm/rev/s，0 = 纯 PD */
 extern volatile float   g_pos_kd;                /* rpm/(rev/s)，位置反馈微分阻尼 */
 extern volatile float   g_pos_speed_limit_rpm;   /* 速度指令限幅 rpm */
+extern volatile float   g_pos_decel_rev;         /* 减速距离 圈，0 = 用 g_pos_kp */
 extern volatile float   g_pos_iterm_max_rpm;     /* 积分项限幅 rpm */
 extern volatile float   g_pos_err_max_rev;       /* 误差限幅 圈 */
 extern volatile float   g_pos_deadband_rev;      /* 位置死区 圈 */
@@ -95,6 +102,7 @@ extern volatile uint8_t g_pos_brake;       /* 1 = 当前处于到位刹车 */
 extern volatile float   g_pos_fb_rev;      /* 当前位置，圈 */
 extern volatile float   g_pos_err_rev;     /* 限幅/死区后的位置误差，圈 */
 extern volatile float   g_pos_cmd_rpm;     /* 位置 PI 输出速度指令，rpm */
+extern volatile float   g_pos_kp_used;     /* 实际生效的位置增益 rpm/rev */
 
 /*=============================================================================
  * 四、API

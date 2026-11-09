@@ -824,7 +824,7 @@ int main(void)
                 s_last_pos_log_ms = now_ms;
                 MAIN_D("[POS] kp_x10=%ld ki_x10=%ld kd_x10=%ld spd_lim=%ld iterm=%ld "
                        "err_max_x1000=%ld db_x1000=%ld trip_rev=%ld bg_x100=%ld "
-                       "creep=%ld stall=%ld ff=%ld",
+                       "creep=%ld stall=%ld ff=%ld decel_x1000=%ld kpused_x10=%ld",
                        (long)(g_pos_kp * 10.0f),
                        (long)(g_pos_ki * 10.0f),
                        (long)(g_pos_kd * 10.0f),
@@ -836,7 +836,9 @@ int main(void)
                        (long)(g_pos_back_gain * 100.0f),
                        (long)g_pos_creep_rpm,
                        (long)g_pos_stall_rpm,
-                       (long)g_spd_ff_ma);
+                       (long)g_spd_ff_ma,
+                       (long)(g_pos_decel_rev * 1000.0f),
+                       (long)(g_pos_kp_used * 10.0f));
                 MAIN_D("[POS] tgt_x1000=%ld ref_x1000=%ld pos_x1000=%ld rev, cmd=%ld rpm brake=%u",
                        (long)(g_pos_target_rev * 1000.0f),
                        (long)((g_pos_fb_rev + g_pos_err_rev) * 1000.0f),

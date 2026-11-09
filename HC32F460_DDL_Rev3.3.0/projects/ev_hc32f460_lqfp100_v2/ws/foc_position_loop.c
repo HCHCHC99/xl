@@ -35,6 +35,7 @@ volatile float   g_pos_kp                = POS_KP_INIT;
 volatile float   g_pos_ki                = POS_KI_INIT;
 volatile float   g_pos_kd                = POS_KD_INIT;
 volatile float   g_pos_speed_limit_rpm   = POS_SPEED_LIMIT_RPM_INIT;
+volatile float   g_pos_decel_rev         = POS_DECEL_REV_INIT;
 volatile float   g_pos_iterm_max_rpm     = POS_ITERM_MAX_RPM_INIT;
 volatile float   g_pos_err_max_rev       = POS_ERR_MAX_REV_INIT;
 volatile float   g_pos_deadband_rev      = POS_DEADBAND_REV_INIT;
@@ -56,6 +57,7 @@ volatile uint8_t g_pos_brake    = 0u;
 volatile float   g_pos_fb_rev   = 0.0f;
 volatile float   g_pos_err_rev  = 0.0f;
 volatile float   g_pos_cmd_rpm  = 0.0f;
+volatile float   g_pos_kp_used  = POS_KP_INIT;
 
 /*---------------------------------------------------------------------------
  * 内部状态
@@ -194,6 +196,8 @@ void Foc_Position_Task20k(void)
     float err_raw;
     float bspd;
     float hyst;
+    float decel;
+    float kp_eff;
     uint8_t brake_en;
 
     if (!s_ready) {
@@ -259,7 +263,17 @@ void Foc_Position_Task20k(void)
         spd_lim = 1.0f;
     }
 
-    (void)s_pid_pos.ops->set_param(&s_priv_pos, g_pos_kp, g_pos_ki, g_pos_kd);
+    /* 减速距离配置：误差 > decel 时全速，误差 < decel 时按比例减速，
+     * 等效 kp = 速度限幅 / 减速距离；decel=0 时退回 g_pos_kp */
+    decel = g_pos_decel_rev;
+    if (decel > 0.001f) {
+        kp_eff = spd_lim / decel;
+    } else {
+        kp_eff = g_pos_kp;
+    }
+    g_pos_kp_used = kp_eff;
+
+    (void)s_pid_pos.ops->set_param(&s_priv_pos, kp_eff, g_pos_ki, g_pos_kd);
     (void)s_pid_pos.ops->set_limit(&s_priv_pos, -spd_lim, spd_lim, bg);
     (void)s_pid_pos.ops->set_iterm_limit(&s_priv_pos, iterm);
 

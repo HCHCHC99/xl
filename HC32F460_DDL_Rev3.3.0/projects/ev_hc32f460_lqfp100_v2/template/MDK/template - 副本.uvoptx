@@ -120,7 +120,6 @@
         <SetRegEntry>
           <Number>0</Number>
           <Key>DLGUARM</Key>
-          <Name>??I</Name>
         </SetRegEntry>
         <SetRegEntry>
           <Number>0</Number>
@@ -496,6 +495,16 @@
           <count>39</count>
           <WinNumber>2</WinNumber>
           <ItemText>g_pos_deadband_rev</ItemText>
+        </Ww>
+        <Ww>
+          <count>40</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_spd_back_gain</ItemText>
+        </Ww>
+        <Ww>
+          <count>41</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>g_spd_ki</ItemText>
         </Ww>
       </WatchWindow2>
       <Tracepoint>
