@@ -147,6 +147,10 @@ void Foc_CurrentLoop_ApplyParams(float kp, float ki, float kd,
 
 void Foc_CurrentLoop_Step(float *vd, float *vq, float *theta_e);
 
+/* 输出零矢量（vd=vq=0，三相 50%）：用于到位后的短路制动。
+ * 首次进入会复位 d/q PID 与 ref 斜坡，避免制动结束恢复时带上旧积分。 */
+void Foc_CurrentLoop_OutputZeroVector(float *vd, float *vq, float *theta_e);
+
 bool Foc_CurrentLoop_IsReady(void);
 
 /* 预热与在线零偏校准都已完成、电流环真正闭环中 */

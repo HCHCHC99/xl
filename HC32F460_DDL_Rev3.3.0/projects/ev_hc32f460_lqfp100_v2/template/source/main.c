@@ -837,11 +837,12 @@ int main(void)
                        (long)g_pos_creep_rpm,
                        (long)g_pos_stall_rpm,
                        (long)g_spd_ff_ma);
-                MAIN_D("[POS] tgt_x1000=%ld ref_x1000=%ld pos_x1000=%ld rev, cmd=%ld rpm",
+                MAIN_D("[POS] tgt_x1000=%ld ref_x1000=%ld pos_x1000=%ld rev, cmd=%ld rpm brake=%u",
                        (long)(g_pos_target_rev * 1000.0f),
                        (long)((g_pos_fb_rev + g_pos_err_rev) * 1000.0f),
                        (long)(g_pos_fb_rev * 1000.0f),
-                       (long)g_pos_cmd_rpm);
+                       (long)g_pos_cmd_rpm,
+                       (unsigned)g_pos_brake);
             }
         }
 

@@ -119,10 +119,15 @@ void Foc_Mode_Step(float ts, FocCmd_t *out)
         break;
 
     case FOC_MODE_POSITION:
-        /* 位置环（10ms）-> 速度环（5ms）-> 电流环 */
+        /* 位置环（10ms）-> 速度环（5ms）-> 电流环；
+         * 到位刹车时直接输出零矢量做短路制动 */
         Foc_Position_Task20k();
-        Foc_Speed_Task20k();
-        Foc_CurrentLoop_Step(&out->vd, &out->vq, &out->theta_e);
+        if (Foc_Position_IsBrake()) {
+            Foc_CurrentLoop_OutputZeroVector(&out->vd, &out->vq, &out->theta_e);
+        } else {
+            Foc_Speed_Task20k();
+            Foc_CurrentLoop_Step(&out->vd, &out->vq, &out->theta_e);
+        }
         out->enable = true;
         break;
 

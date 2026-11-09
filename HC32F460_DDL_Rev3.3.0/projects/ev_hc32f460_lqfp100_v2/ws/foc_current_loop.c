@@ -88,6 +88,9 @@ static volatile float             s_vmag_raw     = 0.0f;
 /* 输出斜率限制上一拍 vq */
 static float s_vq_prev = 0.0f;
 
+/* 当前是否处于零矢量输出（短路制动） */
+static bool s_zero_out = false;
+
 /* id/iq 反馈 EMA 状态 */
 static float s_id_f = 0.0f;
 static float s_iq_f = 0.0f;
@@ -252,6 +255,7 @@ void Foc_CurrentLoop_Reset(void)
     s_id_f          = 0.0f;
     s_iq_f          = 0.0f;
     s_warmup_cnt    = 0u;   /* 重新预热，用当前 g_cl_warmup_ticks */
+    s_zero_out      = false;
 
     /* 进 CURRENT 后在 50/50 零矢量窗口重校三相电流零偏，
      * 消除上电（PWM 关闭）校准与运行中采样点之间的偏置差。
@@ -356,6 +360,8 @@ void Foc_CurrentLoop_Step(float *vd, float *vq, float *theta_e)
     if ((vd == NULL) || (vq == NULL) || (theta_e == NULL)) {
         return;
     }
+
+    s_zero_out = false;
 
     if (!s_ready) {
         *vd = 0.0f;
@@ -477,6 +483,34 @@ void Foc_CurrentLoop_Step(float *vd, float *vq, float *theta_e)
     *vd      = vd_tot;
     *vq      = vq_tot;
     *theta_e = th;
+}
+
+/*=============================================================================
+ * 零矢量输出（短路制动）
+ *=============================================================================*/
+void Foc_CurrentLoop_OutputZeroVector(float *vd, float *vq, float *theta_e)
+{
+    if ((vd == NULL) || (vq == NULL) || (theta_e == NULL)) {
+        return;
+    }
+
+    if (!s_zero_out) {
+        s_zero_out = true;
+        if (s_ready) {
+            s_pid_d.ops->reset(&s_priv_d);
+            s_pid_q.ops->reset(&s_priv_q);
+            s_id_ref_ramped = 0.0f;
+            s_iq_ref_ramped = 0.0f;
+            s_vq_prev       = 0.0f;
+            s_limit_reason  = CL_LIMIT_NONE;
+            s_sat_cnt       = 0u;
+            s_vmag_raw      = 0.0f;
+        }
+    }
+
+    *vd = 0.0f;
+    *vq = 0.0f;
+    *theta_e = hw_encoder_get_elec_angle_rad(CFG_MOTOR_POLE_PAIRS);
 }
 
 /*=============================================================================

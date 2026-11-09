@@ -41,6 +41,9 @@ volatile float   g_pos_deadband_rev      = POS_DEADBAND_REV_INIT;
 volatile float   g_pos_creep_rpm         = POS_CREEP_RPM_INIT;
 volatile float   g_pos_stall_rpm         = POS_STALL_RPM_INIT;
 volatile uint8_t g_pos_creep_enable      = POS_CREEP_EN_INIT;
+volatile uint8_t g_pos_brake_enable      = POS_BRAKE_EN_INIT;
+volatile float   g_pos_brake_speed_rpm   = POS_BRAKE_SPEED_RPM_INIT;
+volatile float   g_pos_brake_hyst_rev    = POS_BRAKE_HYST_REV_INIT;
 volatile float   g_pos_limit_rev         = POS_LIMIT_REV_INIT;
 volatile float   g_pos_back_gain         = POS_BACK_GAIN_INIT;
 volatile uint8_t g_pos_zero_req          = 0u;
@@ -49,6 +52,7 @@ volatile uint8_t g_pos_zero_req          = 0u;
  * 观测量
  *---------------------------------------------------------------------------*/
 volatile uint8_t g_pos_active   = 0u;
+volatile uint8_t g_pos_brake    = 0u;
 volatile float   g_pos_fb_rev   = 0.0f;
 volatile float   g_pos_err_rev  = 0.0f;
 volatile float   g_pos_cmd_rpm  = 0.0f;
@@ -61,6 +65,7 @@ static struct pid_priv s_priv_pos;
 
 static bool     s_ready          = false;
 static uint16_t s_div_cnt        = 0u;
+static bool     s_brake          = false;
 static float    s_pos_offset_rev = 0.0f;
 static float    s_fb_rev         = 0.0f;
 static float    s_err_rev        = 0.0f;
@@ -101,9 +106,12 @@ void Foc_Position_Init(void)
     s_err_rev        = 0.0f;
 
     g_pos_active  = 0u;
+    g_pos_brake   = 0u;
     g_pos_fb_rev  = 0.0f;
     g_pos_err_rev = 0.0f;
     g_pos_cmd_rpm = 0.0f;
+
+    s_brake = false;
 
     s_ready = true;
 
@@ -140,6 +148,8 @@ void Foc_Position_Reset(void)
     g_pos_err_rev = 0.0f;
     g_pos_cmd_rpm = 0.0f;
     g_pos_active  = 0u;
+    g_pos_brake   = 0u;
+    s_brake       = false;
 
     /* 进入时以当前位置为目标：先原地保持，再由 Watch 写新目标 */
     g_pos_target_rev = s_fb_rev;
@@ -159,6 +169,8 @@ void Foc_Position_Stop(void)
     g_pos_err_rev = 0.0f;
     g_pos_cmd_rpm = 0.0f;
     g_pos_active  = 0u;
+    g_pos_brake   = 0u;
+    s_brake       = false;
 }
 
 /*=============================================================================
@@ -179,6 +191,10 @@ void Foc_Position_Task20k(void)
     float creep;
     float stall;
     float spd_abs;
+    float err_raw;
+    float bspd;
+    float hyst;
+    uint8_t brake_en;
 
     if (!s_ready) {
         return;
@@ -252,8 +268,53 @@ void Foc_Position_Task20k(void)
     if (target >  lim) target =  lim;
     if (target < -lim) target = -lim;
 
+    /* ---- 到位刹车状态机 ---- */
+    err_raw  = target - pos;
+    brake_en = (g_pos_brake_enable != 0u) ? 1u : 0u;
+    bspd     = g_pos_brake_speed_rpm;
+    if (bspd < 0.0f) {
+        bspd = 0.0f;
+    }
+    hyst = g_pos_brake_hyst_rev;
+    if (hyst < 0.0f) {
+        hyst = 0.0f;
+    }
+    spd_abs = g_spd_filt_rpm;
+    if (spd_abs < 0.0f) {
+        spd_abs = -spd_abs;
+    }
+
+    if (s_brake) {
+        /* 误差超出（死区 + 滞环）或刹车被关闭：退出刹车，清速度环 */
+        if ((brake_en == 0u) ||
+            (err_raw >  (db + hyst)) ||
+            (err_raw < -(db + hyst))) {
+            s_brake     = false;
+            g_pos_brake = 0u;
+            Foc_Speed_Stop();
+            s_pid_pos.ops->reset(&s_priv_pos);
+        }
+    } else {
+        /* 误差进入死区且实际速度足够低：进入刹车 */
+        if ((brake_en != 0u) &&
+            (err_raw <  db) && (err_raw > -db) &&
+            (spd_abs < bspd)) {
+            s_brake     = true;
+            g_pos_brake = 1u;
+            s_pid_pos.ops->reset(&s_priv_pos);
+        }
+    }
+
+    if (s_brake) {
+        s_err_rev        = 0.0f;
+        g_pos_err_rev    = 0.0f;
+        g_pos_cmd_rpm    = 0.0f;
+        g_spd_target_rpm = 0.0f;
+        return;
+    }
+
     /* ---- 误差限幅 + 死区 ---- */
-    err = target - pos;
+    err = err_raw;
     if (err >  err_max) err =  err_max;
     if (err < -err_max) err = -err_max;
     if ((err < db) && (err > -db)) {
@@ -273,10 +334,6 @@ void Foc_Position_Task20k(void)
         if (stall < 0.0f) {
             stall = 0.0f;
         }
-        spd_abs = g_spd_filt_rpm;
-        if (spd_abs < 0.0f) {
-            spd_abs = -spd_abs;
-        }
 
         if ((creep > 0.0f) && (spd_abs < stall)) {
             if ((cmd < creep) && (cmd > -creep)) {
@@ -291,6 +348,11 @@ void Foc_Position_Task20k(void)
 
     /* ---- 下发速度指令，交给速度环 ---- */
     g_spd_target_rpm = cmd;
+}
+
+bool Foc_Position_IsBrake(void)
+{
+    return (s_ready && s_brake);
 }
 
 /*******************************************************************************

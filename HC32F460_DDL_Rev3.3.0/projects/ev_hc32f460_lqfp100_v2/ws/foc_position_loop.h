@@ -54,6 +54,12 @@
 #define POS_STALL_RPM_INIT          (20.0f)    /* 实际速度低于此值才允许强制爬行 */
 #define POS_CREEP_EN_INIT           (1u)       /* 1 = 开启爬行下限 */
 
+/* 到位刹车：误差进入死区且实际速度低于门限后，输出三相零矢量短路制动；
+ *   误差超出（死区 + 滞环）后退出刹车，恢复位置闭环。 */
+#define POS_BRAKE_EN_INIT           (1u)
+#define POS_BRAKE_SPEED_RPM_INIT    (5.0f)
+#define POS_BRAKE_HYST_REV_INIT     (0.02f)
+
 /* 软行程限位，圈（对称 ±） */
 #define POS_LIMIT_REV_INIT          (100.0f)
 
@@ -74,6 +80,9 @@ extern volatile float   g_pos_deadband_rev;      /* 位置死区 圈 */
 extern volatile float   g_pos_creep_rpm;         /* 爬行下限 rpm */
 extern volatile float   g_pos_stall_rpm;         /* 爬行生效的实际速度门限 rpm */
 extern volatile uint8_t g_pos_creep_enable;      /* 1 = 开启爬行下限 */
+extern volatile uint8_t g_pos_brake_enable;      /* 1 = 到位后短路制动 */
+extern volatile float   g_pos_brake_speed_rpm;   /* 进入制动的速度门限 rpm */
+extern volatile float   g_pos_brake_hyst_rev;    /* 退出制动的误差滞环 圈 */
 extern volatile float   g_pos_limit_rev;         /* 软行程限位 圈（±） */
 extern volatile float   g_pos_back_gain;         /* 抗饱和回退系数 */
 extern volatile uint8_t g_pos_zero_req;          /* 写 1 把当前位置设为 0 并保持 */
@@ -82,6 +91,7 @@ extern volatile uint8_t g_pos_zero_req;          /* 写 1 把当前位置设为 
  * 三、观测量
  *=============================================================================*/
 extern volatile uint8_t g_pos_active;      /* 1 = 电流环已 active，位置环闭环中 */
+extern volatile uint8_t g_pos_brake;       /* 1 = 当前处于到位刹车 */
 extern volatile float   g_pos_fb_rev;      /* 当前位置，圈 */
 extern volatile float   g_pos_err_rev;     /* 限幅/死区后的位置误差，圈 */
 extern volatile float   g_pos_cmd_rpm;     /* 位置 PI 输出速度指令，rpm */
@@ -99,5 +109,8 @@ void Foc_Position_Stop(void);
 
 /* 每拍调用（20kHz ISR，内部 10ms 抽稀） */
 void Foc_Position_Task20k(void);
+
+/* 是否处于到位刹车：true 时模式层输出零矢量，不跑速度/电流环 */
+bool Foc_Position_IsBrake(void);
 
 #endif /* FOC_POSITION_LOOP_H */
