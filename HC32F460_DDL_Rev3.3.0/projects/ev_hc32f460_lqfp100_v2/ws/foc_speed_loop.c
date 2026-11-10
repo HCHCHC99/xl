@@ -43,6 +43,8 @@ volatile float g_spd_iq_limit_ma   = SPD_IQ_LIMIT_MA_INIT;
 volatile float g_spd_iterm_max_ma  = SPD_ITERM_MAX_MA_INIT;
 volatile float g_spd_ff_ma         = SPD_FF_MA_INIT;
 volatile float g_spd_back_gain     = 0.0f;
+volatile uint32_t g_spd_aw_mask    = SPD_AW_MASK_INIT;
+volatile float g_spd_aw_cond_thr   = SPD_AW_COND_THR_INIT;
 
 volatile float g_spd_cur_kp        = SPD_CUR_KP_INIT;
 volatile float g_spd_cur_ki        = SPD_CUR_KI_INIT;
@@ -260,6 +262,8 @@ void Foc_Speed_Task20k(void)
     (void)s_pid_spd.ops->set_param(&s_priv_spd, g_spd_kp, g_spd_ki, 0.0f);
     (void)s_pid_spd.ops->set_limit(&s_priv_spd, -iq_lim, iq_lim, bg);
     (void)s_pid_spd.ops->set_iterm_limit(&s_priv_spd, iterm);
+    (void)s_pid_spd.ops->set_aw_mode(&s_priv_spd, g_spd_aw_mask);
+    (void)s_pid_spd.ops->set_aw_cond_thr(&s_priv_spd, g_spd_aw_cond_thr);
 
     /* ---- 目标限幅 + 加速度斜坡 ---- */
     target = g_spd_target_rpm;

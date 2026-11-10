@@ -731,6 +731,24 @@ int main(void)
             }
         }
 
+        /* I 项抗饱和配置在线同步（措施掩码 / 条件积分门限 / 反计算系数） */
+        {
+            static uint32_t s_last_aw_mask = 0xFFFFFFFFu;
+            static float    s_last_aw_thr  = -1.0f;
+            static float    s_last_bg      = -1.0f;
+
+            if ((g_cl_aw_mask != s_last_aw_mask) ||
+                (g_cl_aw_cond_thr != s_last_aw_thr)) {
+                s_last_aw_mask = g_cl_aw_mask;
+                s_last_aw_thr  = g_cl_aw_cond_thr;
+                Foc_CurrentLoop_SetAntiWindup(g_cl_aw_mask, g_cl_aw_cond_thr);
+            }
+            if (g_cl_back_gain != s_last_bg) {
+                s_last_bg = g_cl_back_gain;
+                Foc_CurrentLoop_SetBackGain(g_cl_back_gain);
+            }
+        }
+
         /* 受限诊断镜像 */
         g_cl_limit_reason = (int32_t)Foc_CurrentLoop_GetLimitReason();
         g_cl_vmag_raw     = Foc_CurrentLoop_GetVmagRaw();

@@ -23,6 +23,9 @@
  *     g_cl_warmup_ticks  拍，下次 Reset 生效
  *     g_cl_iref_max      A，下一次 SetRef 生效
  *     g_cl_vmax_watch    V，主循环检测变化后生效
+ *     g_cl_aw_mask       I 项抗饱和措施位掩码，主循环检测变化后生效
+ *     g_cl_aw_cond_thr   条件积分饱和判据裕度 V，主循环检测变化后生效
+ *     g_cl_back_gain     反计算回退系数 0~1，主循环检测变化后生效
  *=============================================================================*/
 
 #ifndef FOC_CURRENT_LOOP_H
@@ -30,6 +33,8 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+
+#include "pid_ctrl.h"   /* PID_AW_* 抗饱和措施位掩码 */
 
 #ifdef __cplusplus
 extern "C" {
@@ -73,6 +78,13 @@ extern "C" {
 #define CL_DIFF_ALPHA_INIT    0.2f
 #define CL_BACK_GAIN_INIT     0.0f
 
+/* I 项抗饱和措施位掩码初值：钳位 + 反计算。
+ *   与改造前行为一致：反计算系数为 0 时反计算无实际作用，实际只有钳位生效。
+ *   0 = 全部关闭；可按位或组合 PID_AW_CLAMP / PID_AW_BACK_CALC / PID_AW_CONDITIONAL。 */
+#define CL_AW_MASK_INIT       (PID_AW_CLAMP | PID_AW_BACK_CALC)
+/* 条件积分饱和判据裕度，V；0 = 严格按输出限幅判断 */
+#define CL_AW_COND_THR_INIT   (0.0f)
+
 /* 积分项（ki*integral）电压限幅，单位 V。
  *   参考工程注释要求"必须 > 运行时反电动势，否则高速段积分扛不住反电动势，
  *   稳态 droop 回来"。参考的 FOC31_INTEGRAL_MAX=3.0 实际是积分量 A·s，
@@ -101,6 +113,9 @@ extern volatile float    g_cl_ref_slew;      /* A/拍，下一拍生效 */
 extern volatile float    g_cl_vq_slew;       /* V/拍，下一拍生效 */
 extern volatile float    g_cl_fb_alpha;      /* id/iq 反馈 EMA，1=关闭 */
 extern volatile float    g_cl_iterm_max_watch; /* 积分项电压限幅 V，主循环同步 */
+extern volatile float    g_cl_back_gain;     /* 反计算回退系数 0~1 */
+extern volatile uint32_t g_cl_aw_mask;       /* I 项抗饱和措施位掩码 */
+extern volatile float    g_cl_aw_cond_thr;   /* 条件积分饱和判据裕度 V */
 extern volatile uint16_t g_cl_warmup_ticks;  /* 拍，下次 Reset 生效 */
 extern volatile float    g_cl_iref_max;      /* A，下一次 SetRef 生效 */
 extern volatile float    g_cl_vmax_watch;    /* V，主循环检测变化后生效 */
@@ -137,6 +152,8 @@ void Foc_CurrentLoop_SetRefDirect(float id_ref_a, float iq_ref_a);
 
 void Foc_CurrentLoop_SetGains(float kp, float ki, float kd);
 void Foc_CurrentLoop_SetITermMax(float v);   /* 积分项电压限幅 V，0=不限 */
+void Foc_CurrentLoop_SetAntiWindup(uint32_t mask, float cond_thr); /* I 项抗饱和措施 */
+void Foc_CurrentLoop_SetBackGain(float v);   /* 反计算回退系数 0~1 */
 void Foc_CurrentLoop_SetFF(uint8_t en);      /* 1 = 开启 dq 解耦/反电动势前馈 */
 void Foc_CurrentLoop_SetVmax(float vmax_v);
 

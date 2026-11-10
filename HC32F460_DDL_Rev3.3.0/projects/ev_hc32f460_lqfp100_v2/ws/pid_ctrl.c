@@ -39,6 +39,8 @@ static void pid_priv_clear(struct pid_priv *priv)
 	priv->out_min		= -1.0f;
 	priv->back_gain		= 0.8f;
 	priv->i_term_max	= 0.0f;
+	priv->aw_mask		= PID_AW_DEFAULT;
+	priv->aw_cond_thr	= 0.0f;
 	priv->setpoint		= 0.0f;
 	priv->feedback		= 0.0f;
 	priv->err		= 0.0f;
@@ -177,6 +179,49 @@ static int pid_set_iterm_limit(struct pid_priv *priv, float i_term_max)
 }
 
 /**
+ * pid_set_aw_mode() - 设置 I 项抗饱和措施位掩码
+ * @priv:	PID 私有结构体
+ * @mask:	PID_AW_CLAMP / PID_AW_BACK_CALC / PID_AW_CONDITIONAL 的按位或，
+ *		0 表示三种措施全部关闭
+ *
+ * 返回 0 成功，-1 priv 为 NULL 或掩码含未知位。
+ */
+static int pid_set_aw_mode(struct pid_priv *priv, uint32_t mask)
+{
+	if (!priv)
+		return -1;
+	if ((mask & ~(uint32_t)PID_AW_ALL) != 0u)
+		return -1;
+
+	PID_LOCK(&priv->lock);
+	priv->aw_mask = mask;
+	PID_UNLOCK(&priv->lock);
+
+	return 0;
+}
+
+/**
+ * pid_set_aw_cond_thr() - 设置条件积分的饱和判据裕度
+ * @priv:	PID 私有结构体
+ * @thr:	本体输出进入限幅边界的裕度（与控制量同量纲），0 = 严格饱和
+ *
+ * 返回 0 成功，-1 priv 为 NULL 或 thr 为负。
+ */
+static int pid_set_aw_cond_thr(struct pid_priv *priv, float thr)
+{
+	if (!priv)
+		return -1;
+	if (thr < 0.0f)
+		return -1;
+
+	PID_LOCK(&priv->lock);
+	priv->aw_cond_thr = thr;
+	PID_UNLOCK(&priv->lock);
+
+	return 0;
+}
+
+/**
  * pid_set_ref() - 单独设置目标给定
  * @priv:	PID 私有结构体
  * @ref:	目标值
@@ -261,11 +306,29 @@ static float pid_calc(struct pid_priv *priv, float fb, float ref,
 		priv->diff_filtered = priv->diff_alpha * priv->diff_raw
 				    + (1.0f - priv->diff_alpha) * priv->diff_filtered;
 
-		/* 积分累加（含 dt 因子），并对 I 项输出做限幅 */
-		priv->integral += priv->err * dt;
+		/* 条件积分：上一拍本体输出已饱和且误差仍同向（会继续加深饱和）时冻结积分；
+		 * 误差反号时允许积分，便于退出饱和。aw_cond_thr 为饱和判据裕度。 */
+		if ((priv->aw_mask & PID_AW_CONDITIONAL) && (priv->err != 0.0f)) {
+			bool freeze = false;
 
+			if ((priv->err > 0.0f) &&
+			    (priv->raw_output >= (priv->out_max - priv->aw_cond_thr)))
+				freeze = true;
+			else if ((priv->err < 0.0f) &&
+				 (priv->raw_output <= (priv->out_min + priv->aw_cond_thr)))
+				freeze = true;
+
+			if (!freeze)
+				priv->integral += priv->err * dt;
+		} else {
+			/* 积分累加（含 dt 因子） */
+			priv->integral += priv->err * dt;
+		}
+
+		/* 钳位式抗饱和：I 项输出限幅，超限时反写 integral 保持连续 */
 		i_term = priv->ki * priv->integral;
-		if ((priv->i_term_max > 0.0f) && (priv->ki > 0.0f)) {
+		if ((priv->aw_mask & PID_AW_CLAMP) &&
+		    (priv->i_term_max > 0.0f) && (priv->ki > 0.0f)) {
 			if (i_term > priv->i_term_max) {
 				i_term = priv->i_term_max;
 				priv->integral = i_term / priv->ki;
@@ -315,7 +378,7 @@ static float pid_calc(struct pid_priv *priv, float fb, float ref,
 	}
 
 	/* 反计算抗积分饱和：只回退 PID 本体超量，前馈不参与 */
-	if (saturated) {
+	if (saturated && (priv->aw_mask & PID_AW_BACK_CALC)) {
 		float pid_sat_err = 0.0f;
 
 		if (pid_out > priv->out_max)
@@ -358,6 +421,8 @@ static const struct pid_ops pid_default_ops = {
 	.set_diff_filter = pid_set_diff_filter,
 	.set_limit	 = pid_set_limit,
 	.set_iterm_limit = pid_set_iterm_limit,
+	.set_aw_mode	 = pid_set_aw_mode,
+	.set_aw_cond_thr = pid_set_aw_cond_thr,
 	.set_ref	 = pid_set_ref,
 	.calc		 = pid_calc,
 	.get_raw_output	 = pid_get_raw_output,

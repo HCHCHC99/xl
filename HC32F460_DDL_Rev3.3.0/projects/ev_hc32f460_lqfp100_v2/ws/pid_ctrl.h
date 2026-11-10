@@ -12,6 +12,7 @@
  *   - 微分先行（对反馈微分，抑制给定阶跃带来的微分冲击）；
  *   - 不完全微分（微分项一阶低通滤波，抑制高频噪声）；
  *   - 反计算抗积分饱和（输出限幅时回退积分，避免积分堆死）；
+ *   - I 项抗饱和三种措施（钳位 / 反计算 / 条件积分）位掩码任意组合；
  *   - 速度前馈 + 加速度前馈（提升跟踪性能）；
  *   - 未限幅输出查询（供级联控制诊断"下游饱和"）。
  *
@@ -32,6 +33,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /*
  * 环境适配层：裸机(默认) / RT-Thread(-DPID_USE_RTTHREAD)
@@ -72,6 +74,27 @@ enum pid_mode {
 	PID_MODE_INCREMENT,
 };
 
+/*
+ * I 项抗积分饱和措施位掩码
+ *
+ * 三种措施相互独立，可按位或任意组合，0 表示三者全部关闭：
+ *   PID_AW_CLAMP       钳位式：I 项输出 ki*integral 被 i_term_max 限幅，
+ *                      超限时把 integral 反写为 i_term_max/ki（保持积分连续）。
+ *   PID_AW_BACK_CALC   反计算：最终输出饱和时，按 back_gain 把超出的
+ *                      PID 本体输出折算回退 integral（前馈不参与回退）。
+ *   PID_AW_CONDITIONAL 条件积分：上一拍本体输出已饱和且当前误差仍与饱和
+ *                      方向同号时，本拍冻结积分累加；误差反号时允许积分退出饱和。
+ *
+ * 默认值为 CLAMP | BACK_CALC，与历史行为一致（back_gain=0 时反计算无实际作用）。
+ * 注意：关闭 CLAMP 后 i_term_max 完全不再限制积分；condition 判据裕度
+ * 由 aw_cond_thr 给出，0 表示严格按 out_max/out_min 判断。
+ */
+#define PID_AW_CLAMP		(1u << 0)
+#define PID_AW_BACK_CALC	(1u << 1)
+#define PID_AW_CONDITIONAL	(1u << 2)
+#define PID_AW_ALL		(PID_AW_CLAMP | PID_AW_BACK_CALC | PID_AW_CONDITIONAL)
+#define PID_AW_DEFAULT		(PID_AW_CLAMP | PID_AW_BACK_CALC)
+
 /**
  * struct pid_priv - PID 私有参数与运行状态
  * @lock:	并发保护锁（裸机为空，RT-Thread 为互斥量）
@@ -87,6 +110,9 @@ enum pid_mode {
  * @out_max:	PID 输出上限
  * @out_min:	PID 输出下限
  * @back_gain:	反计算回退系数，一般 0~1，越接近 1 回退越强
+ * @i_term_max:	I 项输出限幅（钳位式），0 = 不限
+ * @aw_mask:	I 项抗饱和措施位掩码，见 PID_AW_*，0 = 全部关闭
+ * @aw_cond_thr: 条件积分饱和判据裕度（输出量纲），0 = 严格饱和
  * @setpoint:	目标给定 ref
  * @feedback:	当前反馈 fb
  * @err:	当前误差 e(k) = ref - fb
@@ -120,6 +146,8 @@ struct pid_priv {
 	float		out_min;
 	float		back_gain;
 	float		i_term_max;	/* 积分项（ki*integral）输出限幅，0 = 不限 */
+	uint32_t	aw_mask;	/* I 项抗饱和措施位掩码，见 PID_AW_* */
+	float		aw_cond_thr;	/* 条件积分饱和判据裕度（输出量纲），0 = 严格饱和 */
 
 	float		setpoint;
 	float		feedback;
@@ -140,6 +168,9 @@ struct pid_priv {
  * @set_feedforward: 设置前馈增益与前馈使能，返回 0 成功
  * @set_diff_filter: 设置不完全微分低通系数 alpha∈[0,1]，参数非法返回 -1
  * @set_limit:	设置输出限幅与反计算回退系数，参数非法返回 -1
+ * @set_iterm_limit: 设置 I 项输出限幅（钳位式），参数非法返回 -1
+ * @set_aw_mode:	设置 I 项抗饱和措施位掩码，非法位返回 -1
+ * @set_aw_cond_thr: 设置条件积分饱和判据裕度，负数返回 -1
  * @set_ref:	单独更新目标给定（可选，calc 里也会传入 ref）
  * @calc:	PID 核心计算，返回经过限幅后的最终控制输出
  * @get_raw_output: 返回最近一次 calc 的未限幅本体输出（不含前馈）
@@ -156,6 +187,8 @@ struct pid_ops {
 	int	(*set_limit)(struct pid_priv *priv, float out_min, float out_max,
 			     float back_gain);
 	int	(*set_iterm_limit)(struct pid_priv *priv, float i_term_max);
+	int	(*set_aw_mode)(struct pid_priv *priv, uint32_t mask);
+	int	(*set_aw_cond_thr)(struct pid_priv *priv, float thr);
 	int	(*set_ref)(struct pid_priv *priv, float ref);
 
 	/*

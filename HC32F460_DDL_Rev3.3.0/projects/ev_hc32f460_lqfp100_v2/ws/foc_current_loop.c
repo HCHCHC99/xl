@@ -46,6 +46,9 @@ volatile float    g_cl_vq_ff       = 0.0f;
 volatile uint16_t g_cl_warmup_ticks = CL_WARMUP_INIT;
 volatile float    g_cl_iref_max     = CL_IREF_MAX_INIT;
 volatile float    g_cl_vmax_watch   = CL_VMAX_INIT;
+volatile float    g_cl_back_gain    = CL_BACK_GAIN_INIT;
+volatile uint32_t g_cl_aw_mask      = CL_AW_MASK_INIT;
+volatile float    g_cl_aw_cond_thr  = CL_AW_COND_THR_INIT;
 
 /*---------------------------------------------------------------------------
  * 编译期常量（不需要在线调的）
@@ -125,8 +128,8 @@ static void cl_refresh_limits(void)
     if (!s_ready) {
         return;
     }
-    (void)s_pid_d.ops->set_limit(&s_priv_d, -s_vlim, s_vlim, CL_BACK_GAIN_INIT);
-    (void)s_pid_q.ops->set_limit(&s_priv_q, -s_vlim, s_vlim, CL_BACK_GAIN_INIT);
+    (void)s_pid_d.ops->set_limit(&s_priv_d, -s_vlim, s_vlim, g_cl_back_gain);
+    (void)s_pid_q.ops->set_limit(&s_priv_q, -s_vlim, s_vlim, g_cl_back_gain);
 }
 
 /* 输出斜率限制：把 v 限制在 prev  slew 内 */
@@ -192,11 +195,16 @@ void Foc_CurrentLoop_Init(void)
     (void)s_pid_d.ops->set_param(&s_priv_d, CL_KP_INIT, CL_KI_INIT, CL_KD_INIT);
     (void)s_pid_q.ops->set_param(&s_priv_q, CL_KP_INIT, CL_KI_INIT, CL_KD_INIT);
 
-    (void)s_pid_d.ops->set_limit(&s_priv_d, -s_vlim, s_vlim, CL_BACK_GAIN_INIT);
-    (void)s_pid_q.ops->set_limit(&s_priv_q, -s_vlim, s_vlim, CL_BACK_GAIN_INIT);
+    (void)s_pid_d.ops->set_limit(&s_priv_d, -s_vlim, s_vlim, g_cl_back_gain);
+    (void)s_pid_q.ops->set_limit(&s_priv_q, -s_vlim, s_vlim, g_cl_back_gain);
 
     (void)s_pid_d.ops->set_iterm_limit(&s_priv_d, g_cl_iterm_max_watch);
     (void)s_pid_q.ops->set_iterm_limit(&s_priv_q, g_cl_iterm_max_watch);
+
+    (void)s_pid_d.ops->set_aw_mode(&s_priv_d, g_cl_aw_mask);
+    (void)s_pid_q.ops->set_aw_mode(&s_priv_q, g_cl_aw_mask);
+    (void)s_pid_d.ops->set_aw_cond_thr(&s_priv_d, g_cl_aw_cond_thr);
+    (void)s_pid_q.ops->set_aw_cond_thr(&s_priv_q, g_cl_aw_cond_thr);
 
     (void)s_pid_d.ops->set_diff_filter(&s_priv_d, CL_DIFF_ALPHA_INIT);
     (void)s_pid_q.ops->set_diff_filter(&s_priv_q, CL_DIFF_ALPHA_INIT);
@@ -307,6 +315,29 @@ void Foc_CurrentLoop_SetGains(float kp, float ki, float kd)
 void Foc_CurrentLoop_SetITermMax(float v)
 {
     cl_set_iterm(v);
+}
+
+void Foc_CurrentLoop_SetAntiWindup(uint32_t mask, float cond_thr)
+{
+    if (!s_ready) {
+        return;
+    }
+    (void)s_pid_d.ops->set_aw_mode(&s_priv_d, mask);
+    (void)s_pid_q.ops->set_aw_mode(&s_priv_q, mask);
+    (void)s_pid_d.ops->set_aw_cond_thr(&s_priv_d, cond_thr);
+    (void)s_pid_q.ops->set_aw_cond_thr(&s_priv_q, cond_thr);
+}
+
+void Foc_CurrentLoop_SetBackGain(float v)
+{
+    if (v < 0.0f) {
+        v = 0.0f;
+    }
+    if (v > 1.0f) {
+        v = 1.0f;
+    }
+    g_cl_back_gain = v;
+    cl_refresh_limits();
 }
 
 void Foc_CurrentLoop_SetFF(uint8_t en)

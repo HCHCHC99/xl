@@ -54,6 +54,8 @@ volatile float   g_pos_brake_speed_rpm   = POS_BRAKE_SPEED_RPM_INIT;
 volatile float   g_pos_brake_hyst_rev    = POS_BRAKE_HYST_REV_INIT;
 volatile float   g_pos_limit_rev         = POS_LIMIT_REV_INIT;
 volatile float   g_pos_back_gain         = POS_BACK_GAIN_INIT;
+volatile uint32_t g_pos_aw_mask          = POS_AW_MASK_INIT;
+volatile float   g_pos_aw_cond_thr       = POS_AW_COND_THR_INIT;
 volatile uint8_t g_pos_zero_req          = 0u;
 
 /*---------------------------------------------------------------------------
@@ -330,6 +332,8 @@ void Foc_Position_Task20k(void)
     }
     (void)s_pid_pos.ops->set_limit(&s_priv_pos, -spd_lim, spd_lim, bg);
     (void)s_pid_pos.ops->set_iterm_limit(&s_priv_pos, iterm);
+    (void)s_pid_pos.ops->set_aw_mode(&s_priv_pos, g_pos_aw_mask);
+    (void)s_pid_pos.ops->set_aw_cond_thr(&s_priv_pos, g_pos_aw_cond_thr);
 
     /* ---- 目标软行程限位 ---- */
     target = g_pos_target_rev;

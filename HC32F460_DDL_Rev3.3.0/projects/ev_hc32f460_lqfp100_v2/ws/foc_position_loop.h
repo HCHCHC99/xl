@@ -23,6 +23,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "pid_ctrl.h"   /* PID_AW_* 抗饱和措施位掩码 */
+
 /*=============================================================================
  * 一、位置环参数初值（保守启动值）
  *=============================================================================*/
@@ -85,6 +87,12 @@
 /* 反计算抗饱和回退系数 */
 #define POS_BACK_GAIN_INIT          (0.5f)
 
+/* I 项抗饱和措施位掩码初值：钳位 + 反计算，与改造前行为一致。
+ *   0 = 全部关闭；可按位或组合 PID_AW_CLAMP / PID_AW_BACK_CALC / PID_AW_CONDITIONAL。 */
+#define POS_AW_MASK_INIT            (PID_AW_CLAMP | PID_AW_BACK_CALC)
+/* 条件积分饱和判据裕度，rpm；0 = 严格按输出限幅判断 */
+#define POS_AW_COND_THR_INIT        (0.0f)
+
 /*=============================================================================
  * 二、可调参数变量（Watch 可改）
  *=============================================================================*/
@@ -110,6 +118,8 @@ extern volatile float   g_pos_brake_speed_rpm;   /* 进入制动的速度门限 
 extern volatile float   g_pos_brake_hyst_rev;    /* 退出制动的误差滞环 圈 */
 extern volatile float   g_pos_limit_rev;         /* 软行程限位 圈（±） */
 extern volatile float   g_pos_back_gain;         /* 抗饱和回退系数 */
+extern volatile uint32_t g_pos_aw_mask;          /* I 项抗饱和措施位掩码 */
+extern volatile float   g_pos_aw_cond_thr;       /* 条件积分饱和判据裕度 rpm */
 extern volatile uint8_t g_pos_zero_req;          /* 写 1 把当前位置设为 0 并保持 */
 
 /*=============================================================================

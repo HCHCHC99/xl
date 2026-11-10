@@ -24,6 +24,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "pid_ctrl.h"   /* PID_AW_* 抗饱和措施位掩码 */
+
 /*=============================================================================
  * 一、速度环参数初值
  *=============================================================================*/
@@ -34,6 +36,13 @@
 /* 速度 PI（参考 mode 40：kp=0.8 mA/rpm，ki=0.03 mA/rpm/s） */
 #define SPD_KP_INIT                 (1.0f)
 #define SPD_KI_INIT                 (2.5f)
+
+/* I 项抗饱和措施位掩码初值：钳位 + 反计算。
+ *   与改造前行为一致：反计算系数为 0 时反计算无实际作用，实际只有钳位生效。
+ *   0 = 全部关闭；可按位或组合 PID_AW_CLAMP / PID_AW_BACK_CALC / PID_AW_CONDITIONAL。 */
+#define SPD_AW_MASK_INIT            (PID_AW_CLAMP | PID_AW_BACK_CALC)
+/* 条件积分饱和判据裕度，mA；0 = 严格按输出限幅判断 */
+#define SPD_AW_COND_THR_INIT        (0.0f)
 
 /* 速度环输出限幅（iq_ref 上限，mA）：17A × 20% = 3400mA */
 #define SPD_IQ_LIMIT_MA_INIT        (3400.0f)
@@ -82,6 +91,8 @@ extern volatile float   g_spd_iq_limit_ma;     /* 输出限幅 mA */
 extern volatile float   g_spd_iterm_max_ma;    /* 积分项限幅 mA，0 = 不限 */
 extern volatile float   g_spd_ff_ma;           /* 库仑摩擦前馈 mA，0 = 关闭 */
 extern volatile float   g_spd_back_gain;       /* 反计算抗饱和回退系数，0 = 关闭 */
+extern volatile uint32_t g_spd_aw_mask;        /* I 项抗饱和措施位掩码 */
+extern volatile float   g_spd_aw_cond_thr;     /* 条件积分饱和判据裕度 mA */
 
 /* 速度模式电流环参数 */
 extern volatile float   g_spd_cur_kp;
