@@ -1,0 +1,28 @@
+{
+	"nodes":[
+		{"id":"n_start","type":"text","text":"## 模式28 功角参考电流闭环\n**PI 把真实转子系电流钉在指令方向上**\n\n一句话：不再\"钉电压让电流漂\"，而是 id_ref=I_ref·cosδ、iq_ref=I_ref·sinδ，双 PI 闭环直接锁电流——δ=90° 即经典 FOC（id=0 MTPA）。\n\n入口：comm_mode = 28（Watch）","x":-300,"y":0,"width":460,"height":180,"color":"4"},
+		{"id":"n_calib","type":"text","text":"### 1. foc_calib 零偏窗 ≈210ms\n三相 50/50/50 零矢量（零电流），测传感器零点\n锁定 g_calib_iu/iv/iw_off_ma，此后 Clarke/Park 全部用校正副本\n（OC 保护仍用原始采样）","x":-300,"y":240,"width":460,"height":150},
+		{"id":"n_beta","type":"text","text":"### 2. 校准 BETA：磁场 90°，2s\n电压开环吸附（转子会动！捏转子要等这步之后）","x":-300,"y":450,"width":460,"height":110},
+		{"id":"n_alpha","type":"text","text":"### 3. 校准 ALPHA：磁场 0°，2s → 锁零点\n双帧锁存：显示帧 g_dci_offset + 控制帧 s_off_rel\n发布到 core 共享帧（mode 0 角度观测同源）","x":-300,"y":620,"width":460,"height":140},
+		{"id":"n_run","type":"text","text":"### 4. RUN：PI 电流环（20kHz）\n每拍：编码器增量(±32限幅) → 转子角 → Park 得 id/iq\n→ 参考 id_ref=I_ref·cosδ, iq_ref=I_ref·sinδ（δ 爬坡）\n→ vd/vq = PID(ref, fb) → 反 Park(转子角) → SVPWM\n\n观测量：eq/ed 均值(5s)、eq/ed 峰峰值、iq/id 3s均值、vsat","x":-300,"y":830,"width":460,"height":230},
+		{"id":"n_ramp","type":"text","text":"### δ 爬坡到目标？\nvalue = init + (targ−init)×w，tr=0 立即\n三参数 Start 不复位，运行中改实时生效","x":340,"y":830,"width":400,"height":140,"color":"3"},
+		{"id":"n_rampdone","type":"text","text":"### RAMP_DONE\n到点置事件一次，此后改 targ = 直接阶跃","x":340,"y":1040,"width":400,"height":120},
+		{"id":"n_pdroop","type":"text","text":"### ⚠ P-only 的天花板（调参必读）\n稳态误差 e = (R·i_ref + ω·ψf)/(kp + R)\n铜阻项 kp 能压；BEMF 项随速度涨，kp 受稳定极限\n(kp≈L/1.5Ts) 封顶 —— 高速下 P-only 永远到不了目标。\nkp 门槛 ≈ (3~7)×R；kp 过小电机根本不动。\n实测：kp=0.5 时低速跟踪 77%，387Hz 时只剩 9%。","x":340,"y":1230,"width":400,"height":240,"color":"2"},
+		{"id":"n_ion","type":"text","text":"### I 接管（eq_mean → 0）\n积分器攒住\"顶 BEMF 所需电压\"，误差归零后仍持续输出。\n实测 250mA 档：edMean=0 eqMean=0，iqMean=249 咬住 250。\nki ≈ kp×R/L（零极点对消）起步，从小往大。","x":-300,"y":1130,"width":460,"height":170,"color":"4"},
+		{"id":"n_ceiling","type":"text","text":"### ⚠ 饱和天花板（空载宿命）\n恒力矩源 + 仅摩擦负载 → 电机加速到\nω天花板 = (UMAX − R·iq)/ψf，电流缩回摩擦水平。\n实测 3A/3.5V：1005Hz(6032rpm)，iqMean=385mA，[SAT]。\n想要 3A 稳态：加负载 或 堵转（BEMF=0）。","x":-300,"y":1370,"width":460,"height":200,"color":"2"},
+		{"id":"n_stall","type":"text","text":"### 毕业考：捏转子全量程测试\nLOCKED 后捏住转子（BEMF=0，纯 R+L 对象）\nI_ref=500/1000/3000 全部锁住目标值 ✓\n\n尖峰现象：天花板突捏停时积分器存压释放\ni_peak = (kp·i_ref + I_frozen)/(kp+R) ≈ 7.2A\n（与 I_ref 无关，自恢复，< OC 9A 安全）","x":-300,"y":1640,"width":460,"height":220,"color":"4"},
+		{"id":"n_oc","type":"text","text":"### FAULT_OC\n相电流 > 9A（去抖后）→ 故障停机 → 自动回 mode 0\n（OC 阈值必须低于 ADC 削顶 ±12.5A，否则保护失明）","x":340,"y":1640,"width":400,"height":140,"color":"2"}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"n_start","fromSide":"bottom","toNode":"n_calib","toSide":"top"},
+		{"id":"e2","fromNode":"n_calib","fromSide":"bottom","toNode":"n_beta","toSide":"top"},
+		{"id":"e3","fromNode":"n_beta","fromSide":"bottom","toNode":"n_alpha","toSide":"top"},
+		{"id":"e4","fromNode":"n_alpha","fromSide":"bottom","toNode":"n_run","toSide":"top"},
+		{"id":"e5","fromNode":"n_run","fromSide":"right","toNode":"n_ramp","toSide":"left","label":"δ 爬坡中"},
+		{"id":"e6","fromNode":"n_ramp","fromSide":"bottom","toNode":"n_rampdone","toSide":"top","label":"到点"},
+		{"id":"e7","fromNode":"n_pdroop","fromSide":"bottom","toNode":"n_ion","toSide":"right","label":"落差换电压，I 来清零"},
+		{"id":"e8","fromNode":"n_ion","fromSide":"bottom","toNode":"n_ceiling","toSide":"top","label":"空载加速"},
+		{"id":"e9","fromNode":"n_ceiling","fromSide":"bottom","toNode":"n_stall","toSide":"top","label":"捏转子验证"},
+		{"id":"e10","fromNode":"n_run","fromSide":"bottom","toNode":"n_oc","toSide":"left","label":"过流","color":"2"}
+	]
+}

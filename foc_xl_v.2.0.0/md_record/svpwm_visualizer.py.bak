@@ -1,0 +1,1164 @@
+"""
+svpwm_visualizer.py - 独立的SVPWM可视化模块（含误差累积模拟）
+修复：画布居中、移除正转方向标注
+"""
+
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox
+import math
+import traceback
+import sys
+from functools import partial
+
+
+class SguanMath:
+    """Sguan_math.c 函数的Python实现"""
+    
+    @staticmethod
+    def value_fabsf(x):
+        return abs(x)
+    
+    @staticmethod
+    def value_sqrtf(x):
+        if x <= 0.0:
+            return 0.0
+        guess = x
+        guess = (guess + x / guess) * 0.5
+        guess = (guess + x / guess) * 0.5
+        guess = (guess + x / guess) * 0.5
+        return guess
+    
+    @staticmethod
+    def value_limit(val, max_val, min_val):
+        if val > max_val:
+            return max_val
+        if val < min_val:
+            return min_val
+        return val
+    
+    @staticmethod
+    def fast_sin(x):
+        pi = math.pi
+        si = int(x * 0.31830988)
+        x = x - si * pi
+        if si & 1:
+            x = x - pi if x > 0 else x + pi
+        x2 = x * x
+        f1 = 1.3528548e-10
+        f1 = f1 * x2 + -2.4703144e-08
+        f1 = f1 * x2 + 2.7532926e-06
+        f1 = f1 * x2 + -0.00019840381
+        f1 = f1 * x2 + 0.0083333179
+        f1 = f1 * x2 + -0.16666666
+        return x + x * x2 * f1
+    
+    @staticmethod
+    def fast_cos(x):
+        pi = math.pi
+        si = int(x * 0.31830988)
+        x = x - si * pi
+        if si & 1:
+            x = x - pi if x > 0 else x + pi
+        x2 = x * x
+        f2 = 1.7290616e-09
+        f2 = f2 * x2 + -2.7093486e-07
+        f2 = f2 * x2 + 2.4771643e-05
+        f2 = f2 * x2 + -0.0013887906
+        f2 = f2 * x2 + 0.041666519
+        f2 = f2 * x2 + -0.49999991
+        return 1.0 + x2 * f2
+    
+    @staticmethod
+    def fast_sin_cos(x):
+        return SguanMath.fast_sin(x), SguanMath.fast_cos(x)
+    
+    @staticmethod
+    def clarke(i_a, i_b):
+        inv_sqrt3 = 0.5773502691896257
+        i_alpha = i_a
+        i_beta = (i_a + 2 * i_b) * inv_sqrt3
+        return i_alpha, i_beta
+    
+    @staticmethod
+    def park(i_alpha, i_beta, sine, cosine):
+        i_d = i_alpha * cosine + i_beta * sine
+        i_q = i_beta * cosine - i_alpha * sine
+        return i_d, i_q
+    
+    @staticmethod
+    def ipark(u_d, u_q, sine, cosine):
+        u_alpha = u_d * cosine - u_q * sine
+        u_beta = u_q * cosine + u_d * sine
+        return u_alpha, u_beta
+    
+    @staticmethod
+    def svpwm(d, q, angle):
+        pi = math.pi
+        sqrt3 = 1.7320508075688772
+        
+        d = SguanMath.value_limit(d, 1, -1)
+        q = SguanMath.value_limit(q, 1, -1)
+        
+        vref = d*d + q*q
+        if vref > 1.0:
+            scale = 1.0 / SguanMath.value_sqrtf(vref)
+            d *= scale
+            q *= scale
+        
+        sine, cosine = SguanMath.fast_sin_cos(angle)
+        alpha = d * cosine - q * sine
+        beta = q * cosine + d * sine
+        
+        A = 1 if beta > 0 else 0
+        B = 1 if SguanMath.value_fabsf(beta) > sqrt3 * SguanMath.value_fabsf(alpha) else 0
+        C = 1 if alpha > 0 else 0
+        K = 4 * A + 2 * B + C
+        K_to_sector = [4, 6, 5, 5, 3, 1, 2, 2]
+        sector = K_to_sector[K]
+        
+        v = [[1,0,0], [1,1,0], [0,1,0], [0,1,1], [0,0,1], [1,0,1]]
+        
+        rad60 = 1.047197551196598
+        angle0 = sector * rad60
+        angle1 = angle0 - rad60
+        
+        sin_m, cos_m = SguanMath.fast_sin_cos(angle0)
+        sin_n, cos_n = SguanMath.fast_sin_cos(angle1)
+        
+        t_m = sin_m * alpha - cos_m * beta
+        t_n = beta * cos_n - alpha * sin_n
+        t_0 = 1 - t_m - t_n
+        
+        idx = sector - 1
+        idx_next = sector % 6
+        
+        d_u = t_m * v[idx][0] + t_n * v[idx_next][0] + t_0 / 2
+        d_v = t_m * v[idx][1] + t_n * v[idx_next][1] + t_0 / 2
+        d_w = t_m * v[idx][2] + t_n * v[idx_next][2] + t_0 / 2
+        
+        return d_u, d_v, d_w, sector, alpha, beta
+
+
+class SVPWMCanvas(tk.Canvas):
+    """SVPWM画布 - 含误差累积状态显示"""
+    
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        self.configure(bg='white', highlightthickness=1, highlightbackground='#ccc')
+        self.center_x = 250
+        self.center_y = 250
+        self.radius = 200
+        
+        self.rotor_radius = 0.6 * self.radius
+        
+        self.error_accumulated = 0.0
+        self.step_count = 0
+        self.is_diverging = False
+        
+        self.current_data = None
+        self.draw_hexagon()
+    
+    def draw_hexagon(self):
+        """绘制六边形（SVPWM边界）"""
+        self.delete("all")
+        
+        points = []
+        for i in range(6):
+            angle = i * math.pi / 3 - math.pi / 6
+            x = self.center_x + self.radius * math.cos(angle)
+            y = self.center_y - self.radius * math.sin(angle)
+            points.extend([x, y])
+        
+        self.create_polygon(points, outline='#333', fill='', width=2)
+        
+        self.create_line(self.center_x - self.radius - 20, self.center_y,
+                        self.center_x + self.radius + 20, self.center_y,
+                        fill='#999', dash=(3,3))
+        self.create_line(self.center_x, self.center_y - self.radius - 20,
+                        self.center_x, self.center_y + self.radius + 20,
+                        fill='#999', dash=(3,3))
+        
+        self.create_text(self.center_x + self.radius + 30, self.center_y,
+                        text='α', font=('Arial', 12, 'bold'), fill='#999')
+        self.create_text(self.center_x, self.center_y - self.radius - 30,
+                        text='β', font=('Arial', 12, 'bold'), fill='#999')
+        
+        for i in range(6):
+            angle = i * math.pi / 3 + math.pi / 6
+            x = self.center_x + (self.radius * 0.65) * math.cos(angle)
+            y = self.center_y - (self.radius * 0.65) * math.sin(angle)
+            self.create_text(x, y, text=f'{i+1}', font=('Arial', 14, 'bold'),
+                           fill='#666')
+        
+        # A相轴线
+        self.create_line(self.center_x, self.center_y,
+                        self.center_x + self.radius * 1.05, self.center_y,
+                        fill='#FF0000', width=2, dash=(4,4))
+        self.create_text(self.center_x + self.radius * 1.1, self.center_y - 18,
+                        text='A', font=('Arial', 12, 'bold'), fill='#FF0000')
+        
+        b_angle = 2 * math.pi / 3
+        b_x = self.center_x + self.radius * 1.05 * math.cos(b_angle)
+        b_y = self.center_y - self.radius * 1.05 * math.sin(b_angle)
+        self.create_line(self.center_x, self.center_y, b_x, b_y,
+                        fill='#009900', width=2, dash=(4,4))
+        self.create_text(b_x + 15 * math.cos(b_angle),
+                        b_y - 15 * math.sin(b_angle),
+                        text='B', font=('Arial', 12, 'bold'), fill='#009900')
+        
+        c_angle = 4 * math.pi / 3
+        c_x = self.center_x + self.radius * 1.05 * math.cos(c_angle)
+        c_y = self.center_y - self.radius * 1.05 * math.sin(c_angle)
+        self.create_line(self.center_x, self.center_y, c_x, c_y,
+                        fill='#0000CC', width=2, dash=(4,4))
+        self.create_text(c_x + 15 * math.cos(c_angle),
+                        c_y - 15 * math.sin(c_angle),
+                        text='C', font=('Arial', 12, 'bold'), fill='#0000CC')
+    
+    def draw_magnet(self, angle, length, width, color, label):
+        """绘制长方形磁铁"""
+        center_r = self.rotor_radius * 0.75
+        cx = self.center_x + center_r * math.cos(angle)
+        cy = self.center_y - center_r * math.sin(angle)
+        
+        rad_x = math.cos(angle)
+        rad_y = -math.sin(angle)
+        tan_x = -math.sin(angle)
+        tan_y = -math.cos(angle)
+        
+        half_len = length / 2
+        half_wid = width / 2
+        
+        p1 = (cx + half_len * rad_x - half_wid * tan_x,
+              cy + half_len * rad_y - half_wid * tan_y)
+        p2 = (cx + half_len * rad_x + half_wid * tan_x,
+              cy + half_len * rad_y + half_wid * tan_y)
+        p3 = (cx - half_len * rad_x + half_wid * tan_x,
+              cy - half_len * rad_y + half_wid * tan_y)
+        p4 = (cx - half_len * rad_x - half_wid * tan_x,
+              cy - half_len * rad_y - half_wid * tan_y)
+        
+        self.create_polygon([p1, p2, p3, p4], fill=color, outline='#333', width=1.5)
+        
+        label_x = cx + (half_len + 8) * rad_x
+        label_y = cy + (half_len + 8) * rad_y
+        self.create_text(label_x, label_y, text=label,
+                        font=('Arial', 12, 'bold'), fill='white')
+    
+    def draw_vectors(self, d, q, angle_est, angle_real, alpha, beta, sector, direction,
+                     error_accumulated=0.0, step_count=0, is_diverging=False):
+        """绘制矢量图，含误差累积状态"""
+        self.current_data = (d, q, angle_est, angle_real, alpha, beta, sector, direction)
+        
+        self.draw_hexagon()
+        
+        rotor_r = self.rotor_radius
+        v_angle = math.atan2(beta, alpha)
+        
+        delta_real = v_angle - angle_real
+        while delta_real > math.pi:
+            delta_real -= 2 * math.pi
+        while delta_real < -math.pi:
+            delta_real += 2 * math.pi
+        
+        angle_error = angle_est - angle_real
+        while angle_error > math.pi:
+            angle_error -= 2 * math.pi
+        while angle_error < -math.pi:
+            angle_error += 2 * math.pi
+        
+        delta_deg = math.degrees(delta_real)
+        error_deg = math.degrees(angle_error)
+        
+        # ===== 转子 =====
+        self.create_oval(self.center_x - rotor_r, self.center_y - rotor_r,
+                        self.center_x + rotor_r, self.center_y + rotor_r,
+                        outline='#555', width=2, fill='#E0E0E0')
+        
+        for r in [0.3, 0.6, 0.85]:
+            rr = rotor_r * r
+            self.create_oval(self.center_x - rr, self.center_y - rr,
+                            self.center_x + rr, self.center_y + rr,
+                            outline='#CCCCCC', width=0.5, fill='')
+        
+        # 磁铁
+        magnet_len = rotor_r * 0.35
+        magnet_wid = rotor_r * 0.20
+        self.draw_magnet(angle_real, magnet_len, magnet_wid, '#FF4444', 'N')
+        s_angle = angle_real + math.pi
+        if s_angle > 2 * math.pi:
+            s_angle -= 2 * math.pi
+        self.draw_magnet(s_angle, magnet_len, magnet_wid, '#4488FF', 'S')
+        
+        # 转子中心
+        self.create_oval(self.center_x - 5, self.center_y - 5,
+                        self.center_x + 5, self.center_y + 5,
+                        fill='#333', outline='#333')
+        self.create_text(self.center_x, self.center_y + rotor_r + 20,
+                        text='转子中心', font=('Arial', 8), fill='#555')
+        
+        # 真实d轴
+        d_real_x = self.center_x + rotor_r * math.cos(angle_real)
+        d_real_y = self.center_y - rotor_r * math.sin(angle_real)
+        self.create_line(self.center_x, self.center_y, d_real_x, d_real_y,
+                        fill='#9900CC', width=2.5, dash=(6,3))
+        self.create_text(d_real_x + 15 * math.cos(angle_real),
+                        d_real_y - 15 * math.sin(angle_real),
+                        text='真实d轴', font=('Arial', 8), fill='#9900CC')
+        
+        # 程序d轴
+        d_est_len = 0.65 * rotor_r
+        d_est_x = self.center_x + d_est_len * math.cos(angle_est)
+        d_est_y = self.center_y - d_est_len * math.sin(angle_est)
+        self.create_line(self.center_x, self.center_y, d_est_x, d_est_y,
+                        fill='#0066FF', width=2, dash=(6,4))
+        self.create_text(d_est_x + 15 * math.cos(angle_est),
+                        d_est_y - 15 * math.sin(angle_est),
+                        text='程序d轴', font=('Arial', 8), fill='#0066FF')
+        
+        # Vref
+        v_mag = math.sqrt(alpha*alpha + beta*beta)
+        if v_mag > 0.001:
+            v_len = min(v_mag, 1.0) * self.radius
+            v_x = self.center_x + v_len * math.cos(v_angle)
+            v_y = self.center_y - v_len * math.sin(v_angle)
+            self.create_line(self.center_x, self.center_y, v_x, v_y,
+                            fill='#FF8800', width=3)
+            arrow_len = 10
+            arrow_angle = 0.5
+            self.create_polygon([v_x, v_y,
+                                v_x - arrow_len * math.cos(v_angle - arrow_angle),
+                                v_y + arrow_len * math.sin(v_angle - arrow_angle),
+                                v_x - arrow_len * math.cos(v_angle + arrow_angle),
+                                v_y + arrow_len * math.sin(v_angle + arrow_angle)],
+                               fill='#FF8800', outline='#FF8800')
+            self.create_text(v_x + 20 * math.cos(v_angle),
+                            v_y - 20 * math.sin(v_angle),
+                            text='V_ref', font=('Arial', 10, 'bold'), fill='#FF8800')
+        
+        # 受力点
+        force_x = self.center_x + rotor_r * math.cos(angle_real)
+        force_y = self.center_y - rotor_r * math.sin(angle_real)
+        self.create_oval(force_x - 6, force_y - 6,
+                        force_x + 6, force_y + 6,
+                        fill='#FF0000', outline='#FF0000')
+        self.create_text(force_x + 18, force_y - 18,
+                        text='受力点', font=('Arial', 8, 'bold'), fill='#FF0000')
+        
+        # 切向力
+        tan_x = -math.sin(angle_real)
+        tan_y = -math.cos(angle_real)
+        rad_x = math.cos(angle_real)
+        rad_y = -math.sin(angle_real)
+        
+        F_t_mag = q
+        F_r_mag = d
+        
+        if abs(F_t_mag) > 0.01:
+            scale = 30
+            ft_x = force_x + F_t_mag * scale * tan_x
+            ft_y = force_y + F_t_mag * scale * tan_y
+            
+            if (direction == 1 and F_t_mag > 0) or (direction == -1 and F_t_mag < 0):
+                ft_color = '#00AA00'
+                ft_label = 'F_t (加速)'
+            else:
+                ft_color = '#FF6600'
+                ft_label = 'F_t (制动)'
+            
+            self.create_line(force_x, force_y, ft_x, ft_y,
+                            fill=ft_color, width=3)
+            ft_angle = math.atan2(-(ft_y - force_y), ft_x - force_x)
+            arrow_len = 8
+            self.create_polygon([ft_x, ft_y,
+                                ft_x - arrow_len * math.cos(ft_angle - 0.5),
+                                ft_y + arrow_len * math.sin(ft_angle - 0.5),
+                                ft_x - arrow_len * math.cos(ft_angle + 0.5),
+                                ft_y + arrow_len * math.sin(ft_angle + 0.5)],
+                               fill=ft_color, outline=ft_color)
+            self.create_text(ft_x + 15 * math.cos(ft_angle),
+                            ft_y - 15 * math.sin(ft_angle),
+                            text=ft_label, font=('Arial', 8), fill=ft_color)
+        
+        if abs(F_r_mag) > 0.01:
+            scale = 25
+            fr_x = force_x + F_r_mag * scale * rad_x
+            fr_y = force_y + F_r_mag * scale * rad_y
+            if F_r_mag > 0:
+                fr_color = '#0066CC'
+                fr_label = 'F_r (拉力)'
+            else:
+                fr_color = '#CC6600'
+                fr_label = 'F_r (压力)'
+            self.create_line(force_x, force_y, fr_x, fr_y,
+                            fill=fr_color, width=2, dash=(4,3))
+            fr_angle = math.atan2(-(fr_y - force_y), fr_x - force_x)
+            arrow_len = 8
+            self.create_polygon([fr_x, fr_y,
+                                fr_x - arrow_len * math.cos(fr_angle - 0.5),
+                                fr_y + arrow_len * math.sin(fr_angle - 0.5),
+                                fr_x - arrow_len * math.cos(fr_angle + 0.5),
+                                fr_y + arrow_len * math.sin(fr_angle + 0.5)],
+                               fill=fr_color, outline=fr_color)
+            self.create_text(fr_x + 15 * math.cos(fr_angle),
+                            fr_y - 15 * math.sin(fr_angle),
+                            text=fr_label, font=('Arial', 8), fill=fr_color)
+        
+        # 功角弧线
+        if abs(delta_real) > 0.02 and v_mag > 0.001:
+            arc_radius = 45
+            arc_points = []
+            steps = 30
+            start_a = angle_real
+            end_a = v_angle
+            if end_a - start_a > math.pi:
+                end_a -= 2 * math.pi
+            elif start_a - end_a > math.pi:
+                end_a += 2 * math.pi
+            for i in range(steps + 1):
+                a = start_a + i * (end_a - start_a) / steps
+                x = self.center_x + arc_radius * math.cos(a)
+                y = self.center_y - arc_radius * math.sin(a)
+                arc_points.extend([x, y])
+            if len(arc_points) > 4:
+                if abs(delta_deg) > 80:
+                    arc_color = '#FF0000'
+                elif abs(delta_deg) > 60:
+                    arc_color = '#FF6600'
+                else:
+                    arc_color = '#00CC00'
+                self.create_line(arc_points, fill=arc_color, width=2)
+                mid_angle = (start_a + end_a) / 2
+                label_radius = arc_radius + 20
+                label_x = self.center_x + label_radius * math.cos(mid_angle)
+                label_y = self.center_y - label_radius * math.sin(mid_angle)
+                self.create_text(label_x, label_y,
+                               text=f'δ={delta_deg:+.1f}°',
+                               font=('Arial', 9, 'bold'), fill=arc_color)
+        
+        # 扇区
+        sector_angle = sector * math.pi / 3 - math.pi / 6
+        sx = self.center_x + (self.radius * 0.85) * math.cos(sector_angle + math.pi/6)
+        sy = self.center_y - (self.radius * 0.85) * math.sin(sector_angle + math.pi/6)
+        self.create_text(sx, sy,
+                        text=f'扇区 {sector}',
+                        font=('Arial', 12, 'bold'), fill='#CC0000')
+        
+        # ===== 状态显示 =====
+        dir_text = "正转" if direction == 1 else "反转"
+        
+        if direction == 1 and delta_real < 0:
+            status_text = f"⚠️ 正转·推力模式 (δ={delta_deg:.1f}°) → 制动"
+            status_color = "#FF0000"
+        elif direction == -1 and delta_real > 0:
+            status_text = f"⚠️ 反转·推力模式 (δ={delta_deg:+.1f}°) → 制动"
+            status_color = "#FF0000"
+        elif abs(delta_deg) > 80:
+            status_text = f"⚠️ 功角过大 |δ|={abs(delta_deg):.1f}° → 接近失步"
+            status_color = "#FF0000"
+        elif abs(delta_deg) > 60:
+            status_text = f"⚡ 功角偏大 |δ|={abs(delta_deg):.1f}° → 效率降低"
+            status_color = "#FF6600"
+        else:
+            if (direction == 1 and q > 0) or (direction == -1 and q < 0):
+                accel = "加速"
+            else:
+                accel = "减速"
+            status_text = f"✅ {dir_text} δ={delta_deg:+.1f}° → {accel}"
+            status_color = "#00AA00"
+        
+        self.create_text(self.center_x,
+                        self.center_y + self.radius * 0.82,
+                        text=status_text,
+                        font=('Arial', 11, 'bold'), fill=status_color)
+        
+        # ===== 误差累积信息 =====
+        cumul_color = "#FF0000" if is_diverging else "#FF6600" if error_accumulated > 30 else "#00AA00"
+        
+        accum_text = f"误差累积: {error_accumulated:.1f}°  (步数: {step_count})"
+        if is_diverging:
+            accum_text += " ⚠️ 发散中！"
+        
+        self.create_text(self.center_x,
+                        self.center_y + self.radius * 0.90,
+                        text=accum_text,
+                        font=('Arial', 10, 'bold'), fill=cumul_color)
+        
+        if is_diverging:
+            self.create_text(self.center_x,
+                            self.center_y + self.radius * 0.97,
+                            text="💥 角度误差累积 → 力矩反向 → 失步！",
+                            font=('Arial', 10, 'bold'), fill="#FF0000")
+        
+        # ===== 图例 =====
+        legend_x = self.center_x + self.radius + 30
+        legend_y = self.center_y - self.radius + 20
+        self.create_text(legend_x, legend_y, text='图例:',
+                        font=('Arial', 9, 'bold'), anchor='w', fill='#333')
+        
+        self.create_line(legend_x, legend_y + 20, legend_x + 30, legend_y + 20,
+                        fill='#FF8800', width=3)
+        self.create_text(legend_x + 35, legend_y + 20,
+                        text='V_ref (定子磁场)', font=('Arial', 8), anchor='w')
+        
+        self.create_line(legend_x, legend_y + 35, legend_x + 30, legend_y + 35,
+                        fill='#9900CC', width=2, dash=(6,3))
+        self.create_text(legend_x + 35, legend_y + 35,
+                        text='真实d轴 (N极)', font=('Arial', 8), anchor='w')
+        
+        self.create_line(legend_x, legend_y + 50, legend_x + 30, legend_y + 50,
+                        fill='#0066FF', width=2, dash=(6,4))
+        self.create_text(legend_x + 35, legend_y + 50,
+                        text='程序d轴', font=('Arial', 8), anchor='w')
+        
+        self.create_line(legend_x, legend_y + 65, legend_x + 30, legend_y + 65,
+                        fill='#00AA00', width=3)
+        self.create_text(legend_x + 35, legend_y + 65,
+                        text='F_t (切向力)', font=('Arial', 8), anchor='w')
+        
+        self.create_line(legend_x, legend_y + 80, legend_x + 30, legend_y + 80,
+                        fill='#0066CC', width=2, dash=(4,3))
+        self.create_text(legend_x + 35, legend_y + 80,
+                        text='F_r (径向力)', font=('Arial', 8), anchor='w')
+        
+        self.create_oval(legend_x, legend_y + 94, legend_x + 10, legend_y + 104,
+                        fill='#FF0000', outline='#FF0000')
+        self.create_text(legend_x + 35, legend_y + 99,
+                        text='受力点 (N极表面)', font=('Arial', 8), anchor='w')
+        
+        # 磁铁图例
+        self.create_rectangle(legend_x, legend_y + 113, legend_x + 15, legend_y + 123,
+                             fill='#FF4444', outline='#333')
+        self.create_text(legend_x + 35, legend_y + 118,
+                        text='N极磁铁', font=('Arial', 8), anchor='w')
+        self.create_rectangle(legend_x, legend_y + 130, legend_x + 15, legend_y + 140,
+                             fill='#4488FF', outline='#333')
+        self.create_text(legend_x + 35, legend_y + 135,
+                        text='S极磁铁', font=('Arial', 8), anchor='w')
+    
+    def update_vectors(self, d, q, angle_est, angle_real, alpha, beta, sector, direction,
+                       error_accumulated=0.0, step_count=0, is_diverging=False):
+        """更新矢量显示，含误差累积参数"""
+        self.error_accumulated = error_accumulated
+        self.step_count = step_count
+        self.is_diverging = is_diverging
+        self.draw_vectors(d, q, angle_est, angle_real, alpha, beta, sector, direction,
+                         error_accumulated, step_count, is_diverging)
+
+
+# ============ SVPWM测试应用 ============
+class SVPWMApp:
+    """SVPWM可视化测试应用 - 含误差累积模拟"""
+    
+    def __init__(self, root):
+        self.root = root
+        self.root.title("SVPWM 矢量分析工具 (含误差累积模拟)")
+        self.root.geometry("1280x950")
+        self.root.resizable(True, True)
+        
+        self.colors = {
+            'bg': '#f0f2f5',
+            'card_bg': '#ffffff',
+            'primary': '#2c3e50',
+            'accent': '#3498db',
+            'success': '#27ae60',
+            'warning': '#f39c12',
+            'danger': '#e74c3c'
+        }
+        
+        self.angle_unit = "deg"
+        self.direction = 1
+        
+        self.error_accumulated = 0.0
+        self.step_count = 0
+        self.is_diverging = False
+        self.sim_running = False
+        self.sim_timer = None
+        
+        self.debug = True
+        
+        self.setup_ui()
+        self.load_example()
+    
+    def log(self, msg):
+        if self.debug:
+            print(f"[DEBUG] {msg}")
+    
+    def setup_ui(self):
+        """创建界面"""
+        self.log("开始创建UI...")
+        
+        main_frame = tk.Frame(self.root, bg=self.colors['bg'])
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+        
+        title_frame = tk.Frame(main_frame, bg=self.colors['bg'])
+        title_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        tk.Label(title_frame, text="SVPWM 矢量分析 (含误差累积模拟)", 
+                font=("Microsoft YaHei", 18, "bold"), 
+                fg=self.colors['primary'], bg=self.colors['bg']).pack()
+        
+        tk.Label(title_frame, text="展示角度误差 → Id/Iq错误 → 力矩方向错误 → 误差累积 → 失步 的完整因果链", 
+                font=("Microsoft YaHei", 10), 
+                fg="#7f8c8d", bg=self.colors['bg']).pack()
+        
+        body_frame = tk.Frame(main_frame, bg=self.colors['bg'])
+        body_frame.pack(fill=tk.BOTH, expand=True)
+        
+        left_panel = tk.Frame(body_frame, bg=self.colors['card_bg'], 
+                             relief=tk.GROOVE, bd=1)
+        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+        
+        canvas_frame = tk.Frame(body_frame, bg=self.colors['bg'])
+        canvas_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+        # ===== 左侧面板 =====
+        tk.Label(left_panel, text="参数控制", 
+                font=("Microsoft YaHei", 13, "bold"),
+                fg=self.colors['primary'], bg=self.colors['card_bg']).pack(pady=(15, 10))
+        
+        ttk.Separator(left_panel, orient='horizontal').pack(fill=tk.X, padx=15, pady=5)
+        
+        param_frame = tk.Frame(left_panel, bg=self.colors['card_bg'])
+        param_frame.pack(fill=tk.X, padx=20, pady=15)
+        
+        # d轴
+        d_frame = tk.Frame(param_frame, bg=self.colors['card_bg'])
+        d_frame.pack(fill=tk.X, pady=5)
+        tk.Label(d_frame, text="d (励磁/径向)", font=("Microsoft YaHei", 10),
+                fg="#555", bg=self.colors['card_bg'], width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.d_entry = tk.Entry(d_frame, width=10, font=("Consolas", 11))
+        self.d_entry.pack(side=tk.RIGHT)
+        self.d_entry.insert(0, "0.0")
+        
+        # q轴
+        q_frame = tk.Frame(param_frame, bg=self.colors['card_bg'])
+        q_frame.pack(fill=tk.X, pady=5)
+        tk.Label(q_frame, text="q (力矩/切向)", font=("Microsoft YaHei", 10),
+                fg="#555", bg=self.colors['card_bg'], width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.q_entry = tk.Entry(q_frame, width=10, font=("Consolas", 11))
+        self.q_entry.pack(side=tk.RIGHT)
+        self.q_entry.insert(0, "0.7")
+        
+        # 程序角度
+        est_frame = tk.Frame(param_frame, bg=self.colors['card_bg'])
+        est_frame.pack(fill=tk.X, pady=5)
+        tk.Label(est_frame, text="θ_est (程序)", font=("Microsoft YaHei", 10),
+                fg="#555", bg=self.colors['card_bg'], width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.est_entry = tk.Entry(est_frame, width=10, font=("Consolas", 11))
+        self.est_entry.pack(side=tk.RIGHT)
+        self.est_entry.insert(0, "45.0")
+        
+        # 真实角度
+        real_frame = tk.Frame(param_frame, bg=self.colors['card_bg'])
+        real_frame.pack(fill=tk.X, pady=5)
+        tk.Label(real_frame, text="θ_real (真实)", font=("Microsoft YaHei", 10),
+                fg="#555", bg=self.colors['card_bg'], width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.real_entry = tk.Entry(real_frame, width=10, font=("Consolas", 11))
+        self.real_entry.pack(side=tk.RIGHT)
+        self.real_entry.insert(0, "20.0")
+        
+        # 转向控制
+        dir_frame = tk.Frame(param_frame, bg=self.colors['card_bg'])
+        dir_frame.pack(fill=tk.X, pady=8)
+        tk.Label(dir_frame, text="转向:", font=("Microsoft YaHei", 10),
+                fg="#555", bg=self.colors['card_bg']).pack(side=tk.LEFT)
+        self.dir_var = tk.StringVar(value="正转")
+        cw_btn = tk.Radiobutton(dir_frame, text="正转", variable=self.dir_var,
+                               value="正转", command=self.on_dir_change,
+                               font=("Microsoft YaHei", 9), bg=self.colors['card_bg'])
+        cw_btn.pack(side=tk.LEFT, padx=5)
+        ccw_btn = tk.Radiobutton(dir_frame, text="反转", variable=self.dir_var,
+                                value="反转", command=self.on_dir_change,
+                                font=("Microsoft YaHei", 9), bg=self.colors['card_bg'])
+        ccw_btn.pack(side=tk.LEFT, padx=5)
+        
+        # 单位选择
+        unit_frame = tk.Frame(param_frame, bg=self.colors['card_bg'])
+        unit_frame.pack(fill=tk.X, pady=8)
+        tk.Label(unit_frame, text="角度单位:", font=("Microsoft YaHei", 10),
+                fg="#555", bg=self.colors['card_bg']).pack(side=tk.LEFT)
+        self.unit_var = tk.StringVar(value="deg")
+        rad_btn = tk.Radiobutton(unit_frame, text="rad", variable=self.unit_var,
+                                value="rad", command=self.on_unit_change,
+                                font=("Microsoft YaHei", 9), bg=self.colors['card_bg'])
+        rad_btn.pack(side=tk.LEFT, padx=5)
+        deg_btn = tk.Radiobutton(unit_frame, text="°", variable=self.unit_var,
+                                value="deg", command=self.on_unit_change,
+                                font=("Microsoft YaHei", 9), bg=self.colors['card_bg'])
+        deg_btn.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Separator(left_panel, orient='horizontal').pack(fill=tk.X, padx=15, pady=5)
+        
+        # ===== 误差累积模拟 =====
+        accum_frame = tk.LabelFrame(left_panel, text="误差累积模拟", 
+                                    font=("Microsoft YaHei", 10),
+                                    bg=self.colors['card_bg'], fg=self.colors['primary'])
+        accum_frame.pack(fill=tk.X, padx=15, pady=10)
+        
+        sim_param_frame = tk.Frame(accum_frame, bg=self.colors['card_bg'])
+        sim_param_frame.pack(fill=tk.X, padx=10, pady=8)
+        
+        speed_frame = tk.Frame(sim_param_frame, bg=self.colors['card_bg'])
+        speed_frame.pack(fill=tk.X, pady=3)
+        tk.Label(speed_frame, text="速度 (rad/s):", font=("Microsoft YaHei", 9),
+                fg="#555", bg=self.colors['card_bg'], width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.speed_entry = tk.Entry(speed_frame, width=8, font=("Consolas", 10))
+        self.speed_entry.pack(side=tk.RIGHT)
+        self.speed_entry.insert(0, "50.0")
+        
+        step_frame = tk.Frame(sim_param_frame, bg=self.colors['card_bg'])
+        step_frame.pack(fill=tk.X, pady=3)
+        tk.Label(step_frame, text="每步增量 (°):", font=("Microsoft YaHei", 9),
+                fg="#555", bg=self.colors['card_bg'], width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.step_entry = tk.Entry(step_frame, width=8, font=("Consolas", 10))
+        self.step_entry.pack(side=tk.RIGHT)
+        self.step_entry.insert(0, "5.0")
+        
+        sim_btn_frame = tk.Frame(accum_frame, bg=self.colors['card_bg'])
+        sim_btn_frame.pack(fill=tk.X, padx=10, pady=8)
+        
+        self.sim_btn = tk.Button(sim_btn_frame, text="▶ 开始模拟", 
+                                command=self.toggle_simulation,
+                                font=("Microsoft YaHei", 9, "bold"),
+                                bg=self.colors['success'], fg="white",
+                                padx=15, pady=4, relief=tk.FLAT)
+        self.sim_btn.pack(side=tk.LEFT, padx=3)
+        
+        self.reset_accum_btn = tk.Button(sim_btn_frame, text="↺ 重置累积", 
+                                        command=self.reset_accumulation,
+                                        font=("Microsoft YaHei", 9),
+                                        bg="#95a5a6", fg="white",
+                                        padx=15, pady=4, relief=tk.FLAT)
+        self.reset_accum_btn.pack(side=tk.LEFT, padx=3)
+        
+        self.accum_status = tk.Label(accum_frame, text="累积: 0.0° | 步数: 0 | 状态: 安全",
+                                    font=("Microsoft YaHei", 9),
+                                    fg="#00AA00", bg=self.colors['card_bg'])
+        self.accum_status.pack(pady=5)
+        
+        ttk.Separator(left_panel, orient='horizontal').pack(fill=tk.X, padx=15, pady=5)
+        
+        # ===== 按钮 =====
+        btn_frame = tk.Frame(left_panel, bg=self.colors['card_bg'])
+        btn_frame.pack(fill=tk.X, padx=20, pady=10)
+        btn_row = tk.Frame(btn_frame, bg=self.colors['card_bg'])
+        btn_row.pack()
+        
+        self.btn_update = tk.Button(btn_row, text="▶ 执行计算", 
+                                   command=self.execute,
+                                   font=("Microsoft YaHei", 10, "bold"),
+                                   bg=self.colors['success'], fg="white",
+                                   padx=20, pady=5, relief=tk.FLAT)
+        self.btn_update.pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(btn_row, text="📋 示例", 
+                 command=self.load_example,
+                 font=("Microsoft YaHei", 10),
+                 bg=self.colors['accent'], fg="white",
+                 padx=15, pady=5, relief=tk.FLAT).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(btn_row, text="↺ 重置", 
+                 command=self.reset_params,
+                 font=("Microsoft YaHei", 10),
+                 bg="#95a5a6", fg="white",
+                 padx=15, pady=5, relief=tk.FLAT).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Separator(left_panel, orient='horizontal').pack(fill=tk.X, padx=15, pady=5)
+        
+        # ===== 结果 =====
+        result_frame = tk.LabelFrame(left_panel, text="计算结果", 
+                                     font=("Microsoft YaHei", 10),
+                                     bg=self.colors['card_bg'], fg=self.colors['primary'])
+        result_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(5, 15))
+        
+        self.result_text = scrolledtext.ScrolledText(result_frame, height=14,
+                                                     font=("Consolas", 9),
+                                                     bg="#fafafa", fg="#333",
+                                                     relief=tk.FLAT, bd=1)
+        self.result_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.result_text.config(state=tk.DISABLED)
+        
+        # ===== 右侧画布 =====
+        legend_frame = tk.Frame(canvas_frame, bg=self.colors['bg'])
+        legend_frame.pack(fill=tk.X, pady=(0, 5))
+        legend_items = [
+            ("A相", "#FF0000", "虚线"), ("B相", "#009900", "虚线"),
+            ("C相", "#0000CC", "虚线"), ("V_ref", "#FF8800", "实线"),
+            ("真实d轴", "#9900CC", "虚线"), ("程序d轴", "#0066FF", "虚线"),
+            ("F_t", "#00AA00", "实线"), ("F_r", "#0066CC", "虚线"),
+        ]
+        for text, color, style in legend_items:
+            if "虚线" in style:
+                line = tk.Frame(legend_frame, width=20, height=2, bg=color)
+                line.pack(side=tk.LEFT, padx=(2, 0))
+            else:
+                dot = tk.Frame(legend_frame, width=16, height=3, bg=color)
+                dot.pack(side=tk.LEFT, padx=(2, 0))
+            tk.Label(legend_frame, text=text, font=("Microsoft YaHei", 8),
+                    fg="#555", bg=self.colors['bg']).pack(side=tk.LEFT, padx=(0, 8))
+        
+        self.canvas = SVPWMCanvas(canvas_frame, width=550, height=560)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # ===== 底部状态栏 =====
+        status_frame = tk.Frame(main_frame, bg=self.colors['bg'])
+        status_frame.pack(fill=tk.X, pady=(10, 0))
+        self.status_bar = tk.Label(status_frame, text="就绪 — 点击'开始模拟'观察误差累积导致失步",
+                                  relief=tk.FLAT, anchor=tk.W,
+                                  font=("Microsoft YaHei", 9),
+                                  fg="#7f8c8d", bg=self.colors['bg'])
+        self.status_bar.pack(fill=tk.X)
+        
+        self.log("UI创建全部完成！")
+    
+    def on_dir_change(self):
+        if self.dir_var.get() == "正转":
+            self.direction = 1
+        else:
+            self.direction = -1
+        self.status_bar.config(text=f"转向切换为: {self.dir_var.get()}")
+        self.execute()
+    
+    def on_unit_change(self):
+        unit = self.unit_var.get()
+        try:
+            for entry in [self.est_entry, self.real_entry]:
+                val = float(entry.get())
+                if unit == "deg":
+                    new_val = math.degrees(val)
+                else:
+                    new_val = math.radians(val)
+                entry.delete(0, tk.END)
+                entry.insert(0, f"{new_val:.4f}")
+        except:
+            pass
+        self.status_bar.config(text=f"单位切换为: {'度' if unit == 'deg' else '弧度'}")
+    
+    def load_example(self):
+        """加载示例"""
+        self.log("加载示例...")
+        self.dir_var.set("正转")
+        self.direction = 1
+        
+        self.d_entry.delete(0, tk.END)
+        self.d_entry.insert(0, "0.0")
+        self.q_entry.delete(0, tk.END)
+        self.q_entry.insert(0, "0.7")
+        self.est_entry.delete(0, tk.END)
+        self.est_entry.insert(0, "45.0")
+        self.real_entry.delete(0, tk.END)
+        self.real_entry.insert(0, "20.0")
+        self.speed_entry.delete(0, tk.END)
+        self.speed_entry.insert(0, "50.0")
+        self.step_entry.delete(0, tk.END)
+        self.step_entry.insert(0, "5.0")
+        
+        self.reset_accumulation()
+        self.status_bar.config(text="已加载示例: 正转 · 初始角度误差25°，可模拟累积")
+        self.root.after(100, self.execute)
+    
+    def reset_params(self):
+        self.d_entry.delete(0, tk.END)
+        self.d_entry.insert(0, "0.0")
+        self.q_entry.delete(0, tk.END)
+        self.q_entry.insert(0, "0.0")
+        self.est_entry.delete(0, tk.END)
+        self.est_entry.insert(0, "0.0")
+        self.real_entry.delete(0, tk.END)
+        self.real_entry.insert(0, "0.0")
+        self.reset_accumulation()
+        self.status_bar.config(text="参数已重置")
+        self.execute()
+    
+    def reset_accumulation(self):
+        """重置误差累积"""
+        self.error_accumulated = 0.0
+        self.step_count = 0
+        self.is_diverging = False
+        self.accum_status.config(text="累积: 0.0° | 步数: 0 | 状态: 安全", fg="#00AA00")
+        self.log(f"误差累积已重置")
+    
+    def toggle_simulation(self):
+        """切换模拟运行状态"""
+        if self.sim_running:
+            self.stop_simulation()
+        else:
+            self.start_simulation()
+    
+    def start_simulation(self):
+        """开始误差累积模拟"""
+        self.sim_running = True
+        self.sim_btn.config(text="⏹ 停止模拟", bg="#e74c3c")
+        self.status_bar.config(text="模拟运行中... 观察角度误差累积过程")
+        self.log("模拟开始")
+        self.sim_step()
+    
+    def stop_simulation(self):
+        """停止模拟"""
+        self.sim_running = False
+        if self.sim_timer:
+            self.root.after_cancel(self.sim_timer)
+            self.sim_timer = None
+        self.sim_btn.config(text="▶ 开始模拟", bg=self.colors['success'])
+        self.status_bar.config(text="模拟已停止")
+        self.log("模拟停止")
+    
+    def sim_step(self):
+        """执行一步模拟"""
+        if not self.sim_running:
+            return
+        
+        try:
+            speed = float(self.speed_entry.get())
+            step_deg = float(self.step_entry.get())
+            
+            est_val = float(self.est_entry.get())
+            real_val = float(self.real_entry.get())
+            
+            self.step_count += 1
+            
+            real_val += step_deg
+            est_val += step_deg
+            
+            d = float(self.d_entry.get())
+            q = float(self.q_entry.get())
+            
+            est_rad = math.radians(est_val)
+            real_rad = math.radians(real_val)
+            
+            result = SguanMath.svpwm(d, q, est_rad)
+            _, _, _, _, alpha, beta = result
+            v_angle = math.atan2(beta, alpha)
+            
+            delta_real = v_angle - real_rad
+            while delta_real > math.pi:
+                delta_real -= 2 * math.pi
+            while delta_real < -math.pi:
+                delta_real += 2 * math.pi
+            delta_deg = math.degrees(delta_real)
+            
+            current_error = est_val - real_val
+            self.error_accumulated += abs(current_error * 0.1)
+            
+            if abs(delta_deg) > 60:
+                self.is_diverging = True
+            
+            self.est_entry.delete(0, tk.END)
+            self.est_entry.insert(0, f"{est_val:.2f}")
+            self.real_entry.delete(0, tk.END)
+            self.real_entry.insert(0, f"{real_val:.2f}")
+            
+            if self.is_diverging:
+                color = "#FF0000"
+                status = "发散中！"
+            elif self.error_accumulated > 30:
+                color = "#FF6600"
+                status = "误差较大"
+            else:
+                color = "#00AA00"
+                status = "安全"
+            
+            self.accum_status.config(
+                text=f"累积: {self.error_accumulated:.1f}° | 步数: {self.step_count} | 状态: {status}",
+                fg=color
+            )
+            
+            self.execute()
+            
+            if self.is_diverging and abs(delta_deg) > 90:
+                self.status_bar.config(text="已失步！模拟自动停止")
+                self.stop_simulation()
+                return
+            
+            self.sim_timer = self.root.after(200, self.sim_step)
+            
+        except Exception as e:
+            self.log(f"模拟步进错误: {e}")
+            self.stop_simulation()
+    
+    def execute(self):
+        """执行计算并更新显示"""
+        self.log("=" * 50)
+        self.log("执行计算开始...")
+        
+        try:
+            d = float(self.d_entry.get().strip())
+            q = float(self.q_entry.get().strip())
+            angle_est_val = float(self.est_entry.get().strip())
+            angle_real_val = float(self.real_entry.get().strip())
+            
+            if self.unit_var.get() == "deg":
+                angle_est = math.radians(angle_est_val)
+                angle_real = math.radians(angle_real_val)
+            else:
+                angle_est = angle_est_val
+                angle_real = angle_real_val
+            
+            result = SguanMath.svpwm(d, q, angle_est)
+            d_u, d_v, d_w, sector, alpha, beta = result
+            
+            self.canvas.update_vectors(
+                d, q, angle_est, angle_real, alpha, beta, sector, self.direction,
+                self.error_accumulated, self.step_count, self.is_diverging
+            )
+            
+            v_angle = math.atan2(beta, alpha)
+            delta_real = v_angle - angle_real
+            while delta_real > math.pi:
+                delta_real -= 2 * math.pi
+            while delta_real < -math.pi:
+                delta_real += 2 * math.pi
+            
+            angle_error = angle_est - angle_real
+            while angle_error > math.pi:
+                angle_error -= 2 * math.pi
+            while angle_error < -math.pi:
+                angle_error += 2 * math.pi
+            
+            self.update_result(d, q, angle_est, angle_real, alpha, beta, sector,
+                             d_u, d_v, d_w, v_angle, delta_real, angle_error)
+            
+            delta_deg = math.degrees(delta_real)
+            dir_text = "正转" if self.direction == 1 else "反转"
+            
+            if self.direction == 1 and delta_real < 0:
+                status = "推力模式"
+            elif self.direction == -1 and delta_real > 0:
+                status = "推力模式"
+            elif abs(delta_deg) > 80:
+                status = "接近失步"
+            elif abs(delta_deg) > 60:
+                status = "功角偏大"
+            else:
+                status = "安全"
+            
+            self.status_bar.config(
+                text=f"{dir_text} | δ={delta_deg:+.1f}° | 误差累积={self.error_accumulated:.1f}° | {status}"
+            )
+            
+        except ValueError as e:
+            self.log(f"ValueError: {e}")
+            self.status_bar.config(text="输入错误")
+        except Exception as e:
+            self.log(f"执行错误: {e}")
+            self.log(traceback.format_exc())
+            self.status_bar.config(text=f"错误: {str(e)}")
+        
+        self.log("执行计算结束")
+        self.log("=" * 50)
+    
+    def update_result(self, d, q, angle_est, angle_real, alpha, beta, sector,
+                     d_u, d_v, d_w, v_angle, delta_real, angle_error):
+        """更新结果显示"""
+        try:
+            self.result_text.config(state=tk.NORMAL)
+            self.result_text.delete(1.0, tk.END)
+            
+            theta_est_deg = math.degrees(angle_est)
+            theta_real_deg = math.degrees(angle_real)
+            v_angle_deg = math.degrees(v_angle)
+            delta_deg = math.degrees(delta_real)
+            error_deg = math.degrees(angle_error)
+            dir_text = "正转" if self.direction == 1 else "反转"
+            
+            lines = []
+            lines.append("═" * 50)
+            lines.append(" 输入参数")
+            lines.append("─" * 50)
+            lines.append(f"  转向       → {dir_text}")
+            lines.append(f"  d = {d:+.4f}  (径向力/励磁)")
+            lines.append(f"  q = {q:+.4f}  (切向力/力矩)")
+            lines.append(f"  θ_est      → {theta_est_deg:+.1f}°")
+            lines.append(f"  θ_real     → {theta_real_deg:+.1f}°")
+            lines.append(f"  当前角度误差 → {error_deg:+.1f}°")
+            lines.append("")
+            lines.append("─" * 50)
+            lines.append(" 输出结果")
+            lines.append("─" * 50)
+            lines.append(f"  扇区     → {sector}")
+            lines.append(f"  d_u      → {d_u:.4f}  ({d_u*100:.1f}%)")
+            lines.append(f"  d_v      → {d_v:.4f}  ({d_v*100:.1f}%)")
+            lines.append(f"  d_w      → {d_w:.4f}  ({d_w*100:.1f}%)")
+            lines.append("")
+            lines.append("─" * 50)
+            lines.append(" 功角与受力分析")
+            lines.append("─" * 50)
+            lines.append(f"  V_ref    → {v_angle_deg:+.1f}° (定子磁场)")
+            lines.append(f"  真实d轴  → {theta_real_deg:+.1f}° (N极)")
+            lines.append(f"  δ_real   → {delta_deg:+.1f}°")
+            
+            if self.direction == 1:
+                if delta_real > 0:
+                    lines.append(f"  正转·拉力模式 (δ>0)")
+                    lines.append(f"     V_ref 在 N极 前方拉着走")
+                else:
+                    lines.append(f"  正转·推力模式 (δ<0)")
+                    lines.append(f"     V_ref 在 N极 后方推着走")
+                    lines.append(f"     → 力矩方向错误！")
+            else:
+                if delta_real < 0:
+                    lines.append(f"  反转·拉力模式 (δ<0)")
+                else:
+                    lines.append(f"  反转·推力模式 (δ>0)")
+                    lines.append(f"     → 力矩方向错误！")
+            
+            lines.append("")
+            lines.append("─" * 50)
+            lines.append(" 误差累积状态")
+            lines.append("─" * 50)
+            lines.append(f"  累积误差   → {self.error_accumulated:.1f}°")
+            lines.append(f"  步数       → {self.step_count}")
+            
+            if self.is_diverging:
+                lines.append(f"  状态    → 发散中！")
+                lines.append(f"     → 角度误差不断增大")
+                lines.append(f"     → 力矩方向持续错误")
+                lines.append(f"     → 最终将导致失步！")
+            elif self.error_accumulated > 30:
+                lines.append(f"  状态    → 误差较大")
+                lines.append(f"     → 需要检查角度观测器")
+            else:
+                lines.append(f"  状态    → 安全")
+            
+            if abs(delta_deg) > 80:
+                lines.append("")
+                lines.append("  ⚠️ 严重：功角过大，接近失步！")
+            elif abs(delta_deg) > 60:
+                lines.append("")
+                lines.append("  ⚡ 警告：功角偏大，力矩效率降低")
+            else:
+                lines.append("")
+                lines.append("  功角安全，运行正常")
+            
+            lines.append("═" * 50)
+            
+            output = "\n".join(lines)
+            self.result_text.insert(1.0, output)
+            self.result_text.config(state=tk.DISABLED)
+        except Exception as e:
+            self.log(f"update_result错误: {e}")
+
+
+# ============ 独立运行入口 ============
+if __name__ == "__main__":
+    print("=" * 60)
+    print("启动 SVPWM 可视化工具 (含误差累积模拟)...")
+    print(f"Python 版本: {sys.version}")
+    print("=" * 60)
+    
+    try:
+        root = tk.Tk()
+        print("Tkinter 根窗口创建成功")
+        
+        app = SVPWMApp(root)
+        print("SVPWMApp 实例创建成功")
+        
+        print("进入主事件循环...")
+        print("=" * 60)
+        root.mainloop()
+        print("程序正常退出")
+    except Exception as e:
+        print(f"程序启动失败: {e}")
+        traceback.print_exc()
+        input("\n按 Enter 键退出...")

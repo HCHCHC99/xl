@@ -1,0 +1,30 @@
+{
+	"nodes":[
+		{"id":"n_start","type":"text","text":"## 模式20 编码器零点校准 (foc_cal.c/.h)\n**磁场 90° 吸 2s → 0° 吸 2s → 记住“0° 时编码器读数” → 自动回 mode 0**\n\n为什么需要：编码器只能告诉你“轴转过了多少”，\n不知道磁铁 N 极朝哪；FOC 必须知道 N 极位置才能正确发力。\nmode 20 把磁铁吸到已知的 0°，记下此刻编码器读数当零点。\n\n全程纯定时自动（共 4 秒），不用人管","x":-240,"y":0,"width":470,"height":240,"color":"4"},
+		{"id":"n_init","type":"text","text":"### 启动 Foc_Cal_Start（主循环）\n清故障 → 挂 ALIGN 模式号 → PWM 启动（50/50/50 零矢量）\n\n吸力电压复用 mode 32 的 g_lockiq_align_volt_v\n（Watch 可调，默认 0.4V → ≈4A 直流吸附电流）","x":-240,"y":320,"width":600,"height":160},
+		{"id":"n_isr","type":"text","text":"### ISR 每拍（20kHz）Foc_Cal_Step\n① 过流检查：原始三相电流，去抖 4 拍\n② 输出固定磁场：BETA=静止系90° / ALPHA=静止系0°\n③ 当前阶段计时 +1（吸附期 id/iq 仅作 Watch 观察）","x":-240,"y":560,"width":470,"height":180},
+		{"id":"n_beta","type":"text","text":"### 阶段1 BETA 磁吸附（2s）\n磁场定在静止系 90° 电角度，转子 N 极被吸到 90°\n（“咔”一声吸附到位，有响声正常）\n\n计时到 2s：记下编码器原始计数 g_cal_beta_hw\n竖事件 BETA_DONE → obs 打印 BETA done hw=xxx -> ALPHA 0deg","x":-240,"y":800,"width":470,"height":190},
+		{"id":"n_alpha","type":"text","text":"### 阶段2 ALPHA 磁吸附（2s）\n磁场切到静止系 0°，转子被吸到 0°（电角度零点位置）\n\n计时到 2s：记下 g_cal_alpha_hw","x":-240,"y":1070,"width":470,"height":150},
+		{"id":"n_dect","type":"text","text":"### 计时到 2s 了吗？\n两阶段都是纯定时，没有静止判据——\n吸没吸到位，靠 moved 打印人工复核（见右侧）","x":-240,"y":1300,"width":470,"height":130,"color":"3"},
+		{"id":"n_lock","type":"text","text":"### 锁定零点（对表完成）\n位移 g_cal_moved = alpha_hw − beta_hw（16位回绕差值，带符号）\n期望 ≈ ±102 counts（= CPR/(4×极对数)，即 90° 电角度）\n\noffset = mod(原始计数 × 编码器方向, CPR)\n← 此刻转子正好停在电角度 0°，这就是“表”的零点\nFoc_Core_SetAlignOffset() 写入共享对齐零点\n关 PWM 停发波（防 ISR 回退对齐步进）→ 竖事件 LOCKED\n打印：ALPHA done hw= moved= offset= cnts (xxx deg)","x":-240,"y":1510,"width":470,"height":280,"color":"4"},
+		{"id":"n_obs","type":"text","text":"### 事件处理（foc_obs 主循环，自动）\nLOCKED → 打印结果 → 自动切回 mode 0\nOC → 打印 FAULT_OC 电流 → 同样自动回 mode 0\n\n（ISR 内禁止打印，全部走事件快照模式）","x":-240,"y":1870,"width":470,"height":160},
+		{"id":"n_mode0","type":"text","text":"### 校准完成后：mode 0 实时看角度\nFoc_Core_UpdateAngleObs() 读 TMRA_1 原始计数扣 offset，实时刷新：\n\ng_foc_mech_deg : 机械角度 [0,360)\ng_foc_elec_deg : 电角度 [0,360×极对数) = 0~3600\n\n随手转轴，Keil Watch 实时变化\n（rad 观测量同源更新，控制框架不受影响）","x":-240,"y":2110,"width":470,"height":240,"color":"4"},
+		{"id":"n_oc","type":"text","text":"### FAULT_OC 过流停机\n任何阶段过流（去抖 4 拍）→ 立即 FaultStop\n事件经 foc_obs 打印电流后自动回 mode 0","x":460,"y":560,"width":440,"height":140,"color":"1"},
+		{"id":"n_warn","type":"text","text":"### ⚠ moved 偏差大 = 白校\n本模式纯定时，不校验吸附是否到位：\n打印 moved 偏离 ±102 太多 = 转子没被吸到位\n（卡死 / 电压不够 / 被人手扳动）\n此时锁出的零点不可信 → 重跑 mode 20","x":460,"y":1510,"width":440,"height":200,"color":"2"},
+		{"id":"n_frame","type":"text","text":"### ⚠ 零点框架 + 模式关系\nTMRA_1 是 16 位 free-run，CPR=4096 整除 65536，\n“原始计数 mod CPR” 回绕无缝；offset 与 mode 0 观测同一框架，\n不存在 mode 30/31/32 那种“各模块零点不一致”的错位。\n\n谁在用：mode 22 / 23 链路直接沿用（可替代 mode 23）；\nmode 30/31/32 用各自相对计数框架，不读本 offset","x":460,"y":1870,"width":440,"height":260,"color":"2"}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"n_start","fromSide":"bottom","toNode":"n_init","toSide":"top"},
+		{"id":"e2","fromNode":"n_init","fromSide":"bottom","toNode":"n_isr","toSide":"top"},
+		{"id":"e3","fromNode":"n_isr","fromSide":"bottom","toNode":"n_beta","toSide":"top"},
+		{"id":"e4","fromNode":"n_beta","fromSide":"bottom","toNode":"n_alpha","toSide":"top","label":"计时 2s 到（记 beta_hw）"},
+		{"id":"e5","fromNode":"n_alpha","fromSide":"bottom","toNode":"n_dect","toSide":"top"},
+		{"id":"e6","fromNode":"n_dect","fromSide":"left","toNode":"n_alpha","toSide":"left","color":"3","label":"否（继续吸）"},
+		{"id":"e7","fromNode":"n_dect","fromSide":"bottom","toNode":"n_lock","toSide":"top","label":"是（记 alpha_hw，锁定）"},
+		{"id":"e8","fromNode":"n_isr","fromSide":"right","toNode":"n_oc","toSide":"left","color":"1","label":"过流"},
+		{"id":"e9","fromNode":"n_lock","fromSide":"right","toNode":"n_warn","toSide":"left","color":"2","label":"moved 偏差大？"},
+		{"id":"e10","fromNode":"n_lock","fromSide":"bottom","toNode":"n_obs","toSide":"top"},
+		{"id":"e11","fromNode":"n_obs","fromSide":"bottom","toNode":"n_mode0","toSide":"top","label":"自动回 mode 0"},
+		{"id":"e12","fromNode":"n_obs","fromSide":"right","toNode":"n_frame","toSide":"left","color":"2","label":"零点给谁用"}
+	]
+}

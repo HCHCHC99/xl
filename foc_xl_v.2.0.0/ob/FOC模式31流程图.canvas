@@ -1,0 +1,28 @@
+{
+	"nodes":[
+		{"id":"n_start","type":"text","text":"## 模式31 IQ_PI\n**编码器转子角度 PI 电流环 —— 真正“看着转”的闭环**\n\n和 mode 30 的区别：\n30 是“闭着眼施力”：磁场自己匀速转，不管转子在哪\n31 是“睁着眼施力”：每 50µs 先问编码器“转子在哪”，再算“电压往哪打、打多大”","x":-220,"y":0,"width":440,"height":200,"color":"4"},
+		{"id":"n_decoff","type":"text","text":"### 启动检查：偏移量已锁定过吗？\n（必须先跑过 mode 30 或 mode 32，拿到“对表”结果）","x":-220,"y":280,"width":440,"height":120,"color":"3"},
+		{"id":"n_refuse","type":"text","text":"### step=1 ERR_NO_OFFSET\n偏移没锁定 → 拒绝启动","x":420,"y":280,"width":400,"height":120,"color":"1"},
+		{"id":"n_capdir","type":"text","text":"### 启动准备\n记录参考方向 ref_dir（取 mode 30/32 留下的拖动方向）\n零矢量启动 PWM（三相 50/50/50，不出力）","x":-220,"y":480,"width":440,"height":140},
+		{"id":"n_calib","type":"text","text":"### step=2 校准窗 ≈210ms\n三相 50/50/50 不出力，测电流传感器零点误差\n\n注意：这是每次启动的必经步骤，不是卡住了","x":-220,"y":700,"width":440,"height":150},
+		{"id":"n_loop","type":"text","text":"### step=3 闭环运行\n目标电流 iq_ref 从 0 按斜坡升到 g_iqpi_iq_ref_ma（软启动，防电流冲击）\n两个 PI 分工干活：\n　 id PI：把“无用功电流” id 压到 0\n　 iq PI：把“力矩电流” iq 压到目标值（力矩大小 ∝ iq）\n\nWatch：g_foc_iq_ma / g_foc_id_ma / g_foc_vq / g_foc_vd","x":-220,"y":930,"width":440,"height":250},
+		{"id":"n_check","type":"text","text":"### 每 500ms 一次“体检”（窗口检查）\n看这 500ms：转子动没动、方向对不对、电压顶没顶满\n（[IQPI_MON] 每 200ms 打印 st/iq/id/vq/vd）","x":-220,"y":1230,"width":440,"height":140,"color":"3"},
+		{"id":"n_stall","type":"text","text":"### step=5 疑似堵转\n这 500ms 转子基本没动（状态记录）","x":420,"y":1150,"width":400,"height":110,"color":"2"},
+		{"id":"n_flip","type":"text","text":"### step=7 180° 框架自动翻转 [IQPI_FLIP]\n转了，但方向和预期相反 → 角度框架差了 180°\n（这种错误在电流读数上看不出来，只有转向能暴露）\n自动把角度基线翻转 180° 修正\n\n⚠ 教训：翻转若不复位 PI 积分器，翻转瞬间会电流冲击","x":420,"y":1300,"width":500,"height":210,"color":"6"},
+		{"id":"n_sat","type":"text","text":"### step=4 电压饱和\nvq 顶到 ±IQPI_PI_UMAX_V 限幅\n（电压不够用：常见于转速太高或目标电流太大）\n典型现象：step 在 3 和 4 之间交替","x":420,"y":1550,"width":400,"height":150,"color":"3"},
+		{"id":"n_oc","type":"text","text":"### step=6 FAULT_OC 过流保护\n任何时刻过流 → 立即停机保护\n（ISR 每拍用原始电流检查，任何阶段都可能触发）","x":420,"y":1760,"width":400,"height":130,"color":"1"},
+		{"id":"n_stop","type":"text","text":"### 切到 mode 0（停机）\n状态保留不清除（Watch 可查最后停在哪一步）\n下次成功启动 mode 31 时才复位\n\nWatch：g_iqpi_step、g_iqpi_step_hist[10]\n（最近 10 次状态变化历史，集中在观察模块 foc_obs）","x":-220,"y":1520,"width":440,"height":240,"color":"4"}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"n_start","fromSide":"bottom","toNode":"n_decoff","toSide":"top"},
+		{"id":"e2","fromNode":"n_decoff","fromSide":"right","toNode":"n_refuse","toSide":"left","color":"1","label":"否"},
+		{"id":"e3","fromNode":"n_decoff","fromSide":"bottom","toNode":"n_capdir","toSide":"top","label":"是"},
+		{"id":"e4","fromNode":"n_capdir","fromSide":"bottom","toNode":"n_calib","toSide":"top"},
+		{"id":"e5","fromNode":"n_calib","fromSide":"bottom","toNode":"n_loop","toSide":"top"},
+		{"id":"e6","fromNode":"n_loop","fromSide":"bottom","toNode":"n_check","toSide":"top"},
+		{"id":"e7","fromNode":"n_check","fromSide":"left","toNode":"n_loop","toSide":"left","color":"4","label":"正常（继续闭环）"},
+		{"id":"e8","fromNode":"n_check","fromSide":"right","toNode":"n_stall","toSide":"left","color":"2","label":"没动"},
+		{"id":"e9","fromNode":"n_check","fromSide":"right","toNode":"n_flip","toSide":"left","color":"6","label":"转反了"},
+		{"id":"e10","fromNode":"n_check","fromSide":"right","toNode":"n_sat","toSide":"left","color":"3","label":"顶限幅"}
+	]
+}

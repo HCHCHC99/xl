@@ -1,0 +1,24 @@
+{
+	"nodes":[
+		{"id":"n_start","type":"text","text":"## 模式30 ZIZENG\n**磁场角度自增拖动 —— 给编码器“对表”**\n\n一句话：让磁场匀速旋转，像一根看不见的“磁力杆”拖着电机慢慢转，一边转一边记住“编码器读数”和“磁场角度”的差值（偏移量）。\n\n入口：SW1 短按切换 mode 0 ↔ 30","x":-220,"y":0,"width":440,"height":220,"color":"4"},
+		{"id":"n_calib","type":"text","text":"### 1. 零矢量校准窗 ≈210ms\n三相 50/50/50 输出（绕组无电流，不出力）\n趁机测电流传感器自身的零点误差（foc_calib 的活）\n测得零偏 g_calib_iu/iv/iw_off_ma，之后每次采样都扣掉","x":-220,"y":280,"width":440,"height":160},
+		{"id":"n_drag","type":"text","text":"### 2. 拖动阶段\n磁场角度 theta 匀速自增：频率 g_zizeng_freq_hz（默认 3Hz）\n电压幅值 g_zizeng_volt_v（默认 0.6V）\n转子被磁力平稳拖着转，始终略微滞后磁场几度（负载角，正常）\n\nWatch 可调：g_zizeng_freq_hz / g_zizeng_volt_v（运行中可改）","x":-220,"y":520,"width":440,"height":200},
+		{"id":"n_dec1s","type":"text","text":"### 判断：本次运行已满 1 秒？\n（没满就继续拖动积累）","x":-220,"y":800,"width":440,"height":110,"color":"3"},
+		{"id":"n_sample","type":"text","text":"### 3. 偏移采样\n连续采 2000 个差值：编码器角度 − 磁场角度\n求平均 → 偏移量（这就是“表”的差值）\n\n同时记录这段时间编码器往哪边动了：\ndrag_dir = +1/−1（0 = 没测到移动）","x":-220,"y":990,"width":440,"height":200},
+		{"id":"n_locked","type":"text","text":"### 4. Offset LOCKED（锁定成功）\n打印：Offset LOCKED: xxx deg drag_dir=±1","x":-220,"y":1270,"width":440,"height":120,"color":"4"},
+		{"id":"n_keep","type":"text","text":"### 5. 锁定后继续保持拖动，直到停机\n偏移量跨停止保留（不擦除），mode 31 启动时自动取用","x":-220,"y":1470,"width":440,"height":110},
+		{"id":"n_product","type":"text","text":"## 产物（交给 mode 31 用）\n① 偏移量 Foc_Zizeng_GetOffsetRad()\n　 编码器读数换算磁铁真实角度要扣的修正值\n② 拖动方向 Foc_Zizeng_GetDragDir()\n　 mode 31 拿它当“应该往哪边转”的参考","x":-220,"y":1660,"width":440,"height":170,"color":"4"},
+		{"id":"n_warn","type":"text","text":"### ⚠ 已知缺陷（为什么又做了 mode 32）\n锁定发生在“拖动中”：若转子打滑、没跟上磁场，锁出的偏移就是错的 → mode 31 启动方向随机。\n\nmode 32 改用静止磁吸对表，不受打滑影响（见 FOC模式32流程图）","x":420,"y":990,"width":400,"height":210,"color":"2"}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"n_start","fromSide":"bottom","toNode":"n_calib","toSide":"top"},
+		{"id":"e2","fromNode":"n_calib","fromSide":"bottom","toNode":"n_drag","toSide":"top"},
+		{"id":"e3","fromNode":"n_drag","fromSide":"bottom","toNode":"n_dec1s","toSide":"top"},
+		{"id":"e4","fromNode":"n_dec1s","fromSide":"left","toNode":"n_drag","toSide":"left","label":"否（继续拖）"},
+		{"id":"e5","fromNode":"n_dec1s","fromSide":"bottom","toNode":"n_sample","toSide":"top","label":"是（满 1s）"},
+		{"id":"e6","fromNode":"n_sample","fromSide":"bottom","toNode":"n_locked","toSide":"top"},
+		{"id":"e7","fromNode":"n_locked","fromSide":"bottom","toNode":"n_keep","toSide":"top"},
+		{"id":"e8","fromNode":"n_keep","fromSide":"bottom","toNode":"n_product","toSide":"top"},
+		{"id":"e9","fromNode":"n_sample","fromSide":"right","toNode":"n_warn","toSide":"left","color":"2","label":"打滑/没跟上时"}
+	]
+}
