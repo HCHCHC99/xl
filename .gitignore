@@ -23,3 +23,21 @@ JLinkSettings.ini
 # 系统文件
 Thumbs.db
 .DS_Store
+
+# 嵌套版本目录（foc_xl_v.*）：规则前加 **/ 才能匹配
+**/__pycache__/
+**/*.py[cod]
+**/tools/motor_scope_native/build/
+**/tools/motor_scope_native/dist/
+**/HC32F460_DDL_Rev3.3.0/projects/**/MDK/output/
+**/*.axf
+**/*.crf
+**/*.o
+**/*.d
+**/*.dep
+**/*.lnp
+**/*.map
+**/*.iex
+**/*.uvguix.*
+**/JLinkLog.txt
+**/JLinkSettings.ini
