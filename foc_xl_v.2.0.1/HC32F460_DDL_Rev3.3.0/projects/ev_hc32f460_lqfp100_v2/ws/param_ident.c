@@ -22,7 +22,6 @@
 #include "foc_control.h"
 #include "foc_mode.h"
 #include "foc_protect.h"
-#include "motor_sampling.h"
 #include "rtt_log.h"
 
 #include <math.h>
@@ -50,7 +49,6 @@ volatile PARAM_IDENT_RESULT g_param_ident = {0};
 volatile uint32_t g_pi_tick_cnt    = 0u;
 volatile uint8_t  g_pi_rs_index    = 0u;
 volatile uint8_t  g_pi_pol         = 0u;
-volatile uint8_t  g_pi_offcal_done = 0u;
 volatile float    g_pi_id_ref      = 0.0f;
 volatile float    g_pi_iq_ref      = 0.0f;
 volatile float    g_pi_center_v    = 0.0f;
@@ -77,8 +75,6 @@ typedef struct {
     uint32_t state_count;
     uint8_t  rs_index;
     uint8_t  axis_polarity;
-    uint8_t  cal_started;
-    uint8_t  offcal_done;
     uint16_t pol_cnt;
     bool     axis_prev_valid;
     bool     skip_next_sample;
@@ -447,8 +443,6 @@ void ParamIdent_Reset(void)
     s_rt.state_count      = 0u;
     s_rt.rs_index         = 0u;
     s_rt.axis_polarity    = 0u;
-    s_rt.cal_started      = 0u;
-    s_rt.offcal_done      = 0u;
     s_rt.pol_cnt          = 0u;
     s_rt.axis_prev_valid  = false;
     s_rt.skip_next_sample = true;
@@ -468,7 +462,6 @@ void ParamIdent_Reset(void)
     g_pi_tick_cnt     = 0u;
     g_pi_rs_index     = 0u;
     g_pi_pol          = 0u;
-    g_pi_offcal_done  = 0u;
     g_pi_id_ref       = 0.0f;
     g_pi_iq_ref       = 0.0f;
     g_pi_center_v     = 0.0f;
@@ -589,34 +582,15 @@ void ParamIdent_Step20kHz(float *vd, float *vq, float *theta_e, bool *enable)
 
     switch (g_param_ident.state) {
 
-    /* ---- 初始化：零电压 50%，在线重校电流零偏 ---- */
+    /* ---- 初始化：零电压 50%，等待 PWM/反馈稳定 ---- */
     case PI_STATE_INIT:
         s_vd = 0.0f;
         s_vq = 0.0f;
 
-#if (CFG_SAMPLING_RUNTIME_OFFSET_CAL_EN != 0)
-        if (!s_rt.cal_started) {
-            Motor_Sampling_StartOffsetCal();
-            s_rt.cal_started = 1u;
-        }
-        if (!s_rt.offcal_done) {
-            if (Motor_Sampling_ApplyOffsetCalSilent()) {
-                s_rt.offcal_done = 1u;
-                g_pi_offcal_done = 1u;
-            }
-        }
-#else
-        s_rt.cal_started = 1u;
-        s_rt.offcal_done = 1u;
-        g_pi_offcal_done = 0u;
-#endif
-
         s_rt.state_count++;
         g_param_ident.progress = 5u;
 
-        if ((s_rt.state_count >= PI_INIT_COUNT) &&
-            (s_rt.offcal_done ||
-             (s_rt.state_count >= (PI_INIT_COUNT + PI_INIT_EXTRA_COUNT)))) {
+        if (s_rt.state_count >= PI_INIT_COUNT) {
             s_rt.state_count = 0u;
             g_param_ident.state = PI_STATE_RS_RAMP;
         }

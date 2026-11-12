@@ -31,7 +31,7 @@ static volatile bool     s_bNewSample = false;
 
 /*---------------------------------------------------------------------------
  * 上电零电流偏置校准
- *   20kHz  100ms = 2000 点
+ *   点数由 CFG_SAMPLING_OFFSET_CAL_SAMPLES 决定（默认 2000 点 = 100ms）
  *---------------------------------------------------------------------------*/
 #define FP_CAL_SAMPLES   CFG_SAMPLING_OFFSET_CAL_SAMPLES
 

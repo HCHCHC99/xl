@@ -20,10 +20,8 @@
 #include "pid_ctrl.h"
 #include "hw_encoder.h"
 #include "cfg_motor.h"
-#include "cfg_sampling.h"
 #include "clarke_park.h"     /* ONE_DIV_SQRT3_F */
 #include "foc_protect.h"     /* g_fp_state, FP_STATE_NORMAL */
-#include "motor_sampling.h"  /* 进 mode4 时做 PWM 在线零偏校准 */
 #include "rtt_log.h"
 
 #include <math.h>            /* sqrtf */
@@ -59,9 +57,6 @@ volatile float    g_cl_aw_cond_thr  = CL_AW_COND_THR_INIT;
 
 /* 受限告警阈值：4000 拍 = 200ms */
 #define CL_SAT_WARN_TICKS    4000u
-
-/* mode4 进环前在 50/50 零矢量下重校电流零偏的超时（6000 拍 = 300ms） */
-#define CL_OFFCAL_TIMEOUT_TICKS  6000u
 
 /*---------------------------------------------------------------------------
  * 静态实例
@@ -100,10 +95,6 @@ static float s_iq_f = 0.0f;
 
 /* 进入预热计数 */
 static uint16_t s_warmup_cnt = 0u;
-
-/* 进 mode4 时的 PWM 在线零偏校准状态 */
-static uint8_t  s_offcal_done  = 0u;
-static uint32_t s_offcal_ticks = 0u;
 
 /*---------------------------------------------------------------------------
  * L5 反馈镜像
@@ -223,8 +214,6 @@ void Foc_CurrentLoop_Init(void)
     s_id_f           = 0.0f;
     s_iq_f           = 0.0f;
     s_warmup_cnt     = 0u;
-    s_offcal_done    = 1u;   /* 未进 CURRENT 前不做在线校准 */
-    s_offcal_ticks   = 0u;
     s_ready          = true;
 
     MAIN_D("[CL] current loop ready: vmax_x100=%ld vlim_x100=%ld dt_us_x10=%ld "
@@ -264,19 +253,6 @@ void Foc_CurrentLoop_Reset(void)
     s_iq_f          = 0.0f;
     s_warmup_cnt    = 0u;   /* 重新预热，用当前 g_cl_warmup_ticks */
     s_zero_out      = false;
-
-    s_offcal_done   = 1u;
-    s_offcal_ticks  = 0u;
-
-#if (CFG_SAMPLING_RUNTIME_OFFSET_CAL_EN != 0)
-    /* 进 CURRENT 后在 50/50 零矢量窗口重校三相电流零偏，
-     * 消除上电（PWM 关闭）校准与运行中采样点之间的偏置差。
-     * 转子还在明显转动时不重校，避免把真实电流当成零偏。 */
-    if (fabsf(hw_encoder_get_speed_rpm()) < 50.0f) {
-        s_offcal_done = 0u;
-        Motor_Sampling_StartOffsetCal();
-    }
-#endif
 }
 
 /*=============================================================================
@@ -406,25 +382,13 @@ void Foc_CurrentLoop_Step(float *vd, float *vq, float *theta_e)
 
     th = hw_encoder_get_elec_angle_rad(CFG_MOTOR_POLE_PAIRS);
 
-    /* ---- 进入预热：零矢量 + PWM 在线零偏校准 ---- */
-    if ((s_warmup_cnt < g_cl_warmup_ticks) || (!s_offcal_done)) {
-        if (s_warmup_cnt < g_cl_warmup_ticks) {
-            s_warmup_cnt++;
-        }
+    /* ---- 进入预热：零矢量，等待 PWM/反馈稳定 ---- */
+    if (s_warmup_cnt < g_cl_warmup_ticks) {
+        s_warmup_cnt++;
         s_vq_prev = 0.0f;
         *vd = 0.0f;
         *vq = 0.0f;
         *theta_e = th;
-
-        /* 50/50 零矢量期间累计原始采样，满 2000 点后静默更新零偏 */
-        if (!s_offcal_done) {
-            s_offcal_ticks++;
-            if (Motor_Sampling_ApplyOffsetCalSilent()) {
-                s_offcal_done = 1u;
-            } else if (s_offcal_ticks >= CL_OFFCAL_TIMEOUT_TICKS) {
-                s_offcal_done = 1u;   /* 超时保留上电校准值 */
-            }
-        }
         return;
     }
 
@@ -560,7 +524,7 @@ bool Foc_CurrentLoop_IsActive(void)
     if (!s_ready) {
         return false;
     }
-    return (s_warmup_cnt >= g_cl_warmup_ticks) && (s_offcal_done != 0u);
+    return (s_warmup_cnt >= g_cl_warmup_ticks);
 }
 
 bool Foc_CurrentLoop_IsLimited(void)

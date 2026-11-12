@@ -3,7 +3,7 @@
  *
  * mode 3 单次校准：
  *   StartAlign(): 置 g_align_active/resume_output/给 50/50/50 零矢量切 ZERO
- *   Task20k(): EC_ZERO 时每拍累加 g_fc_iu/iv/iw，skip 200 + avg 400 拍
+ *   Task20k(): EC_ZERO 时零矢量等待 200+400 拍，不做电流采样
  *   Task1ms(): BETA/ALPHA 保持计时，到点取值；ALPHA 结束写 offset/dir
  *              置 g_motor_is_aligned=1，evt=DONE_OK
  *
@@ -51,10 +51,6 @@ volatile float    g_align_theta    = 1.5707963f;
 volatile uint32_t g_align_hold_ms  = 200u;
 volatile uint32_t g_align_ramp_ms  = 500u;   /* mode7 斜坡时间 ms */
 volatile uint8_t  g_a7_done        = 0u;     /* mode7 完成标志 */
-
-volatile int32_t  g_align_zero_u_ma = 0;
-volatile int32_t  g_align_zero_v_ma = 0;
-volatile int32_t  g_align_zero_w_ma = 0;
 
 volatile int32_t  g_align_beta_hw   = 0;
 volatile int32_t  g_align_alpha_hw  = 0;
@@ -140,9 +136,6 @@ static int32_t  s_rev_cyc_max_l = 0;
 #define EC_ZERO_SKIP   200u
 #define EC_ZERO_AVG    400u
 static uint32_t s_zero_cnt = 0u;
-static int64_t  s_zero_sum_u = 0;
-static int64_t  s_zero_sum_v = 0;
-static int64_t  s_zero_sum_w = 0;
 
 /* BETA/ALPHA 计时与取值 */
 static volatile uint32_t s_hold_cnt = 0u;
@@ -291,19 +284,13 @@ void EncoderCalib_StartAlign(void)
     g_align_alpha_hw  = 0;
     g_align_moved     = 0;
     g_align_offset    = 0;
-    g_align_zero_u_ma = 0;
-    g_align_zero_v_ma = 0;
-    g_align_zero_w_ma = 0;
     s_align_ok        = 0u;
 
     g_align_active = 1u;
     hw_tmr4_pwm_resume_output();
 
-    /* ZERO：零矢量 50/50/50，20kHz ISR 采样 */
-    s_zero_cnt   = 0u;
-    s_zero_sum_u = 0;
-    s_zero_sum_v = 0;
-    s_zero_sum_w = 0;
+    /* ZERO：零矢量 50/50/50，等待电流/PWM 稳定 */
+    s_zero_cnt = 0u;
     ec_output_zero_vector();
 
     s_hold_cnt = 0u;
@@ -353,18 +340,12 @@ void EncoderCalib_StartAlign7(void)
     g_align_alpha_hw  = 0;
     g_align_moved     = 0;
     g_align_offset    = 0;
-    g_align_zero_u_ma = 0;
-    g_align_zero_v_ma = 0;
-    g_align_zero_w_ma = 0;
 
     g_align_active = 1u;
     hw_tmr4_pwm_resume_output();
 
-    /* ZERO：零矢量 50/50/50，20kHz ISR 采样 */
-    s_zero_cnt   = 0u;
-    s_zero_sum_u = 0;
-    s_zero_sum_v = 0;
-    s_zero_sum_w = 0;
+    /* ZERO：零矢量 50/50/50，等待电流/PWM 稳定 */
+    s_zero_cnt = 0u;
     ec_output_zero_vector();
 
     s_hold_cnt = 0u;
@@ -512,20 +493,7 @@ void EncoderCalib_Task20k(void)
         return;
     }
 
-#if (CFG_SAMPLING_RUNTIME_OFFSET_CAL_EN != 0)
-    s_zero_sum_u += (int64_t)(g_fc_iu * 1000.0f);
-    s_zero_sum_v += (int64_t)(g_fc_iv * 1000.0f);
-    s_zero_sum_w += (int64_t)(g_fc_iw * 1000.0f);
-#endif
-
     if ((s_zero_cnt - EC_ZERO_SKIP) >= EC_ZERO_AVG) {
-#if (CFG_SAMPLING_RUNTIME_OFFSET_CAL_EN != 0)
-        g_align_zero_u_ma = (int32_t)(s_zero_sum_u / EC_ZERO_AVG);
-        g_align_zero_v_ma = (int32_t)(s_zero_sum_v / EC_ZERO_AVG);
-        g_align_zero_w_ma = (int32_t)(s_zero_sum_w / EC_ZERO_AVG);
-
-        g_align_evt = EC_EVT_ZERO_DONE;
-#endif
         s_hold_cnt  = 0u;
 
         if (s_a7_en) {

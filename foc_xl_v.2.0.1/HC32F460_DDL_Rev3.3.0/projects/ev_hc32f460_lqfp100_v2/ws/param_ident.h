@@ -40,10 +40,8 @@
 /* 电流给定每拍变化量，A/拍 */
 #define PI_CURRENT_RAMP_STEP       (0.01f)
 
-/* 初始化零电压等待：2000 拍 = 100ms，期间在线重校电流零偏 */
+/* 初始化零电压等待：2000 拍 = 100ms */
 #define PI_INIT_COUNT              (2000u)
-/* 零偏校准最多再等 2000 拍，超时后保留上电校准值继续 */
-#define PI_INIT_EXTRA_COUNT        (2000u)
 
 /* 每个 Rs 电流点稳定 100ms、采样 50ms */
 #define PI_RS_SETTLE_COUNT         (2000u)
@@ -151,7 +149,6 @@ extern volatile uint16_t g_pi_pol_hold;
 extern volatile uint32_t g_pi_tick_cnt;
 extern volatile uint8_t  g_pi_rs_index;
 extern volatile uint8_t  g_pi_pol;
-extern volatile uint8_t  g_pi_offcal_done;
 extern volatile float    g_pi_id_ref;
 extern volatile float    g_pi_iq_ref;
 extern volatile float    g_pi_center_v;     /* V，实际电压 */

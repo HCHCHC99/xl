@@ -64,8 +64,8 @@
 #define SPD_FF_MA_INIT              (200.0f)
 #define SPD_FF_DEADBAND_RPM         (2.0f)
 
-/* 目标加速度斜坡，rpm/s（5000 时每 1ms 步进 5 rpm） */
-#define SPD_ACCEL_RPM_S_INIT        (5000.0f)
+/* 目标加速度斜坡，rpm/s（1000 时每 1ms 步进 1 rpm） */
+#define SPD_ACCEL_RPM_S_INIT        (1000.0f)
 
 /* 目标转速限幅，rpm */
 #define SPD_TARGET_MAX_RPM          (7800.0f)

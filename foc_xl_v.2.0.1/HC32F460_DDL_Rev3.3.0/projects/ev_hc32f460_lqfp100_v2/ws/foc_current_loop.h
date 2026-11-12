@@ -54,7 +54,7 @@ extern "C" {
  *   需要抑制机械冲击时可在 Watch 中临时加大。 */
 #define CL_VQ_SLEW_INIT       0.0f
 
-/* 进入预热拍数：4200 拍 = 210ms（与参考工程零矢量校准窗口一致），
+/* 进入预热拍数：4200 拍 = 210ms，
  *   期间强制 vd=vq=0，让电流/PWM 稳定后再闭环。
  *   运行中改只影响下一次 Foc_CurrentLoop_Reset 后的进入。 */
 #define CL_WARMUP_INIT        4200u
@@ -170,7 +170,7 @@ void Foc_CurrentLoop_OutputZeroVector(float *vd, float *vq, float *theta_e);
 
 bool Foc_CurrentLoop_IsReady(void);
 
-/* 预热与在线零偏校准都已完成、电流环真正闭环中 */
+/* 预热已完成、电流环真正闭环中 */
 bool Foc_CurrentLoop_IsActive(void);
 bool Foc_CurrentLoop_IsLimited(void);
 cl_limit_reason_t Foc_CurrentLoop_GetLimitReason(void);

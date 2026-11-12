@@ -57,7 +57,7 @@
 /*=============================================================================
  * Watch å¯å†™å˜é‡
  *=============================================================================*/
-volatile int32_t  g_mode_cmd       = 0;      /* 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP 8=CURRENT_FF 9=SPEED 10=POSITION 11=PARAM_IDENT */
+volatile int32_t  g_mode_cmd       = 0;      /* 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP 8=CURRENT_FF 9=SPEED 10=POSITION 11=PARAM_IDENT 12=OFFCAL_NOPWM 13=OFFCAL_PWM50 */
 volatile int32_t  g_ol_freq_mhz    = 700;
 volatile int32_t  g_ol_vq_mv       = 700;
 volatile int32_t  g_vofa_adc_debug = 1;
@@ -215,6 +215,55 @@ static bool PowerOn_OffsetCal(void)
         MAIN_E("[CAL] Power-on offset cal TIMEOUT! current feedback unreliable.");
         g_motor_is_offset_calibrated = 0u;
         g_poweron_cal_ok = 0u;
+    }
+
+    return ok;
+}
+
+/*=============================================================================
+ * mode 13：PWM 零偏校准（50% 零矢量下重校电流零偏）
+ *   桥臂状态与辨识/电流环运行点一致，结果覆盖上电无 PWM 校准值
+ *=============================================================================*/
+static bool OffsetCal_Pwm50(void)
+{
+    bool ok;
+
+    if ((g_align_active != 0u) || (s_align_running != 0u)) {
+        MAIN_E("[CAL13] refuse: encoder calibration in progress.");
+        return false;
+    }
+    if (g_fp_state != FP_STATE_NORMAL) {
+        MAIN_E("[CAL13] refuse: protection state=%d, clear fault first.",
+               (int)g_fp_state);
+        return false;
+    }
+    if (fabsf(g_fc_enc_speed_rpm) > 50.0f) {
+        MAIN_E("[CAL13] refuse: motor moving (spd_x10=%ld).",
+               (long)(g_fc_enc_speed_rpm * 10.0f));
+        return false;
+    }
+
+    MAIN_D("[CAL13] PWM zero-vector offset cal start...");
+
+    /* ISR 不碰 PWM，由本函数独占输出 */
+    g_align_active = 1u;
+    Foc_Mode_SetMode(FOC_MODE_IDLE);
+
+    (void)hw_tmr4_pwm_resume_output();
+    (void)hw_tmr4_pwm_set_duty3(50.0f, 50.0f, 50.0f);
+
+    ok = Motor_Sampling_DoOffsetCalBlocking(300u);
+
+    (void)hw_tmr4_pwm_set_all_low();
+    g_align_active = 0u;
+
+    if (ok) {
+        MAIN_D("[CAL13] OK: iw=%u iv=%u (PWM 50%% zero vector)",
+               (unsigned)g_cal_offset_iw,
+               (unsigned)g_cal_offset_iv);
+    } else {
+        MAIN_E("[CAL13] TIMEOUT! current feedback unreliable.");
+        g_motor_is_offset_calibrated = 0u;
     }
 
     return ok;
@@ -447,10 +496,50 @@ static bool Enter_ParamIdent(void)
 }
 
 /*=============================================================================
+ * 定点拆分：value*scale 四舍五入后按 digits 位小数拆成符号/整数/小数
+ *   仅用于 RTT 打印，避免依赖 printf 浮点支持
+ *=============================================================================*/
+static void ParamIdent_SplitFixed(float value, float scale, uint8_t digits,
+                                  const char **sign, long *ip, long *fp)
+{
+    float   x = value * scale;
+    int32_t d = 1;
+    int32_t m;
+    uint8_t i;
+
+    for (i = 0u; i < digits; i++) {
+        d *= 10;
+    }
+
+    if (x >= 0.0f) {
+        m = (int32_t)(x + 0.5f);
+    } else {
+        m = (int32_t)(x - 0.5f);
+    }
+
+    if (m < 0) {
+        *sign = "-";
+        m = -m;
+    } else {
+        *sign = "";
+    }
+
+    *ip = (long)(m / d);
+    *fp = (long)(m % d);
+}
+
+/*=============================================================================
  * 打印参数辨识结果（只读 g_param_ident / g_pi_*）
  *=============================================================================*/
 static void ParamIdent_PrintResult(void)
 {
+    const char *s_rs;
+    const char *s_ld;
+    const char *s_lq;
+    long rs_i, rs_f;
+    long ld_i, ld_f;
+    long lq_i, lq_f;
+
     MAIN_D("[PI] status=%u state=%u progress=%u error=%u sample=%u",
            (unsigned)g_param_ident.status,
            (unsigned)g_param_ident.state,
@@ -458,10 +547,15 @@ static void ParamIdent_PrintResult(void)
            (unsigned)g_param_ident.error,
            (unsigned)g_param_ident.sample_count);
 
-    MAIN_D("[PI] Rs_x10000=%ld Ld_uH_x100=%ld Lq_uH_x100=%ld",
-           (long)(g_param_ident.result_Rs * 10000.0f),
-           (long)(g_param_ident.result_Ld * 1.0e8f),
-           (long)(g_param_ident.result_Lq * 1.0e8f));
+    ParamIdent_SplitFixed(g_param_ident.result_Rs, 1000.0f, 3u,
+                          &s_rs, &rs_i, &rs_f);
+    ParamIdent_SplitFixed(g_param_ident.result_Ld, 1.0e6f, 2u,
+                          &s_ld, &ld_i, &ld_f);
+    ParamIdent_SplitFixed(g_param_ident.result_Lq, 1.0e6f, 2u,
+                          &s_lq, &lq_i, &lq_f);
+
+    MAIN_D("[PI] Rs=%s%ld.%03ld Om | Ld=%s%ld.%02ld uH | Lq=%s%ld.%02ld uH",
+           s_rs, rs_i, rs_f, s_ld, ld_i, ld_f, s_lq, lq_i, lq_f);
 
     MAIN_D("[PI] offset_mV: rs=%ld ld=%ld lq=%ld",
            (long)(g_param_ident.voltage_offset * 1000.0f),
@@ -476,13 +570,12 @@ static void ParamIdent_PrintResult(void)
            (long)(g_param_ident.ud_avg[1] * 1000.0f),
            (long)(g_param_ident.ud_avg[2] * 1000.0f));
 
-    MAIN_D("[PI] cnt: start=%ld end=%ld delta=%ld theta_mrad: start=%ld end=%ld offcal=%u",
+    MAIN_D("[PI] cnt: start=%ld end=%ld delta=%ld theta_mrad: start=%ld end=%ld",
            (long)g_pi_start_cnt,
            (long)g_pi_end_cnt,
            (long)(g_pi_end_cnt - g_pi_start_cnt),
            (long)(g_pi_start_theta * 1000.0f),
-           (long)(g_pi_end_theta * 1000.0f),
-           (unsigned)g_pi_offcal_done);
+           (long)(g_pi_end_theta * 1000.0f));
 }
 
 /*=============================================================================
@@ -560,8 +653,8 @@ int main(void)
     /* ---- 7. ä¸Šç”µé›¶åæ ¡å‡† ---- */
     (void)PowerOn_OffsetCal();
 
-    MAIN_D(" Ready! g_mode_cmd: 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP 8=CURRENT_FF 9=SPEED 10=POSITION 11=PARAM_IDENT");
-    MAIN_D(" Mode 3 = align, Mode 4 = current, Mode 5 = sweep, Mode 6 = rev-count, Mode 7 = ramp-align, Mode 8 = current+FF, Mode 9 = speed+current, Mode 10 = position+speed+current, Mode 11 = Rs/Ld/Lq ident.");
+    MAIN_D(" Ready! g_mode_cmd: 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP 8=CURRENT_FF 9=SPEED 10=POSITION 11=PARAM_IDENT 12=OFFCAL_NOPWM 13=OFFCAL_PWM50");
+    MAIN_D(" Mode 3 = align, Mode 4 = current, Mode 5 = sweep, Mode 6 = rev-count, Mode 7 = ramp-align, Mode 8 = current+FF, Mode 9 = speed+current, Mode 10 = position+speed+current, Mode 11 = Rs/Ld/Lq ident, Mode 12 = offset cal (no PWM), Mode 13 = offset cal (PWM 50%).");
 
     /* ---- ä¸»å¾ªçŽ?---- */
     while (1) {
@@ -635,6 +728,22 @@ int main(void)
                 }
                 break;
 
+            case 12:
+                /* 无 PWM 零偏校准：与上电校准同一套流程，覆盖当前零偏 */
+                MAIN_D("[CAL12] request: no-PWM offset calibration.");
+                Foc_Mode_SetMode(FOC_MODE_IDLE);
+                (void)PowerOn_OffsetCal();
+                g_mode_cmd    = 0;
+                last_mode_cmd = 0;
+                break;
+
+            case 13:
+                /* PWM 零偏校准：50% 零矢量下重校，覆盖当前零偏 */
+                (void)OffsetCal_Pwm50();
+                g_mode_cmd    = 0;
+                last_mode_cmd = 0;
+                break;
+
             case 5:
                 MAIN_D("[SWEEP] request: fp_state=%d fault=0x%08lX trip_cnt=%lu",
                        (int)g_fp_state,
@@ -683,12 +792,7 @@ int main(void)
         if (s_align_running) {
             uint8_t evt = EncoderCalib_ConsumeEvent();
 
-            if (evt == EC_EVT_ZERO_DONE) {
-                MAIN_D("[CAL] zero: iu=%ldmA iv=%ldmA iw=%ldmA",
-                       (long)g_align_zero_u_ma,
-                       (long)g_align_zero_v_ma,
-                       (long)g_align_zero_w_ma);
-            } else if (evt == EC_EVT_BETA_DONE) {
+            if (evt == EC_EVT_BETA_DONE) {
                 if (EncoderCalib_IsSweepDone() == 0u) {
                     MAIN_D("[CAL] BETA done beta_hw=%ld th=90deg",
                            (long)g_align_beta_hw);
@@ -954,14 +1058,18 @@ int main(void)
             uint32_t now_ms = tickTimer_GetCount();
 
             if ((now_ms - s_last_pi_log_ms) >= 100u) {
+                const char *s_rs;
+                long rs_i, rs_f;
+
                 s_last_pi_log_ms = now_ms;
-                MAIN_D("[PI] state=%u prog=%u tick=%lu Rs_x10000=%ld Ld_uH_x100=%ld Lq_uH_x100=%ld id=%ld iq=%ld",
+                ParamIdent_SplitFixed(g_param_ident.result_Rs, 1000.0f, 3u,
+                                      &s_rs, &rs_i, &rs_f);
+
+                MAIN_D("[PI] state=%u prog=%u tick=%lu Rs=%s%ld.%03ld Om id=%ld iq=%ld",
                        (unsigned)g_param_ident.state,
                        (unsigned)g_param_ident.progress,
                        (unsigned long)g_pi_tick_cnt,
-                       (long)(g_param_ident.result_Rs * 10000.0f),
-                       (long)(g_param_ident.result_Ld * 1.0e8f),
-                       (long)(g_param_ident.result_Lq * 1.0e8f),
+                       s_rs, rs_i, rs_f,
                        (long)(g_fc_id * 1000.0f),
                        (long)(g_fc_iq * 1000.0f));
             }

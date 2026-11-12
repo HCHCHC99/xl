@@ -2,12 +2,12 @@
  * encoder_calib.h  —  编码器电角度标定层（两点法强拖对齐，1ms 中断非阻塞）
  *
  * 职责：
- *   - mode 3 单次正式校准：ZERO(零矢量采零偏) -> BETA(90°) -> ALPHA(0°)
+ *   - mode 3 单次正式校准：ZERO(零矢量等待) -> BETA(90°) -> ALPHA(0°)
  *     -> 判据 -> 写 offset/dir/g_motor_is_aligned
  *   - mode 5 扫角测量：0/90/180/270 四个起始角各跑一遍两点对齐，只记录
  *
  * 对齐期间 g_align_active=1，20kHz ISR 不碰 PWM；
- *   - ZERO 阶段零偏采样在 20kHz ISR 里调 EncoderCalib_Task20k()
+ *   - ZERO 阶段计时在 20kHz ISR 里调 EncoderCalib_Task20k()
  *   - BETA/ALPHA 保持计时在 1ms 里调 EncoderCalib_Task1ms()
  * ISR 内不打印，只写观测量与事件；主循环消费 g_align_evt 打印
  *=============================================================================*/
@@ -39,7 +39,7 @@ void    EncoderCalib_StartAlign7(void);
 uint8_t EncoderCalib_IsAlign7Done(void);
 
 /* ---- 共用 ---- */
-void    EncoderCalib_Task20k(void);   /* 20kHz ISR 调用：ZERO 阶段零偏采样 */
+void    EncoderCalib_Task20k(void);   /* 20kHz ISR 调用：ZERO 阶段计时 */
 void    EncoderCalib_Task1ms(void);   /* 1ms 中断调用：BETA/ALPHA 保持计时 */
 uint8_t EncoderCalib_IsDone(void);
 uint8_t EncoderCalib_ConsumeEvent(void); /* 主循环消费事件，返回后清 0 */
@@ -63,10 +63,6 @@ extern volatile float    g_align_theta;      /* mode 5 扫角用；mode 3 固定
 extern volatile uint32_t g_align_hold_ms;    /* BETA/ALPHA 保持时间 ms，默认 200 */
 extern volatile uint32_t g_align_ramp_ms;    /* mode7 斜坡时间 ms，默认 500 */
 extern volatile uint8_t  g_a7_done;          /* mode7 完成标志 */
-
-extern volatile int32_t  g_align_zero_u_ma;  /* ZERO 阶段 U 相残余零位（mA） */
-extern volatile int32_t  g_align_zero_v_ma;
-extern volatile int32_t  g_align_zero_w_ma;
 
 extern volatile int32_t  g_align_beta_hw;    /* 累计 beta_hw */
 extern volatile int32_t  g_align_alpha_hw;   /* 累计 alpha_hw */
