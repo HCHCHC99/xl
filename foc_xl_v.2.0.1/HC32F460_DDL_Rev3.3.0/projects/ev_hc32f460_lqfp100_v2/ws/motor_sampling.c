@@ -33,7 +33,7 @@ static volatile bool     s_bNewSample = false;
  * 上电零电流偏置校准
  *   20kHz  100ms = 2000 点
  *---------------------------------------------------------------------------*/
-#define FP_CAL_SAMPLES   2000u
+#define FP_CAL_SAMPLES   CFG_SAMPLING_OFFSET_CAL_SAMPLES
 
 static volatile uint8_t  s_cal_active     = 0u;   /* 1 = 正在校准 */
 static volatile uint32_t s_cal_cnt        = 0u;   /* 已累加点数 */
@@ -138,12 +138,12 @@ static void Motor_Sampling_AdcCfg(void)
 
     /* 设置采样时间 */
 #if (CFG_SAMPLING_BOARD_IU_SENSOR != 0)
-    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IU,     7U);
+    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IU,     CFG_SAMPLING_ADC_SAMPLE_TIME);
 #else
-    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_ITOTAL, 7U);
+    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_ITOTAL, CFG_SAMPLING_ADC_SAMPLE_TIME);
 #endif
-    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IW,     7U);
-    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IV,     7U);
+    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IW,     CFG_SAMPLING_ADC_SAMPLE_TIME);
+    ADC_SetSampleTime(CM_ADC1, HW_ADC_CH_IV,     CFG_SAMPLING_ADC_SAMPLE_TIME);
 
 #if (CFG_SAMPLING_USE_REAL_ADC != 0)
     if (s_scale.vbus_ch != 0U) {

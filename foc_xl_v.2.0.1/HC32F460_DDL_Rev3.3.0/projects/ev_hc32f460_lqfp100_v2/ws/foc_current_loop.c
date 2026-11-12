@@ -265,15 +265,18 @@ void Foc_CurrentLoop_Reset(void)
     s_warmup_cnt    = 0u;   /* 重新预热，用当前 g_cl_warmup_ticks */
     s_zero_out      = false;
 
+    s_offcal_done   = 1u;
+    s_offcal_ticks  = 0u;
+
+#if (CFG_SAMPLING_RUNTIME_OFFSET_CAL_EN != 0)
     /* 进 CURRENT 后在 50/50 零矢量窗口重校三相电流零偏，
      * 消除上电（PWM 关闭）校准与运行中采样点之间的偏置差。
      * 转子还在明显转动时不重校，避免把真实电流当成零偏。 */
-    s_offcal_done   = 1u;
-    s_offcal_ticks  = 0u;
     if (fabsf(hw_encoder_get_speed_rpm()) < 50.0f) {
         s_offcal_done = 0u;
         Motor_Sampling_StartOffsetCal();
     }
+#endif
 }
 
 /*=============================================================================

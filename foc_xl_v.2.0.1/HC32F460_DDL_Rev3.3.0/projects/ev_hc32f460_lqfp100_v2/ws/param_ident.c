@@ -594,6 +594,7 @@ void ParamIdent_Step20kHz(float *vd, float *vq, float *theta_e, bool *enable)
         s_vd = 0.0f;
         s_vq = 0.0f;
 
+#if (CFG_SAMPLING_RUNTIME_OFFSET_CAL_EN != 0)
         if (!s_rt.cal_started) {
             Motor_Sampling_StartOffsetCal();
             s_rt.cal_started = 1u;
@@ -604,6 +605,11 @@ void ParamIdent_Step20kHz(float *vd, float *vq, float *theta_e, bool *enable)
                 g_pi_offcal_done = 1u;
             }
         }
+#else
+        s_rt.cal_started = 1u;
+        s_rt.offcal_done = 1u;
+        g_pi_offcal_done = 0u;
+#endif
 
         s_rt.state_count++;
         g_param_ident.progress = 5u;

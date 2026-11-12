@@ -512,16 +512,20 @@ void EncoderCalib_Task20k(void)
         return;
     }
 
+#if (CFG_SAMPLING_RUNTIME_OFFSET_CAL_EN != 0)
     s_zero_sum_u += (int64_t)(g_fc_iu * 1000.0f);
     s_zero_sum_v += (int64_t)(g_fc_iv * 1000.0f);
     s_zero_sum_w += (int64_t)(g_fc_iw * 1000.0f);
+#endif
 
     if ((s_zero_cnt - EC_ZERO_SKIP) >= EC_ZERO_AVG) {
+#if (CFG_SAMPLING_RUNTIME_OFFSET_CAL_EN != 0)
         g_align_zero_u_ma = (int32_t)(s_zero_sum_u / EC_ZERO_AVG);
         g_align_zero_v_ma = (int32_t)(s_zero_sum_v / EC_ZERO_AVG);
         g_align_zero_w_ma = (int32_t)(s_zero_sum_w / EC_ZERO_AVG);
 
         g_align_evt = EC_EVT_ZERO_DONE;
+#endif
         s_hold_cnt  = 0u;
 
         if (s_a7_en) {

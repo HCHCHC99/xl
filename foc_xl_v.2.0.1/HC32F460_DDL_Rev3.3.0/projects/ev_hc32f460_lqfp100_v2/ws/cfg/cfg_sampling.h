@@ -32,6 +32,23 @@
 #define CFG_SAMPLING_SIM_VBUS_V      12.0f
 
 /*---------------------------------------------------------------------------
+ * ADC 采样时间与零偏校准
+ *---------------------------------------------------------------------------*/
+/* ADC 采样时间（SSTR 值，ADC 时钟周期数），三相电流通道统一使用。
+ * 原值 7U，暂定 20U；DDL 只要求 >=5U，SSTR 为 8bit。 */
+#define CFG_SAMPLING_ADC_SAMPLE_TIME        20u
+
+/* 上电零偏校准平均点数：20kHz 下 2000 点 = 100ms。
+ * main.c 的 DoOffsetCalBlocking 超时 300ms，需大于该时间。 */
+#define CFG_SAMPLING_OFFSET_CAL_SAMPLES     2000u
+
+/* 除上电零偏校准外，是否允许运行中的在线重校：
+ *   1 = 允许（CURRENT/SPEED/POSITION/PARAM_IDENT 进入时重校，
+ *           mode3/7 的 ZERO 段也做零偏观测）
+ *   0 = 只使用上电校准值，不再做任何在线重校 */
+#define CFG_SAMPLING_RUNTIME_OFFSET_CAL_EN  1
+
+/*---------------------------------------------------------------------------
  * 电流标定
  *   现板：   VOUT = 1.65V + I × 26.4mV/A
  *   IU 板：  VOUT = 1.25V + I × (6 × 0.02Ω) = 1.25V + I × 0.12V/A
