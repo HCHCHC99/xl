@@ -58,8 +58,8 @@ typedef enum {
 #define FOC_CFG_1_DEADTIME_NS   0u
 #define FOC_CFG_1_ACTIVE_HIGH   true
 
-/* ---- 配置 2：20kHz 互补 下桥臂采样 死区 500ns（当前默认选中）---- */
-#define FOC_CFG_2_NAME          "20k_COMP_LOWER_DT500"
+/* ---- 配置 2：20kHz 互补 下桥臂采样 死区 50ns（当前默认选中）---- */
+#define FOC_CFG_2_NAME          "20k_COMP_LOWER_DT50"
 #define FOC_CFG_2_PWM_FREQ      20000u
 #define FOC_CFG_2_OUTPUT_TYPE   TMR4_OUTPUT_COMPLEMENTARY
 #define FOC_CFG_2_SAMPLE_POINT  CFG_SAMPLE_LOWER

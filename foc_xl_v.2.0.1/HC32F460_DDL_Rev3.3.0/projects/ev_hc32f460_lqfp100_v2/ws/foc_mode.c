@@ -3,7 +3,7 @@
  *
  * 模式语义：
  *   IDLE      : 全低，安全停机
- *   LOCK      : 50% 零矢量，锁死
+ *   LOCK      : 2% 零矢量，锁死
  *   IF        : q 轴加压 + 角度自增，开环拖动（enable=true）
  *   CALIB     : 输出全低，校准动作由主循环阻塞执行（enable=false）
  *   CURRENT   : 有感闭环电流环，PID 产出 vd/vq + 编码器角度（enable=true）

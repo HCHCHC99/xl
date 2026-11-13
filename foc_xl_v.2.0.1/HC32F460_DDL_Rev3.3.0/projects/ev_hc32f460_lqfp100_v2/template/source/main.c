@@ -57,9 +57,11 @@
 /*=============================================================================
  * Watch å¯å†™å˜é‡
  *=============================================================================*/
-volatile int32_t  g_mode_cmd       = 0;      /* 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP 8=CURRENT_FF 9=SPEED 10=POSITION 11=PARAM_IDENT 12=OFFCAL_NOPWM 13=OFFCAL_PWM50 */
+volatile int32_t  g_mode_cmd       = 0;      /* 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=ALIGN_ALPHA 7=ALIGN_CUR 8=CURRENT_FF 9=SPEED 10=POSITION 11=PARAM_IDENT 12=OFFCAL_NOPWM 13=OFFCAL_PWM50 14=PARAM_IDENT_SCAN */
 volatile int32_t  g_ol_freq_mhz    = 700;
 volatile int32_t  g_ol_vq_mv       = 700;
+volatile uint32_t g_alpha_align_ms = 500u;   /* mode 6 α 轴强拖保持时间 ms */
+volatile uint32_t g_alpha_lock_ms  = 300u;   /* mode 6 进入前 2/2/2 零矢量稳定时间 ms */
 volatile int32_t  g_vofa_adc_debug = 1;
 
 volatile int32_t  g_cl_id_ref_ma   = 0;
@@ -188,6 +190,116 @@ static void Enter_IF_Mode(void)
            (long)g_ol_freq_mhz, (long)g_ol_vq_mv,
            (unsigned)g_motor_is_offset_calibrated,
            (unsigned)g_motor_is_aligned);
+}
+
+/*=============================================================================
+ * mode 6 / 7：一点式对齐
+ *   0. 先切 2/2/2 零矢量（LOCK），保持 g_alpha_lock_ms 等输出稳定
+ *   1. 读对齐前的编码器计数 x
+ *   2. 加压矢量强拖：
+ *        align_current = false -> 沿 α 轴（theta_e=0）
+ *        align_current = true  -> 沿当前编码器电角度（上电小动作对齐）
+ *      幅值都用 mode 2 的 g_ol_vq_mv
+ *   3. 保持对齐期间再读一次编码器计数 y
+ *   4. RTT 打印 y-x
+ *   5. mode 7 额外用 y-x 修正 g_enc_elec_offset（mode 6 只测量不修正）
+ *   6. 回 IDLE
+ *=============================================================================*/
+static void Align_OnePoint(bool align_current)
+{
+    int32_t  x_cnt, y_cnt, delta;
+    int32_t  old_off, new_off;
+    float    v;
+    float    th;
+    uint32_t t0;
+
+    if (Foc_Mode_GetMode() != FOC_MODE_IDLE) {
+        MAIN_E("[ALIGN6/7] refuse: mode not IDLE (mode=%d).", (int)Foc_Mode_GetMode());
+        return;
+    }
+    if ((g_align_active != 0u) || (s_align_running != 0u)) {
+        MAIN_E("[ALIGN6/7] refuse: encoder calibration in progress.");
+        return;
+    }
+    if (g_fp_state != FP_STATE_NORMAL) {
+        MAIN_E("[ALIGN6/7] refuse: protection state=%d.", (int)g_fp_state);
+        return;
+    }
+
+    v = (float)g_ol_vq_mv / 1000.0f;
+    if (v <= 0.0f) {
+        MAIN_E("[ALIGN6/7] refuse: invalid align voltage (v_mV=%ld).", (long)g_ol_vq_mv);
+        return;
+    }
+
+    /* 步骤 0：先切 2/2/2 零矢量（LOCK），等输出稳定后再读 x */
+    Foc_Mode_SetMode(FOC_MODE_LOCK);
+    t0 = tickTimer_GetCount();
+    while ((tickTimer_GetCount() - t0) < g_alpha_lock_ms) {
+        hw_encoder_update();
+        if (g_fp_state != FP_STATE_NORMAL) {
+            break;
+        }
+    }
+
+    /* 步骤 1：2/2/2 稳住后读对齐前计数 x */
+    hw_encoder_update();
+    x_cnt = hw_encoder_get_count();
+
+    /* 步骤 2：freq=0 固定角度加压
+     *   mode 6：vd 沿 α 轴
+     *   mode 7：沿当前编码器电角度（用 vd/vq 合成到 alpha 轴方向） */
+    if (align_current) {
+        th = hw_encoder_get_elec_angle_rad(CFG_MOTOR_POLE_PAIRS);
+        Foc_Mode_SetOpenloop(0.0f, v * sinf(th), v * cosf(th));
+    } else {
+        Foc_Mode_SetOpenloop(0.0f, 0.0f, v);
+    }
+    Foc_Mode_StartOpenloop();
+
+    t0 = tickTimer_GetCount();
+    while ((tickTimer_GetCount() - t0) < g_alpha_align_ms) {
+        hw_encoder_update();
+        if (g_fp_state != FP_STATE_NORMAL) {
+            break;
+        }
+    }
+
+    /* 步骤 3：仍保持对齐电压，取第二次计数 */
+    hw_encoder_update();
+    y_cnt = hw_encoder_get_count();
+
+    delta = y_cnt - x_cnt;
+
+    /* 步骤 4：打印 y-x */
+    MAIN_D("%s v_mV=%ld lock_ms=%lu hold_ms=%lu x=%ld y=%ld delta=%ld",
+           align_current ? "[ALIGN7]" : "[ALIGN6]",
+           (long)g_ol_vq_mv,
+           (unsigned long)g_alpha_lock_ms,
+           (unsigned long)g_alpha_align_ms,
+           (long)x_cnt, (long)y_cnt, (long)delta);
+
+    /* 步骤 5：mode 7 用 y-x 修正电角度零点；mode 6 只测量 */
+    if (align_current) {
+        if (g_fp_state == FP_STATE_NORMAL) {
+            old_off = g_enc_elec_offset;
+            new_off = old_off + delta;
+            new_off %= (int32_t)CFG_ENCODER_CPR;
+            if (new_off < 0) {
+                new_off += (int32_t)CFG_ENCODER_CPR;
+            }
+            g_enc_elec_offset = new_off;
+            MAIN_D("[ALIGN7] offset updated: %ld -> %ld (delta=%ld)",
+                   (long)old_off, (long)new_off, (long)delta);
+        } else {
+            MAIN_E("[ALIGN7] offset NOT updated: protection state=%d.",
+                   (int)g_fp_state);
+        }
+    }
+
+    /* 步骤 6：回 IDLE */
+    Foc_Mode_SetMode(FOC_MODE_IDLE);
+    hw_tmr4_pwm_set_all_low();
 }
 
 /*=============================================================================
@@ -498,6 +610,9 @@ static bool Enter_ParamIdent(void)
 /*=============================================================================
  * 定点拆分：value*scale 四舍五入后按 digits 位小数拆成符号/整数/小数
  *   仅用于 RTT 打印，避免依赖 printf 浮点支持
+ *   注意 scale = 显示单位换算系数 × 10^digits：
+ *     Ω  3 位小数 -> 1 × 10^3 = 1000
+ *     µH 2 位小数 -> 1e6 × 10^2 = 1e8
  *=============================================================================*/
 static void ParamIdent_SplitFixed(float value, float scale, uint8_t digits,
                                   const char **sign, long *ip, long *fp)
@@ -549,9 +664,9 @@ static void ParamIdent_PrintResult(void)
 
     ParamIdent_SplitFixed(g_param_ident.result_Rs, 1000.0f, 3u,
                           &s_rs, &rs_i, &rs_f);
-    ParamIdent_SplitFixed(g_param_ident.result_Ld, 1.0e6f, 2u,
+    ParamIdent_SplitFixed(g_param_ident.result_Ld, 1.0e8f, 2u,
                           &s_ld, &ld_i, &ld_f);
-    ParamIdent_SplitFixed(g_param_ident.result_Lq, 1.0e6f, 2u,
+    ParamIdent_SplitFixed(g_param_ident.result_Lq, 1.0e8f, 2u,
                           &s_lq, &lq_i, &lq_f);
 
     MAIN_D("[PI] Rs=%s%ld.%03ld Om | Ld=%s%ld.%02ld uH | Lq=%s%ld.%02ld uH",
@@ -579,6 +694,242 @@ static void ParamIdent_PrintResult(void)
 }
 
 /*=============================================================================
+ * mode 14：12 个电角度扫描辨识
+ *   每个角度先用固定电压矢量把转子拉到目标电角度，再完整跑一次
+ *   Rs/Ld/Lq 辨识，结果记入数组，最后打印表格和平均值
+ *=============================================================================*/
+#define PI_SCAN_N   12u
+#define PI_SCAN_ANGLE_STEP_DEG  30u
+
+volatile uint8_t  g_scan_align_en = 1u;        /* 1 = 每个角度先对齐转子；0 = 不动转子只重复测量 */
+volatile float    g_scan_align_v  = 0.8f;      /* 对齐矢量电压 V */
+volatile uint32_t g_scan_align_ms = 300u;      /* 每个角度对齐保持时间 ms */
+volatile float    g_scan_Rs[PI_SCAN_N];
+volatile float    g_scan_Ld[PI_SCAN_N];
+volatile float    g_scan_Lq[PI_SCAN_N];
+volatile float    g_scan_fb_deg[PI_SCAN_N];    /* 对齐后实测电角度 */
+volatile int32_t  g_scan_dcnt[PI_SCAN_N];      /* 辨识期间编码器计数变化 */
+volatile int32_t  g_scan_dth_mdeg[PI_SCAN_N];  /* 辨识期间电角度变化 mdeg */
+volatile uint8_t  g_scan_ok_cnt;
+volatile float    g_scan_Rs_avg;
+volatile float    g_scan_Ld_avg;
+volatile float    g_scan_Lq_avg;
+volatile int32_t  g_scan_idx = -1;
+
+/* 输出固定电角度矢量（主循环独占 PWM，期间 g_align_active=1） */
+static void IdentScan_OutputVector(float theta_rad, float v)
+{
+    float valpha;
+    float vbeta;
+    SvpwmCtx_t ctx;
+
+    InvPark(v, 0.0f, theta_rad, &valpha, &vbeta);
+
+    ctx.valpha = valpha;
+    ctx.vbeta  = vbeta;
+    ctx.vbus   = CFG_SAMPLING_SIM_VBUS_V;
+    SVPWM_Calc(&ctx);
+
+    (void)hw_tmr4_pwm_set_duty3(ctx.duty_u * 100.0f,
+                                ctx.duty_v * 100.0f,
+                                ctx.duty_w * 100.0f);
+}
+
+static void IdentScan_DelayMs(uint32_t ms)
+{
+    uint32_t t0 = tickTimer_GetCount();
+
+    while ((tickTimer_GetCount() - t0) < ms) {
+        hw_encoder_update();
+    }
+}
+
+static bool IdentScan_WaitIdentDone(uint32_t timeout_ms)
+{
+    uint32_t t0 = tickTimer_GetCount();
+
+    while (ParamIdent_IsRunning() &&
+           (Foc_Mode_GetMode() == FOC_MODE_PARAM_IDENT)) {
+        hw_encoder_update();
+        if ((tickTimer_GetCount() - t0) > timeout_ms) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void IdentScan_PrintRow(uint8_t idx, uint32_t ang_deg)
+{
+    const char *s_rs;
+    const char *s_ld;
+    const char *s_lq;
+    long rs_i, rs_f;
+    long ld_i, ld_f;
+    long lq_i, lq_f;
+
+    ParamIdent_SplitFixed(g_scan_Rs[idx], 1000.0f, 3u, &s_rs, &rs_i, &rs_f);
+    ParamIdent_SplitFixed(g_scan_Ld[idx], 1.0e8f, 2u, &s_ld, &ld_i, &ld_f);
+    ParamIdent_SplitFixed(g_scan_Lq[idx], 1.0e8f, 2u, &s_lq, &lq_i, &lq_f);
+
+    MAIN_D("[SCAN] %2u  %3lu  %s%3ld.%03ld  %s%4ld.%02ld  %s%4ld.%02ld  %6ld  %5ld  %4ld",
+           (unsigned)idx,
+           (unsigned long)ang_deg,
+           s_rs, rs_i, rs_f,
+           s_ld, ld_i, ld_f,
+           s_lq, lq_i, lq_f,
+           (long)g_scan_dcnt[idx],
+           (long)g_scan_dth_mdeg[idx],
+           (long)g_scan_fb_deg[idx]);
+}
+
+static void ParamIdent_ScanRun(void)
+{
+    uint8_t k;
+    uint8_t ok_cnt = 0u;
+    float sum_rs = 0.0f;
+    float sum_ld = 0.0f;
+    float sum_lq = 0.0f;
+    const char *s_rs;
+    const char *s_ld;
+    const char *s_lq;
+    long rs_i, rs_f;
+    long ld_i, ld_f;
+    long lq_i, lq_f;
+
+    if (!g_motor_is_aligned) {
+        MAIN_E("[SCAN] refuse: elec angle NOT aligned, run Mode 3 first.");
+        return;
+    }
+    if (!g_motor_is_offset_calibrated) {
+        MAIN_E("[SCAN] refuse: current offset NOT calibrated.");
+        return;
+    }
+    if (g_fp_state != FP_STATE_NORMAL) {
+        MAIN_E("[SCAN] refuse: protection state=%d, clear fault first.",
+               (int)g_fp_state);
+        return;
+    }
+    if (fabsf(g_fc_enc_speed_rpm) > 50.0f) {
+        MAIN_E("[SCAN] refuse: motor moving (spd_x10=%ld).",
+               (long)(g_fc_enc_speed_rpm * 10.0f));
+        return;
+    }
+
+    for (k = 0u; k < PI_SCAN_N; k++) {
+        g_scan_Rs[k]      = 0.0f;
+        g_scan_Ld[k]      = 0.0f;
+        g_scan_Lq[k]      = 0.0f;
+        g_scan_fb_deg[k]  = 0.0f;
+        g_scan_dcnt[k]    = 0;
+        g_scan_dth_mdeg[k]= 0;
+    }
+    g_scan_ok_cnt  = 0u;
+    g_scan_Rs_avg  = 0.0f;
+    g_scan_Ld_avg  = 0.0f;
+    g_scan_Lq_avg  = 0.0f;
+
+    MAIN_D("[SCAN] ===== 12-angle ident: align_v_x100=%ld hold_ms=%lu =====",
+           (long)(g_scan_align_v * 100.0f),
+           (unsigned long)g_scan_align_ms);
+    MAIN_D("[SCAN] id   ang   Rs(Om)        Ld(uH)        Lq(uH)      dCnt    dTh     fb");
+    MAIN_D("[SCAN] ----------------------------------------------------------------------");
+
+    for (k = 0u; k < PI_SCAN_N; k++) {
+        float    theta   = (float)k * ((float)PI_SCAN_ANGLE_STEP_DEG
+                                       * 0.01745329252f);
+        uint32_t ang_deg = (uint32_t)k * PI_SCAN_ANGLE_STEP_DEG;
+
+        g_scan_idx = (int32_t)k;
+
+        if (g_scan_align_en != 0u) {
+            /* 对齐：ISR 不碰 PWM，主循环独占输出把转子拉到目标电角度 */
+            g_align_active = 1u;
+            Foc_Mode_SetMode(FOC_MODE_IDLE);
+            (void)hw_tmr4_pwm_resume_output();
+            IdentScan_OutputVector(theta, g_scan_align_v);
+
+            IdentScan_DelayMs(g_scan_align_ms);
+
+            g_align_active = 0u;
+        } else {
+            /* 不动转子：确保输出全低、模式回 IDLE 再开始辨识 */
+            Foc_Mode_SetMode(FOC_MODE_IDLE);
+            (void)hw_tmr4_pwm_set_all_low();
+            IdentScan_DelayMs(50u);
+        }
+        g_scan_fb_deg[k] = g_fc_enc_elec_deg;
+
+        if (!ParamIdent_Start()) {
+            MAIN_E("[SCAN] %lu deg: start failed (status=%u error=%u)",
+                   (unsigned long)ang_deg,
+                   (unsigned)g_param_ident.status,
+                   (unsigned)g_param_ident.error);
+            break;
+        }
+        Foc_Mode_SetMode(FOC_MODE_PARAM_IDENT);
+
+        if (!IdentScan_WaitIdentDone(3000u)) {
+            ParamIdent_Abort();
+            MAIN_E("[SCAN] %lu deg: timeout, abort.", (unsigned long)ang_deg);
+            break;
+        }
+
+        if (g_param_ident.status != PI_STATUS_SUCCESS) {
+            MAIN_E("[SCAN] %lu deg: ident failed (status=%u error=%u)",
+                   (unsigned long)ang_deg,
+                   (unsigned)g_param_ident.status,
+                   (unsigned)g_param_ident.error);
+            continue;
+        }
+
+        g_scan_Rs[k] = g_param_ident.result_Rs;
+        g_scan_Ld[k] = g_param_ident.result_Ld;
+        g_scan_Lq[k] = g_param_ident.result_Lq;
+        g_scan_dcnt[k] = g_pi_end_cnt - g_pi_start_cnt;
+        {
+            float dth = (g_pi_end_theta - g_pi_start_theta) * 57.29578f;
+
+            if (dth > 180.0f)  dth -= 360.0f;
+            if (dth < -180.0f) dth += 360.0f;
+            g_scan_dth_mdeg[k] = (int32_t)(dth * 1000.0f);
+        }
+
+        ok_cnt++;
+        sum_rs += g_scan_Rs[k];
+        sum_ld += g_scan_Ld[k];
+        sum_lq += g_scan_Lq[k];
+
+        IdentScan_PrintRow(k, ang_deg);
+    }
+
+    MAIN_D("[SCAN] ----------------------------------------------------------------------");
+
+    g_scan_ok_cnt = ok_cnt;
+    if (ok_cnt > 0u) {
+        g_scan_Rs_avg = sum_rs / (float)ok_cnt;
+        g_scan_Ld_avg = sum_ld / (float)ok_cnt;
+        g_scan_Lq_avg = sum_lq / (float)ok_cnt;
+
+        ParamIdent_SplitFixed(g_scan_Rs_avg, 1000.0f, 3u, &s_rs, &rs_i, &rs_f);
+        ParamIdent_SplitFixed(g_scan_Ld_avg, 1.0e8f, 2u, &s_ld, &ld_i, &ld_f);
+        ParamIdent_SplitFixed(g_scan_Lq_avg, 1.0e8f, 2u, &s_lq, &lq_i, &lq_f);
+
+        MAIN_D("[SCAN] AVG(%u/%u)  Rs=%s%ld.%03ld Om  Ld=%s%ld.%02ld uH  Lq=%s%ld.%02ld uH",
+               (unsigned)ok_cnt, (unsigned)PI_SCAN_N,
+               s_rs, rs_i, rs_f, s_ld, ld_i, ld_f, s_lq, lq_i, lq_f);
+    } else {
+        MAIN_E("[SCAN] no valid result.");
+    }
+
+    (void)hw_tmr4_pwm_set_all_low();
+    g_align_active = 0u;
+    Foc_Mode_SetMode(FOC_MODE_IDLE);
+    g_scan_idx = -1;
+
+    MAIN_D("[SCAN] ===== done =====");
+}
+
+/*=============================================================================
  * main
  *=============================================================================*/
 int main(void)
@@ -597,7 +948,7 @@ int main(void)
 
     {
         Usart3_HW_Config_t cfg = USART3_HW_CONFIG_DEFAULT;
-        cfg.baudrate = 921600;
+        cfg.baudrate = 115200;
         Usart3_Vofa_Init(&cfg);
     }
 
@@ -653,8 +1004,8 @@ int main(void)
     /* ---- 7. ä¸Šç”µé›¶åæ ¡å‡† ---- */
     (void)PowerOn_OffsetCal();
 
-    MAIN_D(" Ready! g_mode_cmd: 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=REV 7=RAMP 8=CURRENT_FF 9=SPEED 10=POSITION 11=PARAM_IDENT 12=OFFCAL_NOPWM 13=OFFCAL_PWM50");
-    MAIN_D(" Mode 3 = align, Mode 4 = current, Mode 5 = sweep, Mode 6 = rev-count, Mode 7 = ramp-align, Mode 8 = current+FF, Mode 9 = speed+current, Mode 10 = position+speed+current, Mode 11 = Rs/Ld/Lq ident, Mode 12 = offset cal (no PWM), Mode 13 = offset cal (PWM 50%).");
+    MAIN_D(" Ready! g_mode_cmd: 0=IDLE 1=LOCK 2=IF 3=CALIB 4=CURRENT 5=SWEEP 6=ALIGN_ALPHA 7=ALIGN_CUR 8=CURRENT_FF 9=SPEED 10=POSITION 11=PARAM_IDENT 12=OFFCAL_NOPWM 13=OFFCAL_PWM50 14=PARAM_IDENT_SCAN");
+    MAIN_D(" Mode 3 = align, Mode 4 = current, Mode 5 = sweep, Mode 6 = one-point alpha align, Mode 7 = one-point current-angle align (+offset update), Mode 8 = current+FF, Mode 9 = speed+current, Mode 10 = position+speed+current, Mode 11 = Rs/Ld/Lq ident, Mode 12 = offset cal (no PWM), Mode 13 = offset cal (PWM 50%), Mode 14 = 12-angle ident scan.");
 
     /* ---- ä¸»å¾ªçŽ?---- */
     while (1) {
@@ -744,6 +1095,14 @@ int main(void)
                 last_mode_cmd = 0;
                 break;
 
+            case 14:
+                /* 12 个电角度扫描辨识，表格 + 平均值由函数内部打印 */
+                MAIN_D("[SCAN] request: 12-angle ident scan.");
+                ParamIdent_ScanRun();
+                g_mode_cmd    = 0;
+                last_mode_cmd = 0;
+                break;
+
             case 5:
                 MAIN_D("[SWEEP] request: fp_state=%d fault=0x%08lX trip_cnt=%lu",
                        (int)g_fp_state,
@@ -756,30 +1115,19 @@ int main(void)
                 break;
 
             case 6:
-                MAIN_D("[REV] request: fp_state=%d fault=0x%08lX trip_cnt=%lu",
-                       (int)g_fp_state,
-                       (unsigned long)g_fp_fault,
-                       (unsigned long)g_fp_trip_cnt);
-                MAIN_D("[REV] align %lums -> drag %u elec revs -> align %lums",
-                       (unsigned long)g_rev_align_ms,
-                       (unsigned)CFG_MOTOR_POLE_PAIRS,
-                       (unsigned long)g_rev_align_ms);
-                Foc_Mode_SetMode(FOC_MODE_IDLE);
-                EncoderCalib_StartRevMeasure();
-                s_align_running = 1;
+                /* 一点式对齐（α 轴）：阻塞执行，内部打印 y-x 后回 IDLE */
+                MAIN_D("[ALIGN6] request: one-point alpha align.");
+                Align_OnePoint(false);
+                g_mode_cmd    = 0;
+                last_mode_cmd = 0;
                 break;
 
             case 7:
-                MAIN_D("[CAL7] request: fp_state=%d fault=0x%08lX trip_cnt=%lu",
-                       (int)g_fp_state,
-                       (unsigned long)g_fp_fault,
-                       (unsigned long)g_fp_trip_cnt);
-                MAIN_D("[CAL7] ramp 0->90->0 deg, ramp_ms=%lu hold_ms=%lu",
-                       (unsigned long)g_align_ramp_ms,
-                       (unsigned long)g_align_hold_ms);
-                Foc_Mode_SetMode(FOC_MODE_IDLE);
-                EncoderCalib_StartAlign7();
-                s_align_running = 1;
+                /* 一点式对齐（当前电角度）：上电小动作对齐 */
+                MAIN_D("[ALIGN7] request: one-point current-angle align.");
+                Align_OnePoint(true);
+                g_mode_cmd    = 0;
+                last_mode_cmd = 0;
                 break;
 
             default:
@@ -832,32 +1180,6 @@ int main(void)
                                    (long)g_sweep_i_ma[i][4],
                                    (long)g_sweep_i_ma[i][5]);
                         }
-                    }
-                } else if (EncoderCalib_IsRevMeasureDone()) {
-                    MAIN_D("[REV] start=%ld end=%ld delta=%ld pp_x100=%ld slip=%u "
-                           "cyc_min=%ld cyc_max=%ld",
-                           (long)g_rev_start_cnt,
-                           (long)g_rev_end_cnt,
-                           (long)g_rev_delta,
-                           (long)(g_rev_pp_meas * 100.0f),
-                           (unsigned)g_rev_slip,
-                           (long)g_rev_cyc_min,
-                           (long)g_rev_cyc_max);
-                    MAIN_D("[REV] pp_meas = CPR*pp_cfg/|delta| = %ld.%02ld",
-                           (long)(g_rev_pp_meas),
-                           (long)((g_rev_pp_meas - (float)(long)g_rev_pp_meas) * 100.0f));
-                } else if (EncoderCalib_IsAlign7Done()) {
-                    if (EncoderCalib_IsAlignOk()) {
-                        MAIN_D("[CAL7] done: beta=%ld alpha=%ld moved=%ld offset=%ld dir=%d",
-                               (long)g_align_beta_hw, (long)g_align_alpha_hw,
-                               (long)g_align_moved, (long)g_align_offset,
-                               (int)g_enc_elec_dir);
-                        MAIN_D("[CAL7] Align OK");
-                    } else {
-                        MAIN_D("[CAL7] failed: beta=%ld alpha=%ld moved=%ld",
-                               (long)g_align_beta_hw, (long)g_align_alpha_hw,
-                               (long)g_align_moved);
-                        MAIN_E("[CAL7] ramp align failed! Check voltage/ramp/hold.");
                     }
                 } else if (EncoderCalib_IsAlignOk()) {
                     MAIN_D("[CAL] done: beta=%ld alpha=%ld moved=%ld offset=%ld dir=%d",

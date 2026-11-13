@@ -1,0 +1,26 @@
+{
+	"nodes":[
+		{"id":"n_sum","type":"text","text":"### ④ 控制量合成\n\n```text\nvd = PI_id(id_ref, id) + vd_ff\nvq = PI_iq(iq_ref, iq) + vq_ff\n```\n\nmode41 中分开观测：\n\n```text\nPI 分量：g_drun41_vd_pi_v / vq_pi_v\n前馈分量：g_drun41_vd_ff_v / vq_ff_v\n总输出：g_foc_vd / g_foc_vq\n```\n\n前馈开启后，总 `vd/vq` 还会按矢量幅值限制到 `g_drun41_vmax_v`。","x":20,"y":540,"width":520,"height":367},
+		{"id":"n_ok","type":"text","text":"### 前馈有效的判据\n\n```text\niq 平均跟随误差 eq_mean_ma 下降；\niq 误差峰峰值 eq_pp_ma 不恶化或下降；\nvq_pi / vd_pi 变小、变干净；\nvsat 不更容易触发；\nid 更稳定，id/iq 互串减少。\n```","x":640,"y":930,"width":500,"height":223,"color":"4"},
+		{"id":"n_jitter","type":"text","text":"### ⑥ 为什么大电流时抖动可能变大\n\n实测：200mA 基本跟随；300mA 以上平均值跟随，但抖动增大。\n\n可能原因：\n\n```text\n1. 交叉项用实测 iq 计算 vd_ff，采样噪声被注入电压；\n2. 电流纹波本身随 iq_ref 增大；\n3. kp 偏大，把高频电流误差放大；\n4. 速度升高后 BEMF/交叉项幅值变大；\n5. vd/vq 或 SVPWM 接近限幅。\n```\n\n`cross_gain` 是最大嫌疑。","x":640,"y":-40,"width":500,"height":366,"color":"2"},
+		{"id":"n_tune","type":"text","text":"### ⑦ 分项调参顺序\n\n不要一次打开全部前馈：\n\n```text\n① ff_enable = 0                      → 基线\n② Kb=1, Kc=0, Kr=0                  → 只验 BEMF\n③ Kb=1, Kc=0, Kr=1                  → 加电阻项\n④ Kb=1, Kr=1, Kc=0→0.2→0.5→1.0     → 最后加交叉项\n```\n\n每组记录：\n\n```text\neq_mean_ma、eq_pp_ma、vd/vq PI 分量、vd/vq FF 分量、vsat\n```","x":640,"y":420,"width":500,"height":367,"color":"3"},
+		{"id":"n_bad","type":"text","text":"### 前馈变差的判据\n\n```text\niq 抖动或峰峰值增大；\nvd/vq 振荡；\nid 偏离目标更明显；\nvsat 更容易触发；\n关 cross_gain 后抖动立刻下降。\n```\n\n若确认交叉项引入噪声，可改用 `id_ref/iq_ref` 或滤波后 `id/iq` 计算解耦项。","x":1260,"y":474,"width":500,"height":287,"color":"1"},
+		{"id":"n_model","type":"text","text":"### ① dq 电压模型\n\n```text\nvd = R·id + L·did/dt − we·L·iq\nvq = R·iq + L·diq/dt + we·L·id + we·ψf\n```\n\n转动时右侧出现三项扰动：\n\n```text\n−we·L·iq   → 影响 id 轴\n+we·L·id   → 影响 iq 轴\n+we·ψf     → 反电动势，影响 iq 轴\n```\n\nR 很小，但可用 `R·iq_ref` 做小量补偿。","x":-800,"y":102,"width":520,"height":342},
+		{"id":"n_no_ff","type":"text","text":"### ② 没有前馈时的问题\n\nPI 必须独立补齐全部电压：\n\n```text\nvd/vq = PI 输出\n```\n\n问题：\n\n```text\n1. BEMF 随速度上升，积分器需要时间补；\n2. id/iq 交叉耦合造成动态互串；\n3. 速度突变时 iq 跟随滞后；\n4. PI 输出接近限幅后无法继续纠偏。\n```","x":-800,"y":616,"width":520,"height":342,"color":"2"},
+		{"id":"n_start","type":"text","text":"## mode41 电流环前馈原理\n**在 mode29 的 dq 电流 PI 上叠加可开关的模型前馈**\n\n目的：让 BEMF、交叉耦合、电阻压降先由模型抵消，\nPI 只处理残差、参数误差和噪声。\n\n入口：`comm_mode = 41`；前置：先跑 mode24 校准。","x":-800,"y":-222,"width":520,"height":205,"color":"4"},
+		{"id":"n_ff","type":"text","text":"### ③ mode41 前馈项\n\n```text\nvd_ff = −Kc·we·L·iq\n\nvq_ff = +Kc·we·L·id\n      + Kb·we·ψf\n      + Kr·R·iq_ref\n```\n\n变量：\n\n```text\nKc = g_drun41_ff_cross_gain\nKb = g_drun41_ff_bemf_gain\nKr = g_drun41_ff_res_gain\nwe = g_drun41_omega_e_rad_s\n```\n\n总开关：`g_drun41_ff_enable`。","x":-100,"y":-40,"width":520,"height":440,"color":"4"},
+		{"id":"n_speed","type":"text","text":"### ⑤ we 的来源与限制\n\nmode41 的 `g_drun41_speed_hz` 是电频率，用约 200ms 窗口刷新。\n\n```text\nwe = 2π × g_drun41_speed_hz\n```\n\n因此：\n\n```text\n刚进入 mode41：前 200ms 前馈近似为 0；\n速度突变：we 有滞后；\n稳态运行：BEMF 前馈最有效。\n```","x":-100,"y":-440,"width":520,"height":342,"color":"3"}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"n_start","fromSide":"bottom","toNode":"n_model","toSide":"top"},
+		{"id":"e2","fromNode":"n_model","fromSide":"bottom","toNode":"n_no_ff","toSide":"top","label":"不加前馈"},
+		{"id":"e3","fromNode":"n_model","fromSide":"right","toNode":"n_ff","toSide":"left","label":"抽取可测扰动"},
+		{"id":"e4","fromNode":"n_ff","fromSide":"bottom","toNode":"n_sum","toSide":"top"},
+		{"id":"e5","fromNode":"n_no_ff","fromSide":"right","toNode":"n_sum","toSide":"left","label":"PI 单独承担"},
+		{"id":"e6","fromNode":"n_ff","fromSide":"right","toNode":"n_speed","toSide":"right","label":"we 来源"},
+		{"id":"e7","fromNode":"n_sum","fromSide":"right","toNode":"n_jitter","toSide":"left","label":"实测问题"},
+		{"id":"e8","fromNode":"n_jitter","fromSide":"bottom","toNode":"n_tune","toSide":"top","label":"隔离原因"},
+		{"id":"e9","fromNode":"n_tune","fromSide":"bottom","toNode":"n_ok","toSide":"top","label":"指标变好"},
+		{"id":"e10","fromNode":"n_tune","fromSide":"right","toNode":"n_bad","toSide":"left","label":"指标变差"}
+	]
+}

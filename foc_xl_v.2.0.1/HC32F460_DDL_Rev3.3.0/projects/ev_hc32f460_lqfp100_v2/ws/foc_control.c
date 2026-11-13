@@ -188,7 +188,7 @@ void Foc_Control_Step(void)
                     hw_tmr4_pwm_set_all_low();
                 } else {
                     hw_tmr4_pwm_resume_output();
-                    hw_tmr4_pwm_set_duty3(50.0f, 50.0f, 50.0f);
+                    hw_tmr4_pwm_set_duty3(2.0f, 2.0f, 2.0f);
                 }
             }
         }

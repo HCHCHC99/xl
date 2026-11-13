@@ -1,0 +1,35 @@
+{
+	"nodes":[
+		{"id":"n_start","type":"text","text":"## 模式32 LOCK_IQ_PI\n**自锁偏移 + 自动交接 mode 31 —— 一键到位的启动模式**\n\n解决 mode 30 的打滑问题：改用“磁铁吸住不动”的笨办法对表。\n转子被吸死在固定位置，不可能打滑，测出的偏移一定准。\n\n原则：宁可不起动，不锁坏值","x":-220,"y":0,"width":580,"height":200,"color":"4"},
+		{"id":"n_init","type":"text","text":"### 启动\n清故障 → PWM 启动（50/50/50 零矢量）\n相对编码器计数清零（零点 = 本模式启动时刻）\n不依赖 mode 30（会覆盖其锁定值与方向基准）\n\nWatch 可调：g_lockiq_align_volt_v（默认 0.4V → ≈4A 吸力）","x":-220,"y":280,"width":640,"height":190},
+		{"id":"n_beta","type":"text","text":"### step=1 BETA 磁吸附（500ms）\n磁场定在 90° 电角度\n转子“咔”一下被磁力吸到固定位置（有响声正常）\n盲等 500ms 让吸附完成","x":-220,"y":550,"width":440,"height":160},
+		{"id":"n_alpha","type":"text","text":"### step=2 ALPHA 等静止 + 取基准\n磁场定到 0°，再吸一次\n每 300ms 看一次窗口平均位置位移\n（静止容差 4 counts ≈ 3.5° 电角度）","x":-220,"y":790,"width":440,"height":170},
+		{"id":"n_decq","type":"text","text":"### 判断：连续 2 个窗口位移都 ≤ 4 counts？\n（双窗复核，防瞬时噪声骗过）","x":-220,"y":1040,"width":440,"height":130,"color":"3"},
+		{"id":"n_snap","type":"text","text":"### 记录基准位置\n快照 ALPHA 停位点（这就是“表”的基准）→ 进 VERIFY","x":-220,"y":1250,"width":440,"height":110},
+		{"id":"n_verify","type":"text","text":"### step=3 VERIFY 防作弊复测\n磁场定回 90°，等静止（同一套窗口判据，同样有 3s 超时）\n转子应该正好挪动 90° 电角度\n= CPR/(4·极对数) counts","x":-220,"y":1440,"width":440,"height":170},
+		{"id":"n_dect","type":"text","text":"### 判断：位移和标准答案对得上吗？\n容差 ±12 counts（≈10° 电角度）\n误差记入 g_lockiq_track_err_cnts","x":-220,"y":1690,"width":440,"height":140,"color":"3"},
+		{"id":"n_trackfail","type":"text","text":"### FAIL code=3 复测位移不对\n→ step=5 LOCK_FAIL，拒绝启动并停机\n（看 g_lockiq_track_err_cnts 差了多少）\n\n防的是：转子被卡死在别的位置，\n却“看起来静止”骗过了 ALPHA 那一步","x":420,"y":1690,"width":400,"height":190,"color":"1"},
+		{"id":"n_locked","type":"text","text":"### step=4 LOCKED 对表完成\n注入偏移 off = 0（恒定值。为什么是 0：VERIFY 结束时转子\n被吸停在 90°，mode 31 要求 off = 90°−转子角 = 0，\n推导见 foc_lock_iq_pi.c 文件头）\n注入方向基准 ref_dir = FOC_ENC_DIR\n打印：[LOCKIQ] locked off=0 deg dir=±1 -> handoff iqpi\n置事件 g_lockiq_evt_flag=1","x":-220,"y":1910,"width":440,"height":230,"color":"4"},
+		{"id":"n_wait","type":"text","text":"### 零矢量等待\n保持转子不动（转子必须仍停在对齐位）","x":-220,"y":2220,"width":440,"height":110},
+		{"id":"n_handoff","type":"text","text":"### 自动交接（不用人管）\n观察模块 foc_obs 的 Foc_Obs_Task()（主循环）看到事件\n自动调 Foc_StartIqPi() → 无缝进入 mode 31 闭环","x":-220,"y":2410,"width":440,"height":150,"color":"4"},
+		{"id":"n_oc","type":"text","text":"### step=6 FAULT_OC 过流保护\n任何时刻过流 → 立即停机\n（ISR 每拍用原始电流检查，任何阶段都可能触发）","x":420,"y":2220,"width":400,"height":130,"color":"1"},
+		{"id":"n_constraint","type":"text","text":"### ⚠ 使用约束（重要）\noff=0 只对“mode 32 → 自动交接 mode 31”这条链路有效\n（交接时转子必须仍停在对齐位）。\n交接后转子若被人手拧动过，再单独进 mode 31 是无效的，需要重跑 mode 32","x":420,"y":2410,"width":400,"height":190,"color":"2"},
+		{"id":"n_timeout","type":"text","text":"### FAIL code=2 等静止超时\nALPHA/VERIFY 等了 3s 始终不静止\n→ step=5 LOCK_FAIL，自动停机","x":380,"y":1030,"width":400,"height":140,"color":"1"}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"n_start","fromSide":"bottom","toNode":"n_init","toSide":"top"},
+		{"id":"e2","fromNode":"n_init","fromSide":"bottom","toNode":"n_beta","toSide":"top"},
+		{"id":"e3","fromNode":"n_beta","fromSide":"bottom","toNode":"n_alpha","toSide":"top"},
+		{"id":"e4","fromNode":"n_alpha","fromSide":"bottom","toNode":"n_decq","toSide":"top"},
+		{"id":"e5","fromNode":"n_decq","fromSide":"left","toNode":"n_alpha","toSide":"left","color":"3","label":"否（还没稳）"},
+		{"id":"e6","fromNode":"n_decq","fromSide":"right","toNode":"n_timeout","toSide":"left","color":"1","label":"超时 3s"},
+		{"id":"e7","fromNode":"n_decq","fromSide":"bottom","toNode":"n_snap","toSide":"top","label":"是（稳定了）"},
+		{"id":"e8","fromNode":"n_snap","fromSide":"bottom","toNode":"n_verify","toSide":"top"},
+		{"id":"e9","fromNode":"n_verify","fromSide":"bottom","toNode":"n_dect","toSide":"top"},
+		{"id":"e10","fromNode":"n_dect","fromSide":"right","toNode":"n_trackfail","toSide":"left","color":"1","label":"超容差"},
+		{"id":"e11","fromNode":"n_dect","fromSide":"bottom","toNode":"n_locked","toSide":"top","label":"对上了"},
+		{"id":"e12","fromNode":"n_locked","fromSide":"bottom","toNode":"n_wait","toSide":"top"},
+		{"id":"e13","fromNode":"n_wait","fromSide":"bottom","toNode":"n_handoff","toSide":"top"},
+		{"id":"e14","fromNode":"n_handoff","fromSide":"right","toNode":"n_constraint","toSide":"left","color":"2","label":"仅此链路有效"}
+	]
+}

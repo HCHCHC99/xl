@@ -1,0 +1,173 @@
+FOC 控制工程分层设计（暂存版）
+
+一、总体分层与命名前缀
+
+层号    层名        前缀      职责                                      允许 include
+L1      驱动层      hw_       直接操作寄存器/外设，引脚定义也在此层      SDK 头 + cfg_
+L2      接口层      if_       纯函数指针结构体 + Register/Get            标准库
+L3      适配层      drv_      把 hw_ 包成 if_ 接口                       hw_ + if_ + cfg_
+L4      算法层      foc_      SVPWM、Clarke/Park、Sin/Cos                标准库
+L5      应用层      app_      控制节拍、状态机、Watch                    if_ + foc_ + cfg_ + rtt_log
+L6      配置层      cfg_      极对数、标定系数、模式宏                   无
+
+约束：
+hw_ 是唯一碰寄存器/引脚的层。
+app_ 绝不 include hw_，只能通过 if_。
+foc_ 绝不 include hw_ 或 if_，纯数学。
+drv_ 是唯一同时 include hw_ 和 if_ 的胶水层。
+cfg_ 被所有层 include，自己 include 任何层。
+
+
+二、文件清单与目录结构
+
+project/
+  hw/
+    hw_board_pins.h        所有引脚/通道/功能号集中定义
+    hw_tmr4_pwm.c/.h       TMR4 三相互补/同相 PWM
+    hw_encoder.c/.h        ABZ 编码器（TMRA_1 硬件正交 + Z 中断）
+    hw_adc_sample.c/.h     ADC1 序列A（CH4/5/6/7）+ 谷底触发
+  if/
+    if_angle_source.c/.h   角度源接口（AngleSource_t）
+    if_pwm_out.c/.h        PWM 输出接口（PwmOut_t）
+    if_current_sense.c/.h  电流采样接口（CurrentSense_t）
+  drv/
+    drv_angle_encoder.c    ABZ 适配（把 hw_encoder 包成 AngleSource_t）
+    drv_pwm_tmr4.c         TMR4 适配（把 hw_tmr4_pwm 包成 PwmOut_t）
+    drv_current_adc.c      ADC 适配（把 hw_adc_sample 包成 CurrentSense_t）
+  foc/
+    foc_svpwm.c/.h         七段式 SVPWM
+    foc_clarke_park.c/.h   Clarke/Park/InvPark + Angle_Normalize
+    foc_sincos.c/.h        1024 点 sin LUT
+  cfg/
+    cfg_motor.h            极对数、编码器 CPR
+    cfg_sampling.h         采样模式、标定系数
+    cfg_pwm.h              PWM 频率、死区、输出类型
+  app/
+    app_foc_control.c/.h   20kHz EOCA 节拍 + 控制链调度
+    app_main.c             初始化 + 注册接口 + 主循环
+
+
+三、接口定义要点
+
+if_angle_source.h：
+typedef struct {
+    float (*get_elec_rad)(void);
+    float (*get_mech_rad)(void);
+    float (*get_speed_rpm)(void);
+    int8_t (*get_dir)(void);
+    void (*update_isr)(void);
+    void (*update_slow)(void);
+} AngleSource_t;
+void AngleSource_Register(const AngleSource_t *src);
+float AngleSource_GetElecRad(void);
+float AngleSource_GetSpeedRpm(void);
+
+if_pwm_out.h：
+typedef struct {
+    void (*set_duty3)(float du_pct, float dv_pct, float dw_pct);
+    void (*enable)(int en);
+    void (*safe_state)(int state);
+} PwmOut_t;
+void PwmOut_Register(const PwmOut_t *pwm);
+void PwmOut_SetDuty3(float du, float dv, float dw);
+void PwmOut_Enable(int en);
+
+if_current_sense.h：
+typedef struct {
+    float ia;
+    float ib;
+    float ic;
+    float vbus;
+} CurrentSample_t;
+typedef struct {
+    void (*get)(CurrentSample_t *s);
+    void (*update_isr)(void);
+} CurrentSense_t;
+void CurrentSense_Register(const CurrentSense_t *cs);
+void CurrentSense_Get(CurrentSample_t *s);
+
+
+四、换场景时的改动范围
+
+场景1：更换 ADC 引脚
+  改 hw_board_pins.h（ADC_CH_IA/IB/IC/VBUS、PIN_ADC_*）。
+  改 hw_adc_sample.c 的通道使能顺序（若顺序变）。
+  上层不动。
+
+场景2：更换 ADC 采样时刻
+  当前：TMR4 三角波谷底 → EVT0 → AOS → ADC1。
+  改 hw_tmr4_pwm.c 的 TMR4_PWM_ConfigAdcTrigger（MATCH_CNT_DOWN/UP、u16CompareValue 偏移）。
+  或改 hw_adc_sample.c 的 AOS_SetTriggerEventSrc（换触发源）。
+  上层不动。
+  预留：hw_tmr4_pwm_config_adc_trigger(offset_ticks, match_cond) 参数化。
+
+场景3：更换 PWM 管脚
+  改 hw_board_pins.h（PIN_PWM_UH/UL/VH/VL/WH/WL 的 PORT/PIN/FUNC）。
+  hw_tmr4_pwm.c 里 GPIO_SetFunc 从宏取，不硬编码。
+  若换定时器单元：改 HW_PWM_UNIT 宏。
+  上层不动。
+
+场景4：更换角度获取方式（ABZ → SPI 编码器）
+  新增 hw_spi_encoder.c/.h（SPI 外设 + 读原始角）。
+  新增 drv_angle_spi.c（包成 AngleSource_t）。
+  app_main.c 里 AngleSource_Register(&g_angle_source_spi)。
+  app_foc_control.c 一行不改。
+  约束：SPI 管脚若不支持 SPI，改 hw_board_pins.h 换到支持 SPI 的引脚（硬件约束）。
+
+场景5（后续）：新增无感观测器
+  新增 foc_observer_smo.c（算法）+ drv_angle_sensorless.c（适配）。
+  app_main 注册新实例。
+
+场景6（后续）：六步方波获取电角度
+  新增 foc_sixstep_commutate.c（算法）+ drv_angle_hall.c 或 drv_commutation_sixstep.c（适配）。
+  app_main 注册新实例。
+
+场景7（后续）：开环控制校准
+  新增 foc_openloop.c（算法）。
+  app_ 层加控制模式切换逻辑（foc_ 只提供算法，不决定何时切）。
+
+
+五、注册模式（当前方案的核心）
+
+形态：接口 + 注册 + Get。
+  if_ 层定义函数指针结构体 + Register/Get。
+  drv_ 层把 hw_ 包成接口实例（全局 const 结构体）。
+  app_main 调 Register 挂上去。
+  app_ 层只调 Get 拿数据。
+
+三种粒度：
+  方案A 静态注册：app_main 写死 AngleSource_Register(&g_angle_source_encoder)，换实现改一行+重新编译。
+  方案B 宏选择：cfg_ 里 CFG_ANGLE_SOURCE 宏，app_main 用 #if 选注册哪个，换实现改宏+重新编译。
+  方案C 运行时切换：app_ 提供 app_switch_angle_source()，运行时换注册实例。
+
+建议：先做方案A（静态注册），将来支持多硬件版本升级到方案B，方案C暂不做。
+
+开销：Cortex-M4 函数指针调用约 3~5 周期，20kHz 下可忽略。
+
+
+六、数据流图
+
+反馈链：
+  hw_adc_sample → drv_current_adc → if_current_sense → app_foc_control
+  hw_encoder    → drv_angle_encoder → if_angle_source  → app_foc_control
+                                                              ↓
+                                                    foc_clarke_park
+                                                    foc_svpwm
+                                                              ↓
+  hw_tmr4_pwm ← drv_pwm_tmr4 ← if_pwm_out ← app_foc_control
+
+应用层只看得到 if_ 和 foc_，看不到 hw_ 和具体引脚。
+
+
+七、当前阶段不改动的说明
+
+本设计为暂存方案，现阶段代码保持原结构（Adp/ws 目录、原有命名）。
+后续需要支持多硬件版本、或频繁换编码器/PWM/ADC 时，再按本设计逐步迁移。
+迁移顺序建议：
+  1. 建 hw_board_pins.h，把分散的引脚宏集中（纯搬移，不改逻辑）。
+  2. 建 if_angle_source + drv_angle_encoder，app_foc_control 改用 AngleSource_GetElecRad()。
+  3. 建 if_pwm_out + drv_pwm_tmr4。
+  4. 建 if_current_sense + drv_current_adc。
+  5. 文件重命名（tmr4_pwm → hw_tmr4_pwm 等），目录重排（hw/ if/ drv/ foc/ cfg/ app/）。
+
+每步可独立验证，不要求一次改完。

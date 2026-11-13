@@ -1,0 +1,30 @@
+{
+	"nodes":[
+		{"id":"n_start","type":"text","text":"## SMO 旁观验收操作流（mode 45）\n**电机由编码器闭环，SMO 只旁观、不进控制**\n\n上电 → comm_mode=24（等校准完成）\n→ comm_mode=45 → 自动爬坡 0→200→500→1000→1500rpm（4s）\n→ 到速稳定后进判定（约 1.5~2s 出结果）","x":-780,"y":-80,"width":470,"height":200,"color":"4"},
+		{"id":"n_theory","type":"text","text":"### 验收原理：拿编码器当真值\n理论反电动势（编码器 θ + 测速 ω 生成）：\nE_theory = ω_e·ψf·(−sinθ, cosθ)\nω_e = 2π·(rpm/60)·p（电角速度 rad/s）\n\n对比对象：SMO 输出 e_hat = LPF(z)\n\n为什么看直流不看波形：\n串口 ~170Hz 帧 vs 电频率 250Hz，波形必混\n叠不可信 → 投影到编码器转子系＋取滤波\n均值，旋转量变直流，肉眼与程序都可判","x":-780,"y":200,"width":470,"height":250},
+		{"id":"n_watch","type":"text","text":"### 在哪看\nVOFA wave_mode=0 面板：\nch10 e_on_q 投影 / ch13 理论幅值 ωψf / ch15 相位差滤波\n\nWatch：\ng_smo_diag_e_ratio（幅值比）\ng_smo_diag_theta_err_filt_deg（相位均值）\ng_smo_emf_ok / g_smo_jdg_fail（自动判定）","x":-780,"y":530,"width":470,"height":220},
+		{"id":"n_c1","type":"text","text":"### 判据① 幅值：e_hat ≈ 0.91 × ω_e·ψf\n理论幅值 e_expect = ω_e·ψf（1500rpm、p=10 → 1.32V）\n期望比值 0.91 的计算来源：\n\n跌落 = R_model/(k/φ) = 0.1/1.45 ≈ 6.9%\n（滑模等效控制的内生属性，不是误差）\n＋ LPF 损失 ≈1.5% → ≈0.91\n\n跌落实测偏差反向校验 R_model（跌落∝R）\n判定窗 [0.85, 1.08]：实测中心≈0.98，因\n|e_hat|=√(eα²+eβ²) 含 6f 谐波＋切换纹波能量，\n而分母 ωψf 是纯基波","x":-120,"y":-80,"width":530,"height":290,"color":"3"},
+		{"id":"n_c2","type":"text","text":"### 判据② 相位：滞后恒定、不漂\nδ = LPF 滞后 atan(ω_e/ω_c)\n　＋ 观测极点滞后 atan(ω_e·L/(R+k/φ))\nω_c = LPF 截止（α=0.39@10kHz → fc≈620Hz）\n1500rpm 理论 ≈ −17°，随转速按上式缩放\n\n只看均值不看抖动；抖动幅度是诊断量\n（转速不变时突变 = 噪声/参数恶化）\n\n恒定滞后 PLL 会吃掉 → 判定只抓\n相位翻转 / 过大滞后，窗 [−45°, +5°]","x":-120,"y":280,"width":530,"height":250,"color":"3"},
+		{"id":"n_c3","type":"text","text":"### 判据③ 投影恒定（抗混叠核心）\ne_hat 投影到编码器转子系：\ne_on_q ≈ |e_hat|·cosδ（恒定）\ne_on_d ≈ −|e_hat|·sinδ（恒定负值 = 滞后体现）\n总误差 |E_hat−E_theory| ≈ ωψf·δ(rad)\n\n匀速下必须是与转速对应的常数；\n出现电频率纹波 = 波形畸变信号","x":-120,"y":600,"width":530,"height":200,"color":"3"},
+		{"id":"n_judge","type":"text","text":"### 自动判定 g_smo_emf_ok\n前提：转速 ≥1300rpm（固定 k 信噪比窗下限，低于=未判定）\nC1：幅值比慢速均值 ∈ [0.85, 1.08]\nC2：相位慢速均值 ∈ [−45°, +5°]\n\n两级慢速 EMA 取均值进窗口\n（点值带马鞍纹波＋混叠拍频驻留会来回破窗）\n三项连续 1000ms（TickTimer ms 时基）→ ok=1\n任一拍破窗 → 清零重来（恒定性要求）\n\nfail 掩码：0x01 转速未达 / 0x02 幅值越界 / 0x04 相位越界\n含 0x01 时其余位无意义","x":490,"y":-80,"width":530,"height":300,"color":"3"},
+		{"id":"n_param","type":"text","text":"### 判定参数怎么来的（定版依据）\nk = 4.6V = 2×e_peak@2600rpm\n（e_peak = ω_e·ψf = 2.29V；硬条件 k>e_peak）\n→ 可用验证窗 ≈1300~3400rpm（k/e_peak≈1.5~3.5）\n\nobs_gain = k/φ = 1.45：决定幅值跌落 R/(k/φ)；\n半隐式离散无稳定上限（显式 Euler@10kHz\n要求 k/φ<0.75，会自激）\n\nlpf_alpha = 0.39 → fc≈620Hz@10kHz：\n平滑与相位滞后的折中","x":1090,"y":200,"width":470,"height":250},
+		{"id":"n_ok","type":"text","text":"### 验收通过（Step 1 毕业）\nok=1 ＋ ch10/13/15 人眼精密复核\n\n→ Step 2：PLL 旁观\n（吃掉 17° 恒定滞后与 6f 马鞍纹波）\n→ Step 3 非匀速动态 → Step 4 无感闭环","x":1090,"y":-80,"width":470,"height":200,"color":"4"},
+		{"id":"n_neg","type":"text","text":"### 负测试：证明判定没松死\nR_model ×4（0.1→0.4，跌落 27%）→ FAIL 0x02\nlpf_alpha 0.39→0.08（滞后≈−57°）→ FAIL 0x04\npsi_wb ×2（理论幅值翻倍）→ FAIL 0x02\n跑完恢复参数应回到 OK\n\n⚠ k 单独调歪不会触发 0x02：\n跌落 = R/(k/φ)，而 k/φ 即 obs_gain，\nk 只影响信噪比、不影响幅值均值","x":490,"y":600,"width":530,"height":230,"color":"2"},
+		{"id":"n_bound","type":"text","text":"### 边界与不治项\n<1300rpm：切换纹波淹没小信号，未判定属预期\n死区 6f 马鞍纹波：不治——PLL 窄带跟踪天然滤掉\n\n自动判定 = 粗筛实质故障；\n精密验收靠人看 ch10/13/15（一条没放）","x":1090,"y":530,"width":470,"height":200}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"n_start","fromSide":"bottom","toNode":"n_theory","toSide":"top","label":"判定前先懂原理"},
+		{"id":"e2","fromNode":"n_theory","fromSide":"bottom","toNode":"n_watch","toSide":"top"},
+		{"id":"e3","fromNode":"n_watch","fromSide":"right","toNode":"n_c3","toSide":"left","label":"四路判据"},
+		{"id":"e4","fromNode":"n_watch","fromSide":"right","toNode":"n_c2","toSide":"left"},
+		{"id":"e5","fromNode":"n_watch","fromSide":"right","toNode":"n_c1","toSide":"left"},
+		{"id":"e6","fromNode":"n_c1","fromSide":"right","toNode":"n_judge","toSide":"left","label":"C1"},
+		{"id":"e7","fromNode":"n_c2","fromSide":"right","toNode":"n_judge","toSide":"left","label":"C2"},
+		{"id":"e8","fromNode":"n_c3","fromSide":"right","toNode":"n_judge","toSide":"left","label":"恒定性"},
+		{"id":"e9","fromNode":"n_judge","fromSide":"right","toNode":"n_ok","toSide":"left","label":"ok=1"},
+		{"id":"e10","fromNode":"n_judge","fromSide":"bottom","toNode":"n_neg","toSide":"top","label":"反向验证","color":"2"},
+		{"id":"e11","fromNode":"n_param","fromSide":"left","toNode":"n_theory","toSide":"right","label":"计算依据"},
+		{"id":"e12","fromNode":"n_param","fromSide":"bottom","toNode":"n_bound","toSide":"top"},
+		{"id":"e13","fromNode":"n_ok","fromSide":"bottom","toNode":"n_bound","toSide":"right","label":"边界"}
+	]
+}
