@@ -33,6 +33,15 @@ extern volatile uint32_t g_fc_isr_dt_max_us;
 extern volatile uint32_t g_fc_isr_dt_min_us;
 extern volatile uint32_t g_fc_isr_dt_last_us;
 
+/* DWT 周期计数：ISR 软件计算耗时（不含异常出入栈）
+ *   HCLK=200MHz 时 1 count = 5ns
+ *   avg 每 1024 拍更新一次，min/max 为上电以来极值 */
+extern volatile uint32_t g_dwt_isr_last_cyc;
+extern volatile uint32_t g_dwt_isr_min_cyc;
+extern volatile uint32_t g_dwt_isr_max_cyc;
+extern volatile uint32_t g_dwt_isr_avg_cyc;
+extern volatile uint32_t g_dwt_isr_win_cnt;
+
 extern volatile int32_t  g_fc_enc_count;
 extern volatile int32_t  g_fc_enc_delta;
 extern volatile float    g_fc_enc_mech_deg;

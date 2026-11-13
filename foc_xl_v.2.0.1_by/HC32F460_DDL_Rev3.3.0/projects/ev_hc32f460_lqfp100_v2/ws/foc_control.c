@@ -57,6 +57,19 @@ volatile float    g_fc_iq             = 0.0f;
 
 volatile uint32_t g_fc_sample_seq     = 0;
 
+/*---------------------------------------------------------------------------
+ * DWT 周期计数：ISR 计算耗时（不含异常出入栈）
+ *   HCLK = 200MHz 时 1 count = 5ns
+ *   g_dwt_isr_avg_cyc 每 1024 拍更新一次（约 51ms）
+ *---------------------------------------------------------------------------*/
+volatile uint32_t g_dwt_isr_last_cyc = 0;
+volatile uint32_t g_dwt_isr_min_cyc  = 0xFFFFFFFFu;
+volatile uint32_t g_dwt_isr_max_cyc  = 0;
+volatile uint32_t g_dwt_isr_avg_cyc  = 0;
+volatile uint32_t g_dwt_isr_win_cnt  = 0;
+static uint32_t   s_dwt_sum_cyc      = 0;
+static uint8_t    s_dwt_inited       = 0;
+
 /* Mode 3 对齐期间标志 */
 volatile uint8_t  g_align_active      = 0u;
 
@@ -97,6 +110,39 @@ static void Foc_Control_MeasureDt(void)
             if (us > g_fc_isr_dt_max_us) g_fc_isr_dt_max_us = us;
             if (us < g_fc_isr_dt_min_us) g_fc_isr_dt_min_us = us;
         }
+    }
+}
+
+/*=============================================================================
+ * DWT 周期计数：初始化与统计
+ *   只统计 ISR 内的软件计算时间，不含 Cortex-M4 异常入栈/出栈
+ *=============================================================================*/
+static void Foc_Control_DwtInit(void)
+{
+    if (s_dwt_inited) {
+        return;
+    }
+
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0u;
+    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+
+    s_dwt_inited = 1u;
+}
+
+static void Foc_Control_DwtRecord(uint32_t cyc)
+{
+    g_dwt_isr_last_cyc = cyc;
+
+    if (cyc < g_dwt_isr_min_cyc) g_dwt_isr_min_cyc = cyc;
+    if (cyc > g_dwt_isr_max_cyc) g_dwt_isr_max_cyc = cyc;
+
+    s_dwt_sum_cyc += cyc;
+    g_dwt_isr_win_cnt++;
+    if (g_dwt_isr_win_cnt >= 1024u) {
+        g_dwt_isr_avg_cyc = s_dwt_sum_cyc >> 10;   /* /1024 */
+        s_dwt_sum_cyc     = 0u;
+        g_dwt_isr_win_cnt = 0u;
     }
 }
 
@@ -197,9 +243,13 @@ void Foc_Control_Step(void)
 
 static void Foc_Control_EocaHandler(void)
 {
+    uint32_t t0 = DWT->CYCCNT;
+
     g_dbg_cnt_at_isr = TMR4_GetCountValue(CM_TMR4_3);
     Motor_Sampling_EocaCallback();
     Foc_Control_Step();
+
+    Foc_Control_DwtRecord(DWT->CYCCNT - t0);
 }
 
 void Foc_Control_Init(void)
@@ -212,6 +262,7 @@ void Foc_Control_Init(void)
     s_ticks_per_us = freq / 1000000u;
     if (s_ticks_per_us == 0u) s_ticks_per_us = 1u;
 
+    Foc_Control_DwtInit();
     Foc_Control_ResetStats();
 
     stcIrq.enIntSrc    = INT_SRC_ADC1_EOCA;
@@ -262,6 +313,13 @@ void Foc_Control_ResetStats(void)
     g_fc_isr_dt_min_us  = 0xFFFFFFFFu;
     g_fc_isr_dt_last_us = 0;
     g_fc_sample_seq     = 0;
+
+    g_dwt_isr_last_cyc = 0;
+    g_dwt_isr_min_cyc  = 0xFFFFFFFFu;
+    g_dwt_isr_max_cyc  = 0;
+    g_dwt_isr_avg_cyc  = 0;
+    g_dwt_isr_win_cnt  = 0;
+    s_dwt_sum_cyc      = 0;
 
     s_ts_init      = 0u;
     s_prev_ts_cnt  = 0u;
