@@ -42,4 +42,15 @@ void Clarke(float ia, float ib, float ic, float *ialpha, float *ibeta);
 
 void Park(float ialpha, float ibeta, float theta_e, float *id, float *iq);
 
+/*---------------------------------------------------------------------------
+ * Q15 定点版本（phase: uint32，2^32 = 2π）
+ *   输入输出都是 Q15 标幺；内部用 int64 中间量，避免 Park 求和溢出
+ *---------------------------------------------------------------------------*/
+void ClarkeQ15(int16_t ia, int16_t ib, int16_t ic,
+               int16_t *ialpha, int16_t *ibeta);
+void ParkQ15(int16_t ialpha, int16_t ibeta, uint32_t phase,
+             int16_t *id, int16_t *iq);
+void InvParkQ15(int16_t vd, int16_t vq, uint32_t phase,
+                int16_t *valpha, int16_t *vbeta);
+
 #endif /* CLARKE_PARK_H */

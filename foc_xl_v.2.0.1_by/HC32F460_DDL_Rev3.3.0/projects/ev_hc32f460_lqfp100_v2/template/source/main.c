@@ -157,7 +157,11 @@ static int Foc_AdcDebug_VofaFill(int32_t *cur)
     cur[17] = (int32_t)(g_spd_ramp_rpm * 1000.0f);
     cur[18] = (int32_t)(g_spd_filt_rpm * 1000.0f);
 
-    return 19;
+    /* ch19: 最近一拍 ISR 计算周期数（HCLK cycles，×1000 发送，
+     *       接收端乘 0.001 后就是原始 cyc，1 cyc = 5ns @200MHz） */
+    cur[19] = (int32_t)g_dwt_isr_last_cyc * 1000;
+
+    return 20;
 }
 
 /*=============================================================================
@@ -1405,9 +1409,9 @@ int main(void)
         }
 
         if (!Usart3_Vofa_IsTxBusy() && g_vofa_adc_debug != 0) {
-            int32_t cur[19];
-            Foc_AdcDebug_VofaFill(cur);
-            Usart3_Vofa_SendScaled(cur, 19, USART3_VOFA_SCALE_MILLI);
+            int32_t cur[20];
+            int     n = Foc_AdcDebug_VofaFill(cur);
+            Usart3_Vofa_SendScaled(cur, (uint8_t)n, USART3_VOFA_SCALE_MILLI);
         }
     }
 }

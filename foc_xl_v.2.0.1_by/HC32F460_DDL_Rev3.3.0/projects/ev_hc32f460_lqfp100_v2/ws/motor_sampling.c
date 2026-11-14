@@ -16,6 +16,8 @@
 #include "hc32_ll_tmr4.h"
 #include "hw_board_pins.h"      /* 通道/引脚宏集中 */
 #include "cfg_sampling.h"       /* 模式/标定宏 */
+#include "cfg_fixed.h"          /* Q15 标幺换算 */
+#include "foc_fx.h"             /* Fx_Sat16 */
 #include "TickTimer.h"          /* tickTimer_GetCount */
 #include "rtt_log.h"
 
@@ -65,6 +67,13 @@ static MotorSamplingScale_t s_scale = {
                         CFG_SAMPLING_CURRENT_OFFSET },
     .vbus_scale     = CFG_SAMPLING_VBUS_SCALE,
     .vbus_ch        = HW_ADC_CH_VBUS,
+};
+
+/* 零偏的整数 LSB 镜像，Q15 快路径用；随校准结果更新 */
+static int32_t s_ofs_lsb[3] = {
+    (int32_t)CFG_SAMPLING_CURRENT_OFFSET,
+    (int32_t)CFG_SAMPLING_CURRENT_OFFSET,
+    (int32_t)CFG_SAMPLING_CURRENT_OFFSET,
 };
 
 /*---------------------------------------------------------------------------
@@ -165,6 +174,10 @@ void Motor_Sampling_Init(const MotorSamplingScale_t *scale)
         s_scale = *scale;
     }
 
+    s_ofs_lsb[0] = (int32_t)(s_scale.current_offset[0] + 0.5f);
+    s_ofs_lsb[1] = (int32_t)(s_scale.current_offset[1] + 0.5f);
+    s_ofs_lsb[2] = (int32_t)(s_scale.current_offset[2] + 0.5f);
+
     Motor_Sampling_AdcCfg();
 
     s_u32Seq = 0;
@@ -230,6 +243,50 @@ bool Motor_Sampling_HasNew(void)
     return b;
 }
 
+/*---------------------------------------------------------------------------
+ * 对外：取最近一帧（Q15 标幺）
+ *   i_q15 = (raw - offset) * FX_ADC_I_Q8 >> 8
+ *---------------------------------------------------------------------------*/
+void Motor_GetSampleQ15(MotorSampleQ15_t *s)
+{
+    int32_t dw, dv;
+    int32_t iu, iw, iv;
+
+    if (s == NULL) return;
+
+#if (CFG_SAMPLING_BOARD_IU_SENSOR == 1)
+    {
+        int32_t di = (int32_t)s_u16AdcItotal - s_ofs_lsb[0];
+
+        iu = (di * FX_ADC_I_Q8) >> 8;
+    }
+#else
+    iu = 0;
+#endif
+
+    dw = (int32_t)s_u16AdcIw - s_ofs_lsb[1];
+    iw = (dw * FX_ADC_I_Q8) >> 8;
+
+    dv = (int32_t)s_u16AdcIv - s_ofs_lsb[2];
+    iv = (dv * FX_ADC_I_Q8) >> 8;
+
+#if (CFG_SAMPLING_BOARD_IU_SENSOR != 1)
+    iu = 0 - iv - iw;   /* 板型 0/2：iu = -iv - iw */
+#endif
+
+    s->iu = Fx_Sat16(iu);
+    s->iv = Fx_Sat16(iv);
+    s->iw = Fx_Sat16(iw);
+
+#if (CFG_SAMPLING_USE_REAL_ADC != 0)
+    s->vbus = (float)s_u16AdcVbus * s_scale.vbus_scale;
+#else
+    s->vbus = CFG_SAMPLING_SIM_VBUS_V;
+#endif
+
+    s->seq = s_u32Seq;
+}
+
 /*=============================================================================
  * 上电零电流偏置校准
  *=============================================================================*/
@@ -269,6 +326,10 @@ bool Motor_Sampling_ApplyOffsetCalSilent(void)
     s_scale.current_offset[0] = (float)off_i;
     s_scale.current_offset[1] = (float)off_w;
     s_scale.current_offset[2] = (float)off_v;
+
+    s_ofs_lsb[0] = (int32_t)off_i;
+    s_ofs_lsb[1] = (int32_t)off_w;
+    s_ofs_lsb[2] = (int32_t)off_v;
 
     return true;
 }

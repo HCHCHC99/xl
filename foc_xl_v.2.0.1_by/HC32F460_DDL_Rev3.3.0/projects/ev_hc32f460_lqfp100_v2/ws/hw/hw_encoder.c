@@ -218,6 +218,46 @@ float hw_encoder_get_elec_angle_rad(uint8_t pole_pairs)
     return e;
 }
 
+/* 电角度相位 [0, 2^32)，2^32 = 2π
+ *   与 hw_encoder_get_elec_angle_rad 同源，只是省掉浮点：
+ *   phase = (count - offset) * pp * 2^32 / CPR，dir<0 时按 2^32 取反
+ */
+uint32_t hw_encoder_get_elec_phase(uint8_t pole_pairs)
+{
+    /* 每计数相位增量 K = pp*2^32/CPR（含余数 R），只在极对数变化时算一次。
+     * 之后每拍只做 32 位乘法，避免每拍跑 64 位除法（-O0 下开销很大）。
+     * ph = c*K + c*R/CPR，对 2^32 取模后与原 64 位公式完全等价。 */
+    static uint32_t s_ph_k  = 0u;
+    static uint32_t s_ph_r  = 0u;
+    static uint8_t  s_ph_pp = 0u;
+
+    int32_t  c = (s_count - g_enc_elec_offset) % (int32_t)ENCODER_CPR;
+    uint32_t ph;
+
+    if (c < 0) {
+        c += (int32_t)ENCODER_CPR;
+    }
+
+    if (pole_pairs != s_ph_pp) {
+        uint64_t num = (uint64_t)pole_pairs * 4294967296ULL;
+
+        s_ph_k  = (uint32_t)(num / (uint64_t)ENCODER_CPR);
+        s_ph_r  = (uint32_t)(num % (uint64_t)ENCODER_CPR);
+        s_ph_pp = pole_pairs;
+    }
+
+    ph = (uint32_t)c * s_ph_k;
+    if (s_ph_r != 0u) {
+        ph += ((uint32_t)c * s_ph_r) / (uint32_t)ENCODER_CPR;
+    }
+
+    if (g_enc_elec_dir < 0) {
+        ph = 0u - ph;
+    }
+
+    return ph;
+}
+
 void hw_encoder_update(void)
 {
     uint64_t now_us;

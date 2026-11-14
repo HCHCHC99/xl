@@ -36,4 +36,12 @@ typedef struct {
 /* 计算：输入 valpha/vbeta/vbus → 输出 duty_u/v/w（中心占空比 0~1） */
 void SVPWM_Calc(SvpwmCtx_t *ctx);
 
+/*---------------------------------------------------------------------------
+ * Q15 定点版本（固定 12V 母线归一化）
+ *   输入：valpha/vbeta 为 Q15 标幺，1.0 = 12/sqrt(3) V
+ *   输出：duty_u/v/w 为相对 50% 的偏移，Q15，16384 = 50%，范围 ±16384
+ *---------------------------------------------------------------------------*/
+void SVPWM_CalcQ15(int16_t valpha_q15, int16_t vbeta_q15,
+                   int16_t *duty_u, int16_t *duty_v, int16_t *duty_w);
+
 #endif /* SVPWM_H */

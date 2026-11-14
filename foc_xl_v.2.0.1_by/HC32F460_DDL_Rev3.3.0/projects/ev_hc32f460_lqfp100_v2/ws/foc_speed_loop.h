@@ -52,7 +52,7 @@
 #define SPD_AW_COND_THR_INIT        (0.0f)
 
 /* 速度环输出限幅（iq_ref 上限，mA）：17A × 20% = 3400mA */
-#define SPD_IQ_LIMIT_MA_INIT        (3400.0f)
+#define SPD_IQ_LIMIT_MA_INIT        (2500.0f)
 
 /* 积分项（ki*integral）限幅，mA
  *   带丝杆负载时零速/低速保持力矩需要较大积分储备，默认 2000mA

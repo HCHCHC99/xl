@@ -31,6 +31,15 @@ typedef struct {
     uint32_t seq;   /* 采样序号，每次 EOCA +1 */
 } MotorSample_t;
 
+/* 定点快路径采样：相电流 Q15 标幺（1.0 = FX_I_BASE_A） */
+typedef struct {
+    int16_t  iu;    /* Q15 pu */
+    int16_t  iv;    /* Q15 pu */
+    int16_t  iw;    /* Q15 pu */
+    float    vbus;  /* V，暂保留浮点 */
+    uint32_t seq;
+} MotorSampleQ15_t;
+
 /* 标定系数：ADC 原始值 → 物理量
  *   current = (adc_raw - offset) * current_scale
  *   vbus    = adc_raw * vbus_scale
@@ -54,6 +63,9 @@ void Motor_Sampling_EocaCallback(void);
 
 /* 取最近一帧采样（无临界区，可在 ISR 内调用） */
 void Motor_GetSample(MotorSample_t *s);
+
+/* 取最近一帧采样的 Q15 版本（定点快路径用，ISR 内可调用） */
+void Motor_GetSampleQ15(MotorSampleQ15_t *s);
 
 /* 查询是否有新帧（读取后自动清除） */
 bool Motor_Sampling_HasNew(void);

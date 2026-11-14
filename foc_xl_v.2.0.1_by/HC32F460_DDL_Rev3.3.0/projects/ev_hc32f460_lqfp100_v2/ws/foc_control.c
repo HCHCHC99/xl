@@ -16,6 +16,8 @@
 #include "svpwm.h"
 #include "hw_tmr4_pwm.h"
 #include "cfg_sampling.h"
+#include "cfg_fixed.h"
+#include "foc_fx.h"
 #include "encoder_calib.h"
 #include "hw_board_pins.h"
 
@@ -55,6 +57,16 @@ volatile float    g_fc_vbus           = 0.0f;
 volatile float    g_fc_id             = 0.0f;
 volatile float    g_fc_iq             = 0.0f;
 
+/* Q15 反馈（定点快路径 / 影子对比用） */
+volatile int16_t  g_fc_id_q15         = 0;
+volatile int16_t  g_fc_iq_q15         = 0;
+
+/* 浮点/Q15 影子对比误差，单位 Q15 LSB（1 个 ADC LSB ≈ 27.5 LSB） */
+volatile uint32_t g_fx_id_err_max_lsb = 0;
+volatile uint32_t g_fx_iq_err_max_lsb = 0;
+volatile int16_t  g_fx_id_err_last_lsb = 0;
+volatile int16_t  g_fx_iq_err_last_lsb = 0;
+
 volatile uint32_t g_fc_sample_seq     = 0;
 
 /*---------------------------------------------------------------------------
@@ -69,6 +81,19 @@ volatile uint32_t g_dwt_isr_avg_cyc  = 0;
 volatile uint32_t g_dwt_isr_win_cnt  = 0;
 static uint32_t   s_dwt_sum_cyc      = 0;
 static uint8_t    s_dwt_inited       = 0;
+
+/*---------------------------------------------------------------------------
+ * 分段耗时（FOC_DWT_SEG=1 时有效）
+ *   [0] 编码器 + 采样 + 过流搬运
+ *   [1] Clarke / Park
+ *   [2] Foc_Mode_Step（含电流环 + 前馈 + 限幅）
+ *   [3] 输出链（InvPark + SVPWM + 写占空比）
+ *   每 1024 拍刷新一次平均；对齐期间提前 return，[2][3] 不计入
+ *---------------------------------------------------------------------------*/
+#if (FOC_DWT_SEG != 0)
+volatile uint32_t g_dwt_seg_avg_cyc[4] = { 0u, 0u, 0u, 0u };
+static uint32_t   s_dwt_seg_sum[4]     = { 0u, 0u, 0u, 0u };
+#endif
 
 /* Mode 3 对齐期间标志 */
 volatile uint8_t  g_align_active      = 0u;
@@ -143,6 +168,17 @@ static void Foc_Control_DwtRecord(uint32_t cyc)
         g_dwt_isr_avg_cyc = s_dwt_sum_cyc >> 10;   /* /1024 */
         s_dwt_sum_cyc     = 0u;
         g_dwt_isr_win_cnt = 0u;
+
+#if (FOC_DWT_SEG != 0)
+        {
+            uint32_t i;
+
+            for (i = 0u; i < 4u; i++) {
+                g_dwt_seg_avg_cyc[i] = s_dwt_seg_sum[i] >> 10;
+                s_dwt_seg_sum[i]     = 0u;
+            }
+        }
+#endif
     }
 }
 
@@ -152,9 +188,18 @@ void Foc_Control_Step(void)
     int32_t enc_now;
     float   mech;
     float   theta_e;
+#if (FOC_USE_FIXED == 0)
     float   ialpha, ibeta;
+#endif
+#if (FOC_DWT_SEG != 0)
+    uint32_t ts;
+#endif
 
     g_fc_isr_cnt++;
+
+#if (FOC_DWT_SEG != 0)
+    ts = DWT->CYCCNT;
+#endif
 
     Foc_Control_MeasureDt();
 
@@ -185,9 +230,62 @@ void Foc_Control_Step(void)
     /* ---- 2b. 过流保护搬运 ---- */
     Foc_Protect_PushIsr(g_fc_iu, g_fc_iv, g_fc_iw);
 
+#if (FOC_DWT_SEG != 0)
+    s_dwt_seg_sum[0] += DWT->CYCCNT - ts;
+    ts = DWT->CYCCNT;
+#endif
+
     /* ---- 3. Clarke & Park ---- */
+#if (FOC_USE_FIXED != 0)
+    {
+        MotorSampleQ15_t sq;
+        int16_t  ia15, ib15, id15, iq15;
+        uint32_t ph = hw_encoder_get_elec_phase(FOC_CONTROL_POLE_PAIRS);
+
+        Motor_GetSampleQ15(&sq);
+        ClarkeQ15(sq.iu, sq.iv, sq.iw, &ia15, &ib15);
+        ParkQ15(ia15, ib15, ph, &id15, &iq15);
+
+        g_fc_id_q15 = id15;
+        g_fc_iq_q15 = iq15;
+        g_fc_id = FX_Q15_TO_CUR(id15);
+        g_fc_iq = FX_Q15_TO_CUR(iq15);
+    }
+#else
     Clarke(g_fc_iu, g_fc_iv, g_fc_iw, &ialpha, &ibeta);
     Park(ialpha, ibeta, theta_e, (float *)&g_fc_id, (float *)&g_fc_iq);
+#endif
+
+#if (FOC_USE_FIXED == 0) && (FOC_FX_SHADOW != 0)
+    {
+        MotorSampleQ15_t sq;
+        int16_t  ia15, ib15, id15, iq15;
+        uint32_t ph = hw_encoder_get_elec_phase(FOC_CONTROL_POLE_PAIRS);
+        int32_t  e;
+
+        Motor_GetSampleQ15(&sq);
+        ClarkeQ15(sq.iu, sq.iv, sq.iw, &ia15, &ib15);
+        ParkQ15(ia15, ib15, ph, &id15, &iq15);
+
+        g_fc_id_q15 = id15;
+        g_fc_iq_q15 = iq15;
+
+        e = (int32_t)id15 - FX_CUR_TO_Q15(g_fc_id);
+        g_fx_id_err_last_lsb = (int16_t)e;
+        if (e < 0) e = -e;
+        if ((uint32_t)e > g_fx_id_err_max_lsb) g_fx_id_err_max_lsb = (uint32_t)e;
+
+        e = (int32_t)iq15 - FX_CUR_TO_Q15(g_fc_iq);
+        g_fx_iq_err_last_lsb = (int16_t)e;
+        if (e < 0) e = -e;
+        if ((uint32_t)e > g_fx_iq_err_max_lsb) g_fx_iq_err_max_lsb = (uint32_t)e;
+    }
+#endif
+
+#if (FOC_DWT_SEG != 0)
+    s_dwt_seg_sum[1] += DWT->CYCCNT - ts;
+    ts = DWT->CYCCNT;
+#endif
 
     /* ---- 3b. Mode 3 对齐期间：ISR 不碰 PWM ----
      *   编码器/电流/角度已更新完（第 1~3 步），
@@ -201,10 +299,17 @@ void Foc_Control_Step(void)
     /* ---- 4. 控制链 ---- */
     {
         FocCmd_t  cmd;
+#if (FOC_USE_FIXED == 0)
         float     valpha, vbeta;
         SvpwmCtx_t ctx;
+#endif
 
         Foc_Mode_Step(FC_ISR_TS_S, &cmd);
+
+#if (FOC_DWT_SEG != 0)
+        s_dwt_seg_sum[2] += DWT->CYCCNT - ts;
+        ts = DWT->CYCCNT;
+#endif
 
         if (cmd.enable) {
             if (!s_if_resumed) {
@@ -214,6 +319,20 @@ void Foc_Control_Step(void)
 
             s_last_static_mode = FC_LAST_MODE_IN_IF;
 
+#if (FOC_USE_FIXED != 0)
+            /* 定点输出链：dq 电压 Q15 -> InvParkQ15 -> SVPWM Q15 -> 比较值
+             *   相位先乘一半再左移，避开 float 在 2^32 附近的溢出（丢 1 LSB） */
+            {
+                int16_t  vd15 = Fx_Sat16(FX_VOL_TO_Q15(cmd.vd));
+                int16_t  vq15 = Fx_Sat16(FX_VOL_TO_Q15(cmd.vq));
+                int16_t  va15, vb15, du15, dv15, dw15;
+                uint32_t ph   = (uint32_t)(cmd.theta_e * (FX_PHASE_PER_RAD * 0.5f)) << 1;
+
+                InvParkQ15(vd15, vq15, ph, &va15, &vb15);
+                SVPWM_CalcQ15(va15, vb15, &du15, &dv15, &dw15);
+                hw_tmr4_pwm_set_duty_q15(du15, dv15, dw15);
+            }
+#else
             InvPark(cmd.vd, cmd.vq, cmd.theta_e, &valpha, &vbeta);
 
             ctx.valpha = valpha;
@@ -224,6 +343,7 @@ void Foc_Control_Step(void)
             hw_tmr4_pwm_set_duty3(ctx.duty_u * 100.0f,
                                   ctx.duty_v * 100.0f,
                                   ctx.duty_w * 100.0f);
+#endif
         } else {
             s_if_resumed = 0u;
 
@@ -238,6 +358,10 @@ void Foc_Control_Step(void)
                 }
             }
         }
+
+#if (FOC_DWT_SEG != 0)
+        s_dwt_seg_sum[3] += DWT->CYCCNT - ts;
+#endif
     }
 }
 
@@ -263,6 +387,7 @@ void Foc_Control_Init(void)
     if (s_ticks_per_us == 0u) s_ticks_per_us = 1u;
 
     Foc_Control_DwtInit();
+    Foc_Fx_Init();
     Foc_Control_ResetStats();
 
     stcIrq.enIntSrc    = INT_SRC_ADC1_EOCA;
@@ -320,6 +445,13 @@ void Foc_Control_ResetStats(void)
     g_dwt_isr_avg_cyc  = 0;
     g_dwt_isr_win_cnt  = 0;
     s_dwt_sum_cyc      = 0;
+
+    g_fc_id_q15        = 0;
+    g_fc_iq_q15        = 0;
+    g_fx_id_err_max_lsb = 0;
+    g_fx_iq_err_max_lsb = 0;
+    g_fx_id_err_last_lsb = 0;
+    g_fx_iq_err_last_lsb = 0;
 
     s_ts_init      = 0u;
     s_prev_ts_cnt  = 0u;

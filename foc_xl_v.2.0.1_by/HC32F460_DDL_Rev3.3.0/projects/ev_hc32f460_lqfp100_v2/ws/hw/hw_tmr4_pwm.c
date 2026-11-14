@@ -726,6 +726,47 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_duty3(float duPct, float dvPct, float dwPct)
 }
 
 /*=============================================================================
+ * 定点占空比（Q15 偏移）
+ *   入参 = dutyPct - 50%，Q15：16384 = 50% 周期，范围 ±16384
+ *   互补模式：cmp = CPSR - CPSR/2 - (off*CPSR)/2^15，纯整数
+ *   其他模式：回落到浮点 set_duty3（仅非主流配置会走到）
+ *=============================================================================*/
+tmr4_pwm_err_t hw_tmr4_pwm_set_duty_q15(int16_t du_off, int16_t dv_off, int16_t dw_off)
+{
+    int16_t off[3];
+    int32_t cpsr;
+    bool    allComp = true;
+    int     i;
+
+    if (!s_bConfigured) return TMR4_PWM_ERR_NOT_INIT;
+
+    off[0] = du_off;
+    off[1] = dv_off;
+    off[2] = dw_off;
+
+    for (i = 0; i < 3; i++) {
+        s_centerPct[i] = 50.0f + (float)off[i] * (100.0f / 32768.0f);
+        if (s_outputType[i] != TMR4_OUTPUT_COMPLEMENTARY) {
+            allComp = false;
+        }
+    }
+
+    if (!allComp) {
+        return hw_tmr4_pwm_set_duty3(s_centerPct[0], s_centerPct[1], s_centerPct[2]);
+    }
+
+    cpsr = (int32_t)s_ctx.periodTicks - 1;
+    for (i = 0; i < 3; i++) {
+        int32_t x = cpsr - (cpsr >> 1) - (((int32_t)off[i] * cpsr) >> 15);
+
+        if (x < 1)        x = 1;
+        if (x > cpsr - 1) x = cpsr - 1;
+        OccrLWrite(i, s_pairs[i].ocChL, (uint16_t)x);
+    }
+    return TMR4_PWM_OK;
+}
+
+/*=============================================================================
  * Dead-time-aware duty
  *=============================================================================*/
 tmr4_pwm_err_t hw_tmr4_pwm_set_duty3_deadtime(float highU, float highV, float highW)

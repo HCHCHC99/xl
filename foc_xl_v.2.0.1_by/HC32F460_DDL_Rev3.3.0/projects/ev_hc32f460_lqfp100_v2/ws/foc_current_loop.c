@@ -18,6 +18,9 @@
 
 #include "foc_current_loop.h"
 #include "pid_ctrl.h"
+#include "pid_fx.h"
+#include "foc_fx.h"
+#include "cfg_fixed.h"
 #include "hw_encoder.h"
 #include "cfg_motor.h"
 #include "clarke_park.h"     /* ONE_DIV_SQRT3_F */
@@ -96,11 +99,35 @@ static float s_iq_f = 0.0f;
 /* 进入预热计数 */
 static uint16_t s_warmup_cnt = 0u;
 
+#if (FOC_USE_FIXED != 0)
+/*---------------------------------------------------------------------------
+ * 定点路径状态
+ *---------------------------------------------------------------------------*/
+static PidFx_t  s_pidfx_d;
+static PidFx_t  s_pidfx_q;
+
+static int16_t  s_id_f15       = 0;
+static int16_t  s_iq_f15       = 0;
+static int16_t  s_vq_prev15    = 0;
+static int16_t  s_we_f15       = 0;   /* 滤波后的电角速度 Q15（1.0 = FX_WE_BASE_RAD_S） */
+static int16_t  s_vlim15       = 0;
+static int16_t  s_iterm_max15  = 0;
+
+/* 浮点增益缓存，Watch 改完后换算成 Q15 */
+static float    s_kp           = CL_KP_INIT;
+static float    s_ki           = CL_KI_INIT;
+static float    s_kd           = CL_KD_INIT;
+static float    s_iterm_max_v  = CL_ITERM_MAX_INIT;
+#endif
+
 /*---------------------------------------------------------------------------
  * L5 反馈镜像
  *---------------------------------------------------------------------------*/
 extern volatile float g_fc_id;
 extern volatile float g_fc_iq;
+extern volatile int16_t g_fc_id_q15;
+extern volatile int16_t g_fc_iq_q15;
+extern volatile int32_t g_fc_enc_delta;
 
 /*---------------------------------------------------------------------------
  * 内部工具
@@ -158,6 +185,43 @@ static void cl_set_iterm(float v)
     (void)s_pid_q.ops->set_iterm_limit(&s_priv_q, v);
 }
 
+#if (FOC_USE_FIXED != 0)
+/*---------------------------------------------------------------------------
+ * 定点参数换算
+ *   kp: V/A -> 标幺 Q15
+ *   ki: V/A/s -> 每拍增量 Q15
+ *   kd: V/(A/s) -> 每拍微分 Q15（当前 kd=0）
+ *---------------------------------------------------------------------------*/
+static void cl_fx_apply_gains(void)
+{
+    int32_t kp15 = FX_KP_CUR_Q15(s_kp);
+    int32_t ki15 = FX_KI_CUR_TICK_Q15(s_ki);
+    int32_t kd15 = (int32_t)(s_kd * FX_CTRL_HZ * FX_I_BASE_A / FX_V_BASE_V * 32768.0f);
+
+    PidFx_SetGains(&s_pidfx_d, kp15, ki15, kd15);
+    PidFx_SetGains(&s_pidfx_q, kp15, ki15, kd15);
+    PidFx_SetDiffAlpha(&s_pidfx_d, (int16_t)(CL_DIFF_ALPHA_INIT * 32768.0f));
+    PidFx_SetDiffAlpha(&s_pidfx_q, (int16_t)(CL_DIFF_ALPHA_INIT * 32768.0f));
+}
+
+static void cl_fx_apply_limits(void)
+{
+    s_vlim15      = Fx_Sat16(FX_VOL_TO_Q15(s_vlim));
+    s_iterm_max15 = Fx_Sat16(FX_VOL_TO_Q15(s_iterm_max_v));
+
+    PidFx_SetLimits(&s_pidfx_d, (int16_t)(-s_vlim15), s_vlim15);
+    PidFx_SetLimits(&s_pidfx_q, (int16_t)(-s_vlim15), s_vlim15);
+
+    if (s_iterm_max15 > 0) {
+        PidFx_SetITermMax(&s_pidfx_d, s_iterm_max15);
+        PidFx_SetITermMax(&s_pidfx_q, s_iterm_max15);
+    } else {
+        PidFx_SetITermMax(&s_pidfx_d, 0);
+        PidFx_SetITermMax(&s_pidfx_q, 0);
+    }
+}
+#endif
+
 /*=============================================================================
  * 初始化
  *=============================================================================*/
@@ -202,6 +266,23 @@ void Foc_CurrentLoop_Init(void)
 
     (void)s_pid_d.ops->set_feedforward(&s_priv_d, 0.0f, 0.0f, false, false);
     (void)s_pid_q.ops->set_feedforward(&s_priv_q, 0.0f, 0.0f, false, false);
+
+#if (FOC_USE_FIXED != 0)
+    PidFx_Init(&s_pidfx_d);
+    PidFx_Init(&s_pidfx_q);
+
+    s_kp          = CL_KP_INIT;
+    s_ki          = CL_KI_INIT;
+    s_kd          = CL_KD_INIT;
+    s_iterm_max_v = g_cl_iterm_max_watch;
+    s_id_f15      = 0;
+    s_iq_f15      = 0;
+    s_vq_prev15   = 0;
+    s_we_f15      = 0;
+
+    cl_fx_apply_gains();
+    cl_fx_apply_limits();
+#endif
 
     s_id_ref         = 0.0f;
     s_iq_ref         = 0.0f;
@@ -253,6 +334,15 @@ void Foc_CurrentLoop_Reset(void)
     s_iq_f          = 0.0f;
     s_warmup_cnt    = 0u;   /* 重新预热，用当前 g_cl_warmup_ticks */
     s_zero_out      = false;
+
+#if (FOC_USE_FIXED != 0)
+    PidFx_Reset(&s_pidfx_d);
+    PidFx_Reset(&s_pidfx_q);
+    s_id_f15    = 0;
+    s_iq_f15    = 0;
+    s_vq_prev15 = 0;
+    s_we_f15    = 0;
+#endif
 }
 
 /*=============================================================================
@@ -289,11 +379,23 @@ void Foc_CurrentLoop_SetGains(float kp, float ki, float kd)
     }
     (void)s_pid_d.ops->set_param(&s_priv_d, kp, ki, kd);
     (void)s_pid_q.ops->set_param(&s_priv_q, kp, ki, kd);
+
+#if (FOC_USE_FIXED != 0)
+    s_kp = kp;
+    s_ki = ki;
+    s_kd = kd;
+    cl_fx_apply_gains();
+#endif
 }
 
 void Foc_CurrentLoop_SetITermMax(float v)
 {
     cl_set_iterm(v);
+
+#if (FOC_USE_FIXED != 0)
+    s_iterm_max_v = (v < 0.0f) ? 0.0f : v;
+    cl_fx_apply_limits();
+#endif
 }
 
 void Foc_CurrentLoop_SetAntiWindup(uint32_t mask, float cond_thr)
@@ -331,6 +433,10 @@ void Foc_CurrentLoop_SetVmax(float vmax_v)
     }
     s_vmax = vmax_v;
     cl_refresh_limits();
+
+#if (FOC_USE_FIXED != 0)
+    cl_fx_apply_limits();
+#endif
 }
 
 void Foc_CurrentLoop_ApplyParams(float kp, float ki, float kd,
@@ -354,13 +460,204 @@ void Foc_CurrentLoop_ApplyParams(float kp, float ki, float kd,
     if (fb_alpha < 0.0f) fb_alpha = 0.0f;
     if (fb_alpha > 1.0f) fb_alpha = 1.0f;
     g_cl_fb_alpha = fb_alpha;
+
+#if (FOC_USE_FIXED != 0)
+    s_kp          = kp;
+    s_ki          = ki;
+    s_kd          = kd;
+    s_iterm_max_v = (iterm_max_v < 0.0f) ? 0.0f : iterm_max_v;
+    cl_fx_apply_gains();
+    cl_fx_apply_limits();
+#endif
 }
 
 /*=============================================================================
  * 每拍计算
  *=============================================================================*/
+#if (FOC_USE_FIXED != 0)
+/*---------------------------------------------------------------------------
+ * 定点路径：反馈、PI、mode8 前馈、限幅全部用 Q15
+ *   对外仍返回伏特和 rad，保持 L5 接口不变
+ *---------------------------------------------------------------------------*/
+static void cl_step_fixed(float *vd, float *vq, float *theta_e)
+{
+    float    th;
+    int16_t  fb_d, fb_q;
+    int16_t  ref_d, ref_q;
+    int32_t  out_d, out_q;
+    int32_t  vd_tot, vq_tot;
+    int32_t  vd_ff = 0;
+    int32_t  vq_ff = 0;
+    int32_t  vlim  = (int32_t)s_vlim15;
+    uint32_t vmag_sq;
+    cl_limit_reason_t reason = CL_LIMIT_NONE;
+
+    if ((vd == NULL) || (vq == NULL) || (theta_e == NULL)) {
+        return;
+    }
+
+    s_zero_out = false;
+
+    if (!s_ready) {
+        *vd = 0.0f;
+        *vq = 0.0f;
+        *theta_e = 0.0f;
+        return;
+    }
+
+    th = hw_encoder_get_elec_angle_rad(CFG_MOTOR_POLE_PAIRS);
+
+    /* ---- 预热 ---- */
+    if (s_warmup_cnt < g_cl_warmup_ticks) {
+        s_warmup_cnt++;
+        s_vq_prev15 = 0;
+        *vd = 0.0f;
+        *vq = 0.0f;
+        *theta_e = th;
+        return;
+    }
+
+    /* ---- 反馈 + EMA ---- */
+    fb_d = g_fc_id_q15;
+    fb_q = g_fc_iq_q15;
+    {
+        int32_t a = FX_FLOAT_TO_Q15(g_cl_fb_alpha);
+
+        if (a < 0) a = 0;
+        if (a > 32767) a = 32767;
+
+        if (a >= 32767) {
+            s_id_f15 = fb_d;
+            s_iq_f15 = fb_q;
+        } else {
+            s_id_f15 = Fx_Sat16((int32_t)s_id_f15 +
+                                (((int32_t)fb_d - (int32_t)s_id_f15) * a >> 15));
+            s_iq_f15 = Fx_Sat16((int32_t)s_iq_f15 +
+                                (((int32_t)fb_q - (int32_t)s_iq_f15) * a >> 15));
+        }
+
+        fb_d = s_id_f15;
+        fb_q = s_iq_f15;
+    }
+
+    /* ---- ref 斜坡（保持浮点，防阶跃冲击），再转 Q15 ---- */
+    s_id_ref_ramped = cl_ramp(s_id_ref, s_id_ref_ramped, g_cl_ref_slew);
+    s_iq_ref_ramped = cl_ramp(s_iq_ref, s_iq_ref_ramped, g_cl_ref_slew);
+
+    ref_d = Fx_Sat16(FX_CUR_TO_Q15(s_id_ref_ramped));
+    ref_q = Fx_Sat16(FX_CUR_TO_Q15(s_iq_ref_ramped));
+
+    /* ---- 定点 PI ---- */
+    out_d = PidFx_Calc(&s_pidfx_d, ref_d, fb_d);
+    out_q = PidFx_Calc(&s_pidfx_q, ref_q, fb_q);
+
+    /* ---- mode8：dq 解耦 + 反电动势前馈（定点）---- */
+    g_cl_we_rad_s = 0.0f;
+    g_cl_vd_ff    = 0.0f;
+    g_cl_vq_ff    = 0.0f;
+    if (g_cl_ff_enable) {
+        int32_t we_raw = (int32_t)g_fc_enc_delta * 1200;   /* Q15，1.0 = FX_WE_BASE */
+        int16_t we15;
+        int32_t rs_q16, ls_q16, fl_q16, t_ls;
+
+        if (we_raw > 32767)  we_raw = 32767;
+        if (we_raw < -32768) we_raw = -32768;
+
+        s_we_f15 = (int16_t)((int32_t)s_we_f15 + ((we_raw - (int32_t)s_we_f15) >> 5));
+        we15 = s_we_f15;
+
+        rs_q16 = (int32_t)(g_cl_ff_rs_ohm / FX_Z_BASE_OHM * 65536.0f);
+        ls_q16 = (int32_t)(g_cl_ff_ls_uh * 1e-6f / FX_L_BASE_H * 65536.0f);
+        fl_q16 = (int32_t)(g_cl_ff_flux_vs / FX_FLUX_BASE_VS * 65536.0f);
+
+        t_ls = (int32_t)(((int64_t)we15 * (int64_t)ls_q16) >> 16);   /* Q15: we*Ls */
+
+        vd_ff = Fx_Sat16((int32_t)(-((int64_t)t_ls * (int64_t)fb_q) >> 15));
+        vq_ff = Fx_Sat16((int32_t)(((int64_t)t_ls * (int64_t)fb_d) >> 15) +
+                         (int32_t)(((int64_t)we15 * (int64_t)fl_q16) >> 16) +
+                         (int32_t)(((int64_t)rs_q16 * (int64_t)ref_q) >> 16));
+
+        g_cl_we_rad_s = FX_Q15_TO_FLOAT(we15) * FX_WE_BASE_RAD_S;
+        g_cl_vd_ff    = FX_Q15_TO_VOL((int16_t)vd_ff);
+        g_cl_vq_ff    = FX_Q15_TO_VOL((int16_t)vq_ff);
+    } else {
+        s_we_f15 = 0;
+    }
+
+    vd_tot = out_d + vd_ff;
+    vq_tot = out_q + vq_ff;
+
+    /* 先钳到 Q15 范围，避免平方和溢出 */
+    vd_tot = Fx_Sat16(vd_tot);
+    vq_tot = Fx_Sat16(vq_tot);
+
+    vmag_sq = (uint32_t)(vd_tot * vd_tot) + (uint32_t)(vq_tot * vq_tot);
+
+    /* 幅值只给 Watch 看：用 FPU sqrtf（约 15 周期），
+     * 不再每拍跑一次 16 轮整数 isqrt（约 100+ 周期） */
+    s_vmag_raw = sqrtf((float)vmag_sq) * (FX_V_BASE_V / 32768.0f);
+
+    /* ---- 受限判定（保护 > 电压 > 自身限幅）---- */
+    if (g_fp_state != FP_STATE_NORMAL) {
+        reason = CL_LIMIT_PROTECT;
+    } else if (vmag_sq > (uint32_t)(vlim * vlim)) {
+        reason = CL_LIMIT_VOLTAGE;
+    } else if ((out_d >= vlim) || (out_d <= -vlim) ||
+               (out_q >= vlim) || (out_q <= -vlim)) {
+        reason = CL_LIMIT_SELF;
+    } else {
+        reason = CL_LIMIT_NONE;
+    }
+
+    s_limit_reason = reason;
+
+    if (reason != CL_LIMIT_NONE) {
+        if (s_sat_cnt < 0xFFFFu) {
+            s_sat_cnt++;
+        }
+    } else {
+        s_sat_cnt = 0u;
+    }
+
+    /* ---- vq 斜率限制 ---- */
+    {
+        int32_t slew15 = FX_VOL_TO_Q15(g_cl_vq_slew);
+
+        if (slew15 > 0) {
+            if (vq_tot > (int32_t)s_vq_prev15 + slew15) {
+                vq_tot = (int32_t)s_vq_prev15 + slew15;
+            } else if (vq_tot < (int32_t)s_vq_prev15 - slew15) {
+                vq_tot = (int32_t)s_vq_prev15 - slew15;
+            }
+        }
+        s_vq_prev15 = Fx_Sat16(vq_tot);
+        vq_tot = s_vq_prev15;
+    }
+
+    /* ---- 最终矢量限幅 ---- */
+    vmag_sq = (uint32_t)(vd_tot * vd_tot) + (uint32_t)(vq_tot * vq_tot);
+    if (vmag_sq > (uint32_t)(vlim * vlim)) {
+        uint32_t vmag = Fx_ISqrt32(vmag_sq);
+
+        if (vmag > 0u) {
+            int32_t k15 = (vlim << 15) / (int32_t)vmag;
+
+            vd_tot = (vd_tot * k15) >> 15;
+            vq_tot = (vq_tot * k15) >> 15;
+        }
+    }
+
+    *vd      = FX_Q15_TO_VOL(Fx_Sat16(vd_tot));
+    *vq      = FX_Q15_TO_VOL(Fx_Sat16(vq_tot));
+    *theta_e = th;
+}
+#endif
+
 void Foc_CurrentLoop_Step(float *vd, float *vq, float *theta_e)
 {
+#if (FOC_USE_FIXED != 0)
+    cl_step_fixed(vd, vq, theta_e);
+#else
     float fb_d, fb_q, th;
     float out_d, out_q;
     float vd_tot, vq_tot;
@@ -481,6 +778,7 @@ void Foc_CurrentLoop_Step(float *vd, float *vq, float *theta_e)
     *vd      = vd_tot;
     *vq      = vq_tot;
     *theta_e = th;
+#endif
 }
 
 /*=============================================================================

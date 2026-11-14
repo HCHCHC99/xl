@@ -45,6 +45,8 @@ float   hw_encoder_get_mech_angle_rad(void);
 /* 电角度 [0, 2π)，已扣 g_enc_elec_offset 并按 g_enc_elec_dir 翻转 */
 float   hw_encoder_get_elec_angle_rad(uint8_t pole_pairs);
 
+/* 电角度相位 [0, 2^32)，2^32 = 2π，定点快路径用 */
+uint32_t hw_encoder_get_elec_phase(uint8_t pole_pairs);
 int32_t hw_encoder_get_count(void);
 float   hw_encoder_get_angle_deg(void);
 float   hw_encoder_get_speed_rpm(void);

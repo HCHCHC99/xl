@@ -313,7 +313,7 @@
           </ArmAdsMisc>
           <Cads>
             <interw>1</interw>
-            <Optim>1</Optim>
+            <Optim>4</Optim>
             <oTime>0</oTime>
             <SplitLS>0</SplitLS>
             <OneElfS>1</OneElfS>
@@ -957,6 +957,16 @@
               <FileName>foc_current_loop.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\ws\foc_current_loop.c</FilePath>
+            </File>
+            <File>
+              <FileName>foc_fx.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\ws\foc_fx.c</FilePath>
+            </File>
+            <File>
+              <FileName>pid_fx.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\ws\pid_fx.c</FilePath>
             </File>
             <File>
               <FileName>foc_mode.c</FileName>
@@ -1958,6 +1968,16 @@
               <FileName>foc_current_loop.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\ws\foc_current_loop.c</FilePath>
+            </File>
+            <File>
+              <FileName>foc_fx.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\ws\foc_fx.c</FilePath>
+            </File>
+            <File>
+              <FileName>pid_fx.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\ws\pid_fx.c</FilePath>
             </File>
             <File>
               <FileName>foc_mode.c</FileName>

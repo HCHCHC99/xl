@@ -136,6 +136,10 @@ tmr4_pwm_err_t hw_tmr4_pwm_set_duty(tmr4_pwm_channel_t channel, uint16_t dutyU16
 tmr4_pwm_err_t hw_tmr4_pwm_set_duty_float(tmr4_pwm_channel_t channel, float centerPct);
 tmr4_pwm_err_t hw_tmr4_pwm_set_duty3(float duPct, float dvPct, float dwPct);
 
+/* 定点占空比：入参为相对 50% 的 Q15 偏移（±16384），内部直接算比较值
+ *   仅互补模式走纯整数；其他输出模式回落到浮点接口 */
+tmr4_pwm_err_t hw_tmr4_pwm_set_duty_q15(int16_t du_off, int16_t dv_off, int16_t dw_off);
+
 /* Dead-time-aware; 输入 = 每相高侧有效占空比 */
 tmr4_pwm_err_t hw_tmr4_pwm_set_duty3_deadtime(float highU, float highV, float highW);
 

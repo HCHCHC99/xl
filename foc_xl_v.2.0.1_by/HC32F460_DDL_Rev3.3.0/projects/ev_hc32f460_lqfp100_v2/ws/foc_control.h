@@ -42,6 +42,10 @@ extern volatile uint32_t g_dwt_isr_max_cyc;
 extern volatile uint32_t g_dwt_isr_avg_cyc;
 extern volatile uint32_t g_dwt_isr_win_cnt;
 
+/* 分段耗时（cfg_fixed.h 的 FOC_DWT_SEG=1 时有效）
+ *   [0] 采样  [1] Clarke/Park  [2] 控制链  [3] 输出链 */
+extern volatile uint32_t g_dwt_seg_avg_cyc[4];
+
 extern volatile int32_t  g_fc_enc_count;
 extern volatile int32_t  g_fc_enc_delta;
 extern volatile float    g_fc_enc_mech_deg;
@@ -50,6 +54,16 @@ extern volatile float    g_fc_enc_speed_rpm;
 
 extern volatile float    g_fc_id;
 extern volatile float    g_fc_iq;
+
+/* Q15 反馈（定点快路径 / 影子对比） */
+extern volatile int16_t  g_fc_id_q15;
+extern volatile int16_t  g_fc_iq_q15;
+
+/* 浮点/Q15 影子对比误差，单位 Q15 LSB */
+extern volatile uint32_t g_fx_id_err_max_lsb;
+extern volatile uint32_t g_fx_iq_err_max_lsb;
+extern volatile int16_t  g_fx_id_err_last_lsb;
+extern volatile int16_t  g_fx_iq_err_last_lsb;
 
 extern volatile float    g_fc_i_total;
 extern volatile float    g_fc_iu;

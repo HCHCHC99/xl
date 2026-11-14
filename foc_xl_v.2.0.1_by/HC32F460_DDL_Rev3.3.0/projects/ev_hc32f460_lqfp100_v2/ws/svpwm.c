@@ -3,6 +3,7 @@
  *=============================================================================*/
 
 #include "svpwm.h"
+#include "foc_fx.h"
 #include <math.h>
 
 #define SQRT3          1.7320508f
@@ -123,4 +124,120 @@ void SVPWM_Calc(SvpwmCtx_t *ctx)
     ctx->duty_u = clampf(ctx->duty_u, 0.0f, 1.0f);
     ctx->duty_v = clampf(ctx->duty_v, 0.0f, 1.0f);
     ctx->duty_w = clampf(ctx->duty_w, 0.0f, 1.0f);
+}
+
+/*=============================================================================
+ * Q15 定点版本
+ *
+ * 输入 va/vb 已经是标幺值（1.0 = 12/sqrt(3) V），所以浮点版里的
+ * x/y/z 和扇区判断都变成与 vbus 无关的定点乘加。
+ *=============================================================================*/
+#define SQ15_0866   28378   /* 0.8660254 * 32768 */
+#define SQ15_05     16384   /* 0.5      * 32768 */
+#define SQ15_ONE    32768   /* 1.0      * 32768 */
+
+static uint8_t Svpwm_SectorQ15(int16_t va, int16_t vb)
+{
+    int32_t v1 = (int32_t)vb;
+    int32_t v2 = ((int32_t)SQ15_0866 * (int32_t)va -
+                  (int32_t)SQ15_05   * (int32_t)vb) >> 15;
+    int32_t v3 = (-(int32_t)SQ15_0866 * (int32_t)va -
+                  (int32_t)SQ15_05   * (int32_t)vb) >> 15;
+
+    uint8_t a = (v1 >= 0) ? 1u : 0u;
+    uint8_t b = (v2 >= 0) ? 1u : 0u;
+    uint8_t c = (v3 >= 0) ? 1u : 0u;
+    uint8_t s = (uint8_t)(a + 2u * b + 4u * c);
+
+    switch (s) {
+    case 3: return 1;
+    case 1: return 2;
+    case 5: return 3;
+    case 4: return 4;
+    case 6: return 5;
+    case 2: return 6;
+    default: return 1;
+    }
+}
+
+static int16_t Svpwm_ClampOffset(int32_t v)
+{
+    if (v > 16384)  return 16384;
+    if (v < -16384) return -16384;
+    return (int16_t)v;
+}
+
+void SVPWM_CalcQ15(int16_t valpha_q15, int16_t vbeta_q15,
+                   int16_t *duty_u, int16_t *duty_v, int16_t *duty_w)
+{
+    int16_t va = valpha_q15;
+    int16_t vb = vbeta_q15;
+    uint32_t vmag_sq;
+    int32_t  x, y, z;
+    int32_t  t1, t2, sum, t0, ta, tb, tc;
+    int32_t  ou, ov, ow;
+    uint8_t  sector;
+
+    if ((duty_u == 0) || (duty_v == 0) || (duty_w == 0)) {
+        return;
+    }
+
+    /* 超线性区：先把矢量缩到单位圆，和浮点版行为一致 */
+    vmag_sq = (uint32_t)((int32_t)va * (int32_t)va) +
+              (uint32_t)((int32_t)vb * (int32_t)vb);
+    if (vmag_sq > (uint32_t)(SQ15_ONE * SQ15_ONE)) {
+        uint32_t vmag = Fx_ISqrt32(vmag_sq);
+
+        if (vmag > 0u) {
+            int32_t k = (SQ15_ONE << 15) / (int32_t)vmag;
+
+            va = (int16_t)(((int32_t)va * k) >> 15);
+            vb = (int16_t)(((int32_t)vb * k) >> 15);
+        }
+    }
+
+    sector = Svpwm_SectorQ15(va, vb);
+
+    x = (int32_t)vb;
+    y = ((int32_t)SQ15_0866 * (int32_t)va + (int32_t)SQ15_05 * (int32_t)vb) >> 15;
+    z = (-(int32_t)SQ15_0866 * (int32_t)va + (int32_t)SQ15_05 * (int32_t)vb) >> 15;
+
+    switch (sector) {
+    case 1: t1 = -z; t2 =  x; break;
+    case 2: t1 =  z; t2 =  y; break;
+    case 3: t1 =  x; t2 = -y; break;
+    case 4: t1 = -x; t2 =  z; break;
+    case 5: t1 = -y; t2 = -z; break;
+    case 6: t1 =  y; t2 = -x; break;
+    default: t1 = 0; t2 = 0; break;
+    }
+
+    sum = t1 + t2;
+    if (sum > SQ15_ONE) {
+        int32_t k = (SQ15_ONE << 15) / sum;
+
+        t1 = (t1 * k) >> 15;
+        t2 = (t2 * k) >> 15;
+    }
+
+    t0 = SQ15_ONE - t1 - t2;
+    if (t0 < 0) t0 = 0;
+
+    ta = t0 >> 1;
+    tb = ta + t1;
+    tc = tb + t2;
+
+    switch (sector) {
+    case 1: ou = SQ15_05 - ta; ov = SQ15_05 - tb; ow = SQ15_05 - tc; break;
+    case 2: ou = SQ15_05 - tb; ov = SQ15_05 - ta; ow = SQ15_05 - tc; break;
+    case 3: ou = SQ15_05 - tc; ov = SQ15_05 - ta; ow = SQ15_05 - tb; break;
+    case 4: ou = SQ15_05 - tc; ov = SQ15_05 - tb; ow = SQ15_05 - ta; break;
+    case 5: ou = SQ15_05 - tb; ov = SQ15_05 - tc; ow = SQ15_05 - ta; break;
+    case 6: ou = SQ15_05 - ta; ov = SQ15_05 - tc; ow = SQ15_05 - tb; break;
+    default: ou = 0; ov = 0; ow = 0; break;
+    }
+
+    *duty_u = Svpwm_ClampOffset(ou);
+    *duty_v = Svpwm_ClampOffset(ov);
+    *duty_w = Svpwm_ClampOffset(ow);
 }
