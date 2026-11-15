@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# PyInstaller 构建产物
+tools/motor_scope_native/build/
+tools/motor_scope_native/dist/
+
+# Keil MDK 编译输出
+HC32F460_DDL_Rev3.3.0/projects/**/MDK/output/
+*.axf
+*.crf
+*.o
+*.d
+*.dep
+*.lnp
+*.map
+*.iex
+*.uvguix.*
+JLinkLog.txt
+JLinkSettings.ini
+
+# 系统文件
+Thumbs.db
+.DS_Store

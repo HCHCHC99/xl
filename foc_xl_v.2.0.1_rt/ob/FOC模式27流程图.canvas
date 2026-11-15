@@ -1,0 +1,31 @@
+{
+	"nodes":[
+		{"id":"n1","type":"text","text":"## 模式27 功角闭环拖动\n**磁场角 = 转子实测角 + delta —— 给磁场“装上眼睛”**\n\n一句话：磁场不再按时间自转（那是 mode 26），而是每 50µs 问编码器“转子在哪”，把磁场打在转子前方固定功角 delta 处。delta 被钉死（±0.1° 级）→ **不可能失步**。\n\n转速不由指令决定：电压定转速（BEMF 平衡，直流电机式），调速旋钮 = g_dcl_volt_v。\n\n入口：Watch 写 comm_mode = 27","x":-260,"y":0,"width":460,"height":260,"color":"4"},
+		{"id":"n2","type":"text","text":"### 1. 校准 BETA：磁场钉 90°，2s\n吸附转子 N 极到 90°（与 mode 25/26 完全相同）","x":-260,"y":320,"width":460,"height":110},
+		{"id":"n3","type":"text","text":"### 2. 校准 ALPHA：磁场钉 0°，2s → 锁零点（双帧）\n控制帧 s_off_rel = 锁相瞬间相对计数\n（RUN 转子电角 = mod((s_enc_pos−s_off_rel)×dir, CPR)，锁相瞬间=0）\n显示帧 g_dcl_offset = hw 绝对帧（与 mode 20/25/26 同框架可比）\n并同步 Foc_Core_SetAlignOffset（core 观测同帧）","x":-260,"y":490,"width":460,"height":180},
+		{"id":"n4","type":"text","text":"### 3. LOCKED（锁定成功）\n打印：LOCKED off= deg -> run dlt init->targ tr= ms","x":-260,"y":730,"width":460,"height":110,"color":"4"},
+		{"id":"n5","type":"text","text":"### 4. delta 爬坡（ISR tick 计时，无定时器）\ndelta 从 init(5°) 线性爬到 targ(45°)，历时 tr(2000ms)\nvalue = init + (targ−init)×clamp(elapsed/tr, 0, 1)\n\ninit/targ/tr 每拍实时读 Watch（运行中改 = 按新值重算，会跳变）\ntr = 0 → 立即到目标；到点置 RAMP_DONE（每次运行仅一次）\n三参数 Start 不复位（可预设）；volt Start 复位 0.6V","x":-260,"y":900,"width":460,"height":210},
+		{"id":"n6","type":"text","text":"### 5. RUN 每拍循环（20kHz，禁止打印）\n① OC 检查（原始 pData）\n② 读编码器：wrap-safe 差分 → ±32 counts 限幅 → s_enc_pos 累加\n　（物理极限 7800rpm = 单拍上限 26.6 counts，超出必是毛刺；\n　 限幅把毛刺对功角框架的永久污染封顶 ±2.8° 电角）\n③ 转子电角 = mod((s_enc_pos − s_off_rel)×dir, CPR)\n④ 磁场角 fa = 转子角 + delta_now → valpha=V·cos(fa), vbeta=V·sin(fa) → SVPWM\n⑤ 观测：id/iq（真实转子系）、200ms 窗口测速、fld/rot/diff","x":-260,"y":1170,"width":460,"height":300},
+		{"id":"n7","type":"text","text":"### 判断：elapsed ≥ tr？（爬坡到目标？）","x":-260,"y":1530,"width":460,"height":100,"color":"3"},
+		{"id":"n8","type":"text","text":"### 6. 爬坡完成，持续锁相运行\ndelta = targ 恒定，转子被磁场钉在固定功角下旋转\n随时 Watch 改 volt（调速）/ targ（改功角，会重算轨迹）","x":-260,"y":1690,"width":460,"height":150},
+		{"id":"n9","type":"text","text":"## 实验产物与提醒\n① 扫 g_dcl_dlt_targ_deg（5→30→45→60→75→89）记 g_dcl_speed_hz\n　 → 转速峰值应在 90° 附近 = MTPA 闭环验证\n② diff ≡ dlt_now（恒等式，只验证数学）；真实功角看电流矢量角 atan2(iq,id)\n③ 调速：改 g_dcl_volt_v（直流电机式，0.1V ≈ 1A）\n④ ⚠ delta 小角度时 id 大（铜损 ~2W），长时间运行注意温升\n⑤ ⚠ 高速段注意机械安全（实测 δ=90°/0.6V 可到 ~2760rpm）","x":-260,"y":1900,"width":460,"height":250,"color":"4"},
+		{"id":"n10","type":"text","text":"### 判断：过流？\n（每拍最先检查，去抖在 Foc_Core_OverCurrent）","x":380,"y":1170,"width":430,"height":120,"color":"3"},
+		{"id":"n11","type":"text","text":"### FAULT_OC\nstate=4，关 PWM，置 OC 事件\nfoc_obs 打印 FAULT_OC i= mA 后自动回 mode 0","x":380,"y":1350,"width":430,"height":150,"color":"1"},
+		{"id":"n12","type":"text","text":"### ⚠ 运行特性与已知边界\n转速不是指令给的：转子加速 → BEMF↑ → 电流↓ → 力矩↓ → 减速，\n稳态停在平衡点。实测 δ=90°/0.6V ≈ 460Hz 电频（2760rpm）属正常\n（电压饥饿边界）：id 转负 = 去磁，iq = 摩擦级电流。\n\nspd 负号 = 原始计数方向（未乘编码器方向，与 mode 31 win 同约定）。\n\nv2 备选：半拍补偿（实际 δ = δ_set + ω·Ts/2，先手动 targ 少设 1~2°）、\nPLL 跟踪观测器（量化 ±0.44° 电角不痛，暂缓）、转速 PI 调 δ。\n\n⚠ 普通低通/EMA 绝不能进控制路径（滞后 = ω×τ，100Hz+1ms = 32°）","x":380,"y":1690,"width":430,"height":330,"color":"2"}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"n1","fromSide":"bottom","toNode":"n2","toSide":"top"},
+		{"id":"e2","fromNode":"n2","fromSide":"bottom","toNode":"n3","toSide":"top"},
+		{"id":"e3","fromNode":"n3","fromSide":"bottom","toNode":"n4","toSide":"top"},
+		{"id":"e4","fromNode":"n4","fromSide":"bottom","toNode":"n5","toSide":"top"},
+		{"id":"e5","fromNode":"n5","fromSide":"bottom","toNode":"n6","toSide":"top"},
+		{"id":"e6","fromNode":"n6","fromSide":"right","toNode":"n10","toSide":"left"},
+		{"id":"e7","fromNode":"n10","fromSide":"top","toNode":"n6","toSide":"right","label":"否（继续循环）"},
+		{"id":"e8","fromNode":"n10","fromSide":"bottom","toNode":"n11","toSide":"top","label":"是"},
+		{"id":"e9","fromNode":"n6","fromSide":"bottom","toNode":"n7","toSide":"top"},
+		{"id":"e10","fromNode":"n7","fromSide":"left","toNode":"n6","toSide":"left","label":"否（delta 取当前 w 继续跑）"},
+		{"id":"e11","fromNode":"n7","fromSide":"bottom","toNode":"n8","toSide":"top","label":"是（置 RAMP_DONE 一次）"},
+		{"id":"e12","fromNode":"n8","fromSide":"bottom","toNode":"n9","toSide":"top"},
+		{"id":"e13","fromNode":"n8","fromSide":"right","toNode":"n12","toSide":"left"}
+	]
+}

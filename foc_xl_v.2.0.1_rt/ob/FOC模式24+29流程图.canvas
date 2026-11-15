@@ -1,0 +1,28 @@
+{
+	"nodes":[
+		{"id":"n_start","type":"text","text":"## 模式24 + 模式29 校准闭环拆分\n**mode 28 的两段拆开跑，捏转子时机从此自由**\n\n同一模块 foc_dci.c（g_dci_variant 区分：CAL=24 / RUN=29），\n共用状态机/参数/观测量。目的：校准时转子要动，捏转子时机难掌握。\n\n入口：comm_mode = 24 或 29（Watch）","x":-400,"y":-40,"width":500,"height":190,"color":"4"},
+		{"id":"n_cal","type":"text","text":"### mode 24：仅校准（Foc_Dcal24_Start）\n前置：无（随时可进）\n\n1. 零矢量零偏窗 ~210ms → 锁 g_calib_*_off_ma\n2. BETA：磁场 90° 吸附 2s（转子会动，不用管）\n3. ALPHA：磁场 0° 吸附 2s → 锁双帧零点\n   显示帧 g_dci_offset + 控制帧 s_off_rel\n4. 置粘滞标志 g_dcal_offset_valid = 1","x":-400,"y":210,"width":460,"height":250},
+		{"id":"n_back0","type":"text","text":"### DCI_EVT_CAL24_DONE\n打印 cal-only done → PwmStop → **自动回 mode 0**\n\n此后转子可以随便捏/移动：\n・电流零偏与位置无关\n・offset 是零点基准，移动后依然成立\n・TMRA_1 硬件计数 free-run 不丢数\n・UpdateAngleObs 主循环每圈刷新\n  g_foc_mech_deg / g_foc_elec_deg 实时可见","x":-400,"y":520,"width":460,"height":240,"color":"4"},
+		{"id":"n_pinch","type":"text","text":"### mode 0：从容捏转子\nWatch 看 g_foc_elec_deg 稳定 = 转子已被捏住\n想捏多紧捏多紧、想什么时候捏就什么时候捏","x":-400,"y":820,"width":460,"height":140,"color":"3"},
+		{"id":"n_chk","type":"text","text":"### mode 29：仅电流环（Foc_Drun29_Start）\n前置检查：Foc_Calib_IsLocked() 且 g_dcal_offset_valid=1\n不满足 → ERROR 打印，拒绝启动（先跑 mode 24 或 28）","x":180,"y":210,"width":440,"height":130},
+		{"id":"n_anchor","type":"text","text":"### 编码器帧重锚定（吸收一切微动）\nhw_now = 当前硬件计数\nrel_start = mod(hw_now×dir − offset, CPR)\ns_enc_pos=0，s_off_rel 使此刻转子电角=真实相对电角\n\n→ 校准后捏动多少都被吸收，第一拍方向即正确","x":180,"y":400,"width":440,"height":170},
+		{"id":"n_run","type":"text","text":"### RUN：PI 电流环 20kHz（BEMF=0 纯 R+L）\n每拍：编码器增量(±32限幅) → 转子角 → Park 得 id/iq\n→ 参考生成 → vd/vq=PID(ref,fb)（当前 P-only）\n→ 反 Park(转子角) → SVPWM","x":180,"y":630,"width":440,"height":160},
+		{"id":"n_refgen","type":"text","text":"### 参考生成（两层）\n① I_ref 斜坡：s_i_ref_ramp 每拍向 g_dci_i_ref_ma 爬一步\n   斜率 g_dci_i_ramp_ma_s (mA/s)，<=0 直通阶跃\n   Start 复位 0，软启动天然包含\n② id_ref=I·cosδ, iq_ref=I·sinδ\n   δ 爬坡三参数 init/targ/tr（当前 90/90/0 = 阶跃）","x":180,"y":850,"width":440,"height":200,"color":"3"},
+		{"id":"n_ptune","type":"text","text":"### ⚠ P 重调判据（捏死转子工况）\nkp 扫参 0.5→1.0→2.0：快速爬到稳态平台、平台上方不振铃\nP-only 稳态 = kp/(kp+R)·i_ref（kp=0.5 → 77%）落差是理论必然，\n\"到达目标\"是 I 的活，P 阶段不要求。\nVOFA 看平台高度(CH10) + eqPP 振铃 + eq_mean。","x":700,"y":850,"width":420,"height":220,"color":"2"},
+		{"id":"n_ion","type":"text","text":"### P 合格 → 开 I\nWatch：i_valid=1 + ki=300（DCI_PI_KI ≈ kp×R/L）\n验收：eq_mean → 0±50mA\n（模式 28 已验证全套物理结论，参数直接沿用）","x":700,"y":1130,"width":420,"height":160,"color":"4"},
+		{"id":"n_oc","type":"text","text":"### FAULT_OC\n相电流 > 9A（去抖后）→ 故障停机 → 自动回 mode 0","x":180,"y":1110,"width":440,"height":120,"color":"2"}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"n_start","fromSide":"bottom","toNode":"n_cal","toSide":"top","label":"comm_mode=24"},
+		{"id":"e2","fromNode":"n_cal","fromSide":"bottom","toNode":"n_back0","toSide":"top"},
+		{"id":"e3","fromNode":"n_back0","fromSide":"bottom","toNode":"n_pinch","toSide":"top"},
+		{"id":"e4","fromNode":"n_start","fromSide":"bottom","toNode":"n_chk","toSide":"top","label":"comm_mode=29"},
+		{"id":"e5","fromNode":"n_pinch","fromSide":"right","toNode":"n_anchor","toSide":"left","label":"捏稳后"},
+		{"id":"e6","fromNode":"n_chk","fromSide":"bottom","toNode":"n_anchor","toSide":"top","label":"检查通过"},
+		{"id":"e7","fromNode":"n_anchor","fromSide":"bottom","toNode":"n_run","toSide":"top","label":"PwmStart"},
+		{"id":"e8","fromNode":"n_run","fromSide":"bottom","toNode":"n_refgen","toSide":"top"},
+		{"id":"e9","fromNode":"n_refgen","fromSide":"right","toNode":"n_ptune","toSide":"left","label":"P-only"},
+		{"id":"e10","fromNode":"n_ptune","fromSide":"bottom","toNode":"n_ion","toSide":"top","label":"不振铃后"},
+		{"id":"e11","fromNode":"n_run","fromSide":"bottom","toNode":"n_oc","toSide":"left","label":"过流","color":"2"}
+	]
+}

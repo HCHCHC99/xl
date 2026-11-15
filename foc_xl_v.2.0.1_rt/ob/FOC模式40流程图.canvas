@@ -1,0 +1,27 @@
+{
+	"nodes":[
+		{"id":"n_start","type":"text","text":"## 模式40 编码器 FOC 速度/电流双闭环\n**速度 PI（外环 5ms）→ 电流 PI（内环 20kHz）→ SVPWM**\n\nmode 29 验证过的电流内环 + 速度外环 = 应用级驱动。\nid_ref≡0（经典 FOC），前置 = mode 24 校准。\n\n入口：comm_mode = 40（Watch）","x":-360,"y":-40,"width":480,"height":180,"color":"4"},
+		{"id":"n_pre","type":"text","text":"### 前置检查\nFoc_Dcal24_GetResult() 读 mode 24 校准快照\n无校准 → ERROR 拒绝启动（先跑 mode 24）\n\n复用：零偏 zero_u/v/w_ma + 编码器 offset\n（按值拷贝，无运行时共享状态）","x":-360,"y":200,"width":460,"height":160},
+		{"id":"n_anchor","type":"text","text":"### 编码器帧锚定 + 安全起步\ns_rotor_count = mod(hw×dir − offset, CPR)\nPID_Reset ×3（速度/id/iq）\n目标转速清 0 → PwmStart → RUN","x":-360,"y":420,"width":460,"height":150},
+		{"id":"n_isr","type":"text","text":"### RUN（20kHz ISR 每拍）\n1. OC 检查（原始采样，9A）\n2. 编码器增量 ±32 限幅 → s_rotor_count\n3. 速度：5ms 窗计数 → rpm → 一阶滤波 α=0.25\n4. 转子电角 → Park 得 id/iq\n5. iq EMA 滤波 α=0.10（仅显示，PI 用原始值）\n6. vd/vq = 电流 PI → 反 Park → SVPWM","x":-360,"y":630,"width":460,"height":230},
+		{"id":"n_spd","type":"text","text":"### 外环：速度 PI（每 5ms 一次）\n输入：斜坡后的目标 vs 滤波转速\nkp=1.8 mA/rpm  ki=0.2 mA/rpm/s\n输出 = iq_ref（mA，带符号）\n\n输出限幅 ±3400mA（额定×20%）\n→ 电流环永远收着指令，不会失控","x":260,"y":630,"width":440,"height":200,"color":"3"},
+		{"id":"n_ramp","type":"text","text":"### 目标整形（外环入口）\n速度限幅 ±7800rpm\n加速度限幅 1950 rpm/s（=MAX×25%）\n斜坡逐 5ms 步进 → ramp_rpm","x":260,"y":890,"width":440,"height":150},
+		{"id":"n_inner","type":"text","text":"### 内环：id/iq 独立电流 PI（每拍）\n参数 = mode 29 验证值直接沿用：\nkp=0.5  ki=300  UMAX=3.5V  ITERM=3.2V\n\nid_ref=0（MTPA）；id 环抗交叉耦合\n理论依据：md_record/电流环PI理论计算.md\n物理结论：md_record/PI电流环mode 28记录.md","x":-360,"y":920,"width":460,"height":200,"color":"4"},
+		{"id":"n_vofa","type":"text","text":"### VOFA 观测通道\nCH4 id / CH5 iq / CH6 idRef / CH7 iqRef\nCH8 vd / CH9 vq\nCH14 目标转速 / CH15 实际转速(滤波)\nCH16 滤波 iq（EMA 显示用）","x":260,"y":1100,"width":440,"height":180},
+		{"id":"n_tune","type":"text","text":"### 调参顺序（先内后外）\n内环：已从 mode 29 毕业，一般不动\n外环：Watch 改 g_speed40_pid_speed_cfg.kp/.ki\n・超调大 → 降 kp/ki\n・跟踪慢 → 升 kp\n判据：CH15 追 CH14 无超调不振铃","x":-360,"y":1180,"width":460,"height":190,"color":"3"},
+		{"id":"n_oc","type":"text","text":"### FAULT_OC\n相电流 > 9A（原始采样去抖）\n→ FaultStop + state=FAULT_OC → 自动断 PWM\n（与 mode 28/29 同一套保护路径）","x":-360,"y":1430,"width":460,"height":140,"color":"2"},
+		{"id":"n_todo","type":"text","text":"### 待办\n・速度环精调（阶跃/抗扰）\n・全转速 0→7800rpm 验证\n・加减速斜率优化","x":260,"y":1340,"width":440,"height":140}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"n_start","fromSide":"bottom","toNode":"n_pre","toSide":"top"},
+		{"id":"e2","fromNode":"n_pre","fromSide":"bottom","toNode":"n_anchor","toSide":"top","label":"校准有效"},
+		{"id":"e3","fromNode":"n_anchor","fromSide":"bottom","toNode":"n_isr","toSide":"top","label":"PwmStart"},
+		{"id":"e4","fromNode":"n_isr","fromSide":"right","toNode":"n_spd","toSide":"left","label":"每 5ms"},
+		{"id":"e5","fromNode":"n_ramp","fromSide":"top","toNode":"n_spd","toSide":"bottom","label":"整形后目标"},
+		{"id":"e6","fromNode":"n_spd","fromSide":"bottom","toNode":"n_inner","toSide":"right","label":"iq_ref 下发"},
+		{"id":"e7","fromNode":"n_inner","fromSide":"right","toNode":"n_vofa","toSide":"left","label":"观测"},
+		{"id":"e8","fromNode":"n_inner","fromSide":"bottom","toNode":"n_tune","toSide":"top","label":"内环已毕业"},
+		{"id":"e9","fromNode":"n_isr","fromSide":"bottom","toNode":"n_oc","toSide":"top","label":"过流","color":"2"},
+		{"id":"e10","fromNode":"n_tune","fromSide":"right","toNode":"n_todo","toSide":"left"}
+	]
+}

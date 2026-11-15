@@ -1,0 +1,40 @@
+{
+	"nodes":[
+		{"id":"n_entry","type":"text","text":"## mode41 代码流程\n**foc_drun41.c：mode29 复制 + dq 前馈实验**\n\n入口：Watch 写 `comm_mode = 41`\n分发：`CommRunner_SetMode(COMM_RUNNER_DRUN41)`\n→ `Foc_Drun41_Start()`\n\n运行回调：`Foc_Isr()` 中检查 `g_drun41_running`\n→ `Foc_Drun41_Step(pData)`","x":-560,"y":-120,"width":520,"height":220,"color":"4"},
+		{"id":"n_pre","type":"text","text":"### 1. Foc_Drun41_Start 前置检查\n\n```c\nFoc_Dcal24_GetResult(&calibration)\n```\n\n失败：\n\n```text\ng_drun41_running = 0\ng_drun41_state = DRUN41_STEP_IDLE\n拒绝启动，提示先跑 mode24\n```\n\n成功：继续读取 mode24 校准结果。","x":-560,"y":180,"width":480,"height":230},
+		{"id":"n_reset","type":"text","text":"### 2. 复位与锚定\n\n```c\nFoc_Core_ClearFault();\nDrun41_ResetLoopState();\nDrun41_ClearObservables();\n```\n\n锁入 mode24 结果：\n\n```text\ns_zero_u_ma = calibration.zero_u_ma\ns_zero_v_ma = calibration.zero_v_ma\ns_zero_w_ma = calibration.zero_w_ma\n```\n\n读取当前 `TMRA_1` 硬件计数，按编码器方向和 mode24 offset 算当前转子角。","x":-560,"y":480,"width":480,"height":260},
+		{"id":"n_start_pwm","type":"text","text":"### 3. 启动电流环\n\n```c\ng_foc_mode = FOC_MODE_ALIGN;\nPID_Reset(&s_pid_id);\nPID_Reset(&s_pid_iq);\ng_drun41_running = 1;\ng_drun41_state = DRUN41_STEP_RUN;\nFoc_Core_PwmStart();\n```\n\n之后每个电流采样周期进入 `Foc_Drun41_Step()`。","x":-560,"y":810,"width":480,"height":220,"color":"4"},
+		{"id":"n_isr","type":"text","text":"### 4. Foc_Drun41_Step 每拍入口\n\n先做过流检查：\n\n```c\nFoc_Core_OverCurrent(pData)\n```\n\n过流：\n\n```text\ng_drun41_state = DRUN41_STEP_FAULT_OC\ng_drun41_evt = DRUN41_EVT_OC\nFoc_Core_FaultStop(1u)\n```\n\n非 `DRUN41_STEP_RUN` 直接返回。","x":20,"y":180,"width":460,"height":260,"color":"3"},
+		{"id":"n_delta","type":"text","text":"### 5. 功角 δ 爬坡\n\n```text\nprogress = s_run_tick / ramp_ticks\nδ = dlt_init_deg + (dlt_targ_deg − dlt_init_deg) × progress\n```\n\nWatch 参数：\n\n```c\ng_drun41_dlt_init_deg\ng_drun41_dlt_targ_deg\ng_drun41_dlt_tr_ms\n```\n\n爬坡完成置一次 `DRUN41_EVT_RAMP_DONE`。","x":20,"y":510,"width":460,"height":250},
+		{"id":"n_encoder","type":"text","text":"### 6. 编码器增量与转子角\n\n```text\nhardware_delta = 硬件计数差分\ncorrected_delta = hardware_delta × g_foc_enc_dir\ns_rotor_count += corrected_delta\n```\n\n单拍增量限制：\n\n```text\n±DRUN41_ENC_DELTA_MAX = ±32\n```\n\n再折算成转子电角 `rotor_rad`。","x":20,"y":830,"width":460,"height":230},
+		{"id":"n_current","type":"text","text":"### 7. 相电流校正与 Park 变换\n\n```c\ndata = Drun41_CorrectedData(pData);\nFoc_Core_GetDq(&data, rotor_rad, &id, &iq);\n```\n\n内部：\n\n```text\n先减 mode24 三相零偏；\nClarke：abc → αβ；\nPark：αβ → dq。\n```\n\n同时更新原始观测：\n\n```c\ng_drun41_id_ma\ng_drun41_iq_ma\n```","x":20,"y":1130,"width":460,"height":290},
+		{"id":"n_filter","type":"text","text":"### 8. 显示用 iq EMA 滤波\n\n```text\ng_drun41_iq_filt_ma += alpha × (iq_ma − iq_filt_ma)\n```\n\nWatch 系数：\n\n```c\ng_drun41_iq_filt_alpha\n```\n\n只输出到 VOFA CH16，不进入 PI。","x":540,"y":510,"width":440,"height":220,"color":"4"},
+		{"id":"n_refs","type":"text","text":"### 9. id/iq 参考生成\n\n先对总电流目标做斜坡：\n\n```text\ns_i_ref_ramp → g_drun41_i_ref_ma\n```\n\n再按当前 δ 分解：\n\n```text\nid_ref = I·cosδ\niq_ref = I·sinδ\n```\n\n不要直接改 `id_ref/iq_ref`；它们每拍会被重算。","x":540,"y":800,"width":440,"height":260},
+		{"id":"n_pi","type":"text","text":"### 10. 电流 PI\n\n```c\nvd = PID_UpdateUs(&s_pid_id, id_ref, id, dt);\nvq = PID_UpdateUs(&s_pid_iq, iq_ref, iq, dt);\n```\n\nPI 使用原始 `id/iq`，不是 CH16 滤波值。\n\nPI 分量观测：\n\n```c\ng_drun41_vd_pi_v\ng_drun41_vq_pi_v\n```","x":540,"y":1130,"width":440,"height":250},
+		{"id":"n_ff_branch","type":"text","text":"### 11. 前馈分支\n\n判断：\n\n```c\ng_drun41_ff_enable != 0\n```\n\n关闭：\n\n```text\nvd_ff = 0\nvq_ff = 0\n```\n\n行为基本回到 mode29。\n\n开启：计算 BEMF、电阻、交叉项并叠加到 PI 输出。","x":1060,"y":180,"width":480,"height":250,"color":"4"},
+		{"id":"n_ff_calc","type":"text","text":"### 12. 前馈计算\n\n```text\nwe = 2π × g_drun41_speed_hz\nL = FOC_MOTOR_LS_UH × 1e-6\n\nvd_ff = −Kc·we·L·iq\nvq_ff = +Kc·we·L·id\n      + Kb·we·ψf\n      + Kr·R·iq_ref\n```\n\n然后：\n\n```text\nvd += vd_ff\nvq += vq_ff\n```","x":1060,"y":500,"width":480,"height":290},
+		{"id":"n_limit","type":"text","text":"### 13. 总电压矢量限幅\n\n前馈开启时按圆形限幅：\n\n```text\n|vd + jq| ≤ g_drun41_vmax_v\n```\n\n若缩放发生，置：\n\n```c\ng_drun41_vsat = 1;\n```\n\n前馈关闭时保持 mode29 原有各自轴限幅判断。","x":1060,"y":860,"width":480,"height":240,"color":"3"},
+		{"id":"n_svpwm","type":"text","text":"### 14. 反 Park 与 SVPWM\n\n```c\nvalpha = vd·cosθ − vq·sinθ;\nvbeta  = vd·sinθ + vq·cosθ;\nFoc_Svpwm(valpha, vbeta, FOC_VBUS_V, &du, &dv, &dw);\nTMR4_PWM_SetDuty3Phase(du, dv, dw);\n```\n\n总输出观测：\n\n```c\ng_foc_vd\ng_foc_vq\ng_drun41_du / dv / dw\n```","x":1060,"y":1170,"width":480,"height":280},
+		{"id":"n_diag","type":"text","text":"### 15. 诊断与速度窗口\n\n每拍累计 id/iq 误差：\n\n```c\ng_drun41_ed_mean_ma\ng_drun41_eq_mean_ma\ng_drun41_ed_pp_ma\ng_drun41_eq_pp_ma\n```\n\n约 200ms 更新电频率：\n\n```c\ng_drun41_speed_hz\ng_drun41_omega_e_rad_s\n```\n\n`foc_obs.c` 周期打印 PI/FF 分量和饱和状态。","x":1560,"y":500,"width":460,"height":290},
+		{"id":"n_obs_oc","type":"text","text":"### 16. 过流交接\n\n`foc_obs.c` 检测：\n\n```c\ng_drun41_evt == DRUN41_EVT_OC\n```\n\n打印 `FAULT_OC` 后：\n\n```c\nCommRunner_SetMode(COMM_RUNNER_STOP);\n```\n\n即自动回 mode0。","x":1560,"y":860,"width":460,"height":230,"color":"1"}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"n_entry","fromSide":"bottom","toNode":"n_pre","toSide":"top"},
+		{"id":"e2","fromNode":"n_pre","fromSide":"bottom","toNode":"n_reset","toSide":"top","label":"mode24 结果存在"},
+		{"id":"e3","fromNode":"n_reset","fromSide":"bottom","toNode":"n_start_pwm","toSide":"top"},
+		{"id":"e4","fromNode":"n_start_pwm","fromSide":"right","toNode":"n_isr","toSide":"left","label":"每个电流采样周期"},
+		{"id":"e5","fromNode":"n_isr","fromSide":"bottom","toNode":"n_delta","toSide":"top","label":"未过流且 RUN"},
+		{"id":"e6","fromNode":"n_delta","fromSide":"bottom","toNode":"n_encoder","toSide":"top"},
+		{"id":"e7","fromNode":"n_encoder","fromSide":"bottom","toNode":"n_current","toSide":"top"},
+		{"id":"e8","fromNode":"n_current","fromSide":"right","toNode":"n_filter","toSide":"left","label":"原始 iq"},
+		{"id":"e9","fromNode":"n_filter","fromSide":"bottom","toNode":"n_refs","toSide":"top"},
+		{"id":"e10","fromNode":"n_refs","fromSide":"bottom","toNode":"n_pi","toSide":"top"},
+		{"id":"e11","fromNode":"n_pi","fromSide":"right","toNode":"n_ff_branch","toSide":"left"},
+		{"id":"e12","fromNode":"n_ff_branch","fromSide":"bottom","toNode":"n_ff_calc","toSide":"top","label":"ff_enable=1"},
+		{"id":"e13","fromNode":"n_ff_calc","fromSide":"bottom","toNode":"n_limit","toSide":"top"},
+		{"id":"e14","fromNode":"n_limit","fromSide":"bottom","toNode":"n_svpwm","toSide":"top"},
+		{"id":"e15","fromNode":"n_svpwm","fromSide":"right","toNode":"n_diag","toSide":"left"},
+		{"id":"e16","fromNode":"n_diag","fromSide":"bottom","toNode":"n_obs_oc","toSide":"top","label":"OC 事件"},
+		{"id":"e17","fromNode":"n_ff_branch","fromSide":"bottom","toNode":"n_limit","toSide":"left","label":"ff_enable=0", "color":"4"}
+	]
+}

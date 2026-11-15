@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MotorScope - J-Link RTT FOC 电机动画</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">&#9671;</span> MotorScope
+    <span class="sub">J-Link RTT · FOC 实时动画（mode 22）</span>
+  </div>
+  <div class="status">
+    <span class="dot" id="connDot"></span><span id="connText">连接中…</span>
+    <span class="pill" id="modePill">--</span>
+    <span class="pill" id="phasePill">--</span>
+    <span class="pill" id="syncPill">--</span>
+    <span class="pill" id="srcPill">--</span>
+    <span class="pill" id="fpsPill">--</span>
+  </div>
+</header>
+<div id="simWarn" class="sim-warn" style="display:none">&#9888;&#65039; 当前为<b>仿真模式</b>：画面/波形/rpm 都是模拟数据，不是真实电机。实机请用 <code>--mode jlink</code> 启动。</div>
+
+<main>
+  <section class="card motor-card">
+    <h2>&#9874; 电机（极对数 10 · 20 磁钢 · 定子示意）</h2>
+    <canvas id="motor" width="560" height="560"></canvas>
+    <div class="legend">
+      <span><i style="background:#e5484d"></i>N 极</span>
+      <span><i style="background:#3b82f6"></i>S 极</span>
+      <span><i style="background:#22d3ee"></i>id（d 轴）</span>
+      <span><i style="background:#fb923c"></i>iq（q 轴）</span>
+      <span><i style="background:#facc15"></i>is = id+j·iq</span>
+      <span><i style="background:#e879f9"></i>v（电压矢量）</span>
+      <span><i style="border-top:2px dashed #fff;width:22px;height:0"></i>控制角 θ</span>
+    </div>
+  </section>
+
+  <section class="right-col">
+    <div class="card">
+      <h2>&#128268; 连接 / RTT 通道</h2>
+      <div class="conn-row">
+        <label for="chInput">通道</label>
+        <input id="chInput" type="number" min="0" max="15" value="0">
+        <button id="chApply" title="切换到指定通道并重连">应用</button>
+        <button id="reconnBtn" class="btn-primary" title="重新连接 J-Link 并重找 RTT 控制块">刷新 / 重连</button>
+      </div>
+      <div class="conn-grid">
+        <div class="k">状态</div><div class="v" id="cStatus">--</div>
+        <div class="k">数据源</div><div class="v" id="cDetail">--</div>
+        <div class="k">RTT 通道</div><div class="v" id="cChannel">--</div>
+        <div class="k">已收帧数</div><div class="v" id="cFrames">--</div>
+        <div class="k">最新帧年龄</div><div class="v" id="cAge">--</div>
+        <div class="k">帧率</div><div class="v" id="cFps">--</div>
+      </div>
+      <div class="hint" id="cHint"></div>
+    </div>
+
+    <div class="card">
+      <h2>&#9969; 仪表</h2>
+      <div class="gauges">
+        <canvas id="rpmGauge" width="260" height="170"></canvas>
+        <div class="num-grid" id="numGrid"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>&#9878; I-F 启动状态机</h2>
+      <div class="phases" id="phaseRow"></div>
+      <div class="sync-row">
+        <span class="led" id="syncLed"></span>
+        <span id="syncText">未同步</span>
+      </div>
+    </div>
+
+    <div class="card scope-wrap">
+      <h2>&#9836; 示波器（拖动滑块可回看历史）</h2>
+      <div class="scope-toolbar">
+        <button id="pauseBtn" title="暂停跟随，固定当前画面">&#9208; 暂停</button>
+        <button id="liveBtn" class="btn-primary" title="回到实时">&#9654; 跟随实时</button>
+        <label>窗口</label>
+        <input id="winSel" type="range" min="0" max="1000" value="435" title="窗口宽度（对数滑动 0.1s~20s，拖动缩放查看细节）">
+        <span id="winLabel" class="pill">1.0 s</span>
+        <input id="timeSlider" type="range" min="0" max="1000" value="1000" title="拖动回看历史">
+        <span id="timeLabel" class="pill">实时</span>
+      </div>
+
+      <h2>&#9836; iq / id（mA）<span class="scope-legend" id="legendCur">
+        <span class="chip on" data-group="cur" data-key="iq" style="--c:#fb923c">iq</span>
+        <span class="chip on" data-group="cur" data-key="id" style="--c:#22d3ee">id</span>
+      </span></h2>
+      <canvas id="scope1" width="720" height="190" class="scope"></canvas>
+
+      <h2>&#9680; 转子角 vs 控制角（°）<span class="scope-legend" id="legendAngle">
+        <span class="chip on" data-group="angle" data-key="rotor" style="--c:#e5484d">转子角</span>
+        <span class="chip on" data-group="angle" data-key="theta" style="--c:#ffffff">控制角</span>
+        <span class="chip on" data-group="angle" data-key="mech" style="--c:#4ade80">机械角</span>
+      </span></h2>
+      <canvas id="scope2" width="720" height="160" class="scope"></canvas>
+
+      <h2>&#9651; 角度偏差 diff（rad）</h2>
+      <canvas id="scope3" width="720" height="140" class="scope"></canvas>
+
+      <h2>&#9883; 模式 comm_mode（0停止 / 1开环 / 2电流环 / 3对齐）</h2>
+      <canvas id="scope4" width="720" height="110" class="scope"></canvas>
+
+      <h2>&#9679; ABZ 编码器计数 cnt（斜率方向 = 旋转方向）</h2>
+      <canvas id="scope5" width="720" height="110" class="scope"></canvas>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="card">
+    <h2>&#9993; RTT 数据帧（MOTF）</h2>
+    <div class="log-toolbar">
+      <input id="logSearch" type="text" placeholder="搜索日志（输入即过滤）" autocomplete="off">
+      <button id="logCopy" title="复制当前（过滤后）日志">复制</button>
+      <button id="logClear" title="清空日志">清空</button>
+      <span id="logCount" class="pill">0 / 0 条</span>
+    </div>
+    <div id="log" class="log">等待数据…</div>
+  </div>
+
+  <div class="card">
+    <h2>&#9993; 固件日志（MAIN_D 等 · 本地记录）</h2>
+    <div class="log-toolbar">
+      <input id="mainLogSearch" type="text" placeholder="搜索固件日志（输入即过滤）" autocomplete="off">
+      <span id="mainLogCount" class="pill">0 条</span>
+    </div>
+    <pre id="mainLog" class="log">等待数据…</pre>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

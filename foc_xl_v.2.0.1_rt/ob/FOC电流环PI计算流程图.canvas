@@ -1,0 +1,30 @@
+{
+	"nodes":[
+		{"id":"n_start","type":"text","text":"## 电流环 PI 理论计算\n**从 motor_config.h 电机参数推出 Kp/Ki 理论值**\n\n对象：mode 28/29 转子系电流环，捏死转子 = 纯 R+L 一阶对象\n配套文档：md_record/电流环PI理论计算.md","x":-380,"y":-40,"width":460,"height":150,"color":"4"},
+		{"id":"n_known","type":"text","text":"### ① 已知量盘点\n手册（motor_config.h）：R=0.1Ω L=42.3µH ψf=0.84mWb p=10\n数字：Ts=50µs (20kHz) f_pwm=10kHz VBUS=12V\n约束：带宽≤1kHz(=f_pwm/10) UMAX=3.5V OC=9A\n\n待求：kp（带宽 vs 稳定折中）、ki（对消 vs 无超调折中）","x":-380,"y":170,"width":740,"height":180},
+		{"id":"n_eff","type":"text","text":"### ⚠ 手册值 ≠ 环路真实值（先修正）\nR_eff ≈ 0.15Ω = 0.1 + 2×(Rdson+采样电阻+走线)\n证据①：P-only 跟踪 77% = 0.5/(0.5+0.15) ✓\n证据②：堵转尖峰 7.2A = (1.5+3.2)/0.65 ✓\n\nL 真值存疑：42µH~260µH，kp=0.5 不振铃说明偏大，\n终值靠 kp 扫参判别（见 ⑦）","x":-380,"y":410,"width":460,"height":220,"color":"2"},
+		{"id":"n_time","type":"text","text":"### ② 时域建模（捏死转子，BEMF=0）\nv = R·i + L·di/dt → 一阶 ODE\n\nτ_e = L/R（A套 423µs / B套 1.73ms）\n数字可行性：τ_e ≫ Ts=50µs（≥8 点/常数）✓\n\nBEMF=ω·ψf 是输出端扰动，不进传递函数","x":-380,"y":690,"width":580,"height":200},
+		{"id":"n_lap","type":"text","text":"### ③ 拉氏域 → 频域\nG_p(s) = 1/(Ls+R)\n对象极点 ω_p = R/L → f_p = R/(2πL)\n（A套 376Hz / B套 92Hz）\n\nBode：f_p 以上 −20dB/dec","x":-380,"y":950,"width":319,"height":170},
+		{"id":"n_pi","type":"text","text":"### ④ PI 结构（频域视角）\nG_c(s) = kp + ki/s = kp(s+ω_z)/s\n积分器 + 零点，零点位置 ω_z = ki/kp","x":-380,"y":1180,"width":321,"height":108},
+		{"id":"n_cancel","type":"text","text":"### ⑤ 零极点对消 → ki 理论值\n令 ω_z = ω_p：\n\n★ ki = kp·R/L ★\n（kp=0.5：A套 1182 / B套 288≈当前300 ✓）\n\n对消后开环 = 纯积分器 kp/(Ls)，相位恒 −90°","x":-380,"y":1380,"width":460,"height":205,"color":"4"},
+		{"id":"n_bw","type":"text","text":"### ⑥ 带宽 = kp（f_bw 的理论值）\n闭环 = 一阶低通 τ_cl = L/kp\n\n★ f_bw = kp/(2πL) ★\n（kp=0.5：A套 1882Hz / B套 306Hz）\n\n物理直觉：PI 把时间常数 L/R 的对象\n改造成 L/kp 的对象——kp 即速度旋钮","x":-380,"y":1620,"width":460,"height":190,"color":"4"},
+		{"id":"n_limit","type":"text","text":"### kp 的两个天花板\n① 带宽硬约束：f_bw ≤ 1kHz → kp ≤ 2πL·1000\n   （A 0.27 / B 1.63）\n② 数字延迟：τ_d≈1.5Ts=75µs\n   PM = 90° − τ_d·ω_c ≥ 45° → kp ≤ 10472·L\n   （A 0.44 / B 2.72）\n\n⚠ A 套下当前 kp=0.5 已双双超标——\n实验却不振铃 → 矛盾指向 L 手册值偏小","x":220,"y":1620,"width":440,"height":250,"color":"2"},
+		{"id":"n_zeta","type":"text","text":"### ⑦ 开 I 后：二阶闭环与无超调条件\n特征方程 Ls²+(R+kp)s+ki=0\nω_n=√(ki/L)   ζ=(R+kp)/(2√(ki·L))\n\n用户判据\"快速接近且不超过\" = ζ≥1：\n★ ki ≤ (R+kp)²/(4L) ★\n（A 2497 / B 406）\n\ncurrent ki=300：ζ_A=2.9 过阻尼 / ζ_B=1.16 良好","x":-380,"y":1870,"width":460,"height":220,"color":"3"},
+		{"id":"n_pred","type":"text","text":"### ⑧ 可证伪预测（实验钉死 L）\nkp=1.0：振铃→A套成立 / 干净→B套成立\nkp=2.0：剧烈振铃→A / 轻微→B\nki 上扫：A 逼近 1182 最优 / B 过 406 开始超调\n\nmode 29 捏死扫 kp 就是在做这个判别","x":220,"y":1930,"width":440,"height":200,"color":"2"},
+		{"id":"n_verify","type":"text","text":"### ⑨ 实操闭环（Watch 调参顺序）\nkp 0.5 起步 → 平台高度验 R_eff → 扫到振铃临界回退一档\n→ 振铃位置反推 L → ki=kp·R/L 起步上扫\n→ eq_mean→0±50mA 无超调 → 全量程堵转毕业\n\n理论给搜索范围，实验给最终值","x":-380,"y":2150,"width":460,"height":200,"color":"4"}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"n_start","fromSide":"bottom","toNode":"n_known","toSide":"top"},
+		{"id":"e2","fromNode":"n_known","fromSide":"bottom","toNode":"n_eff","toSide":"top"},
+		{"id":"e3","fromNode":"n_eff","fromSide":"bottom","toNode":"n_time","toSide":"top","label":"用修正后 R_eff/L"},
+		{"id":"e4","fromNode":"n_time","fromSide":"bottom","toNode":"n_lap","toSide":"top","label":"拉氏变换"},
+		{"id":"e5","fromNode":"n_lap","fromSide":"bottom","toNode":"n_pi","toSide":"top"},
+		{"id":"e6","fromNode":"n_pi","fromSide":"bottom","toNode":"n_cancel","toSide":"top","label":"零点对消极点"},
+		{"id":"e7","fromNode":"n_cancel","fromSide":"bottom","toNode":"n_bw","toSide":"top"},
+		{"id":"e8","fromNode":"n_bw","fromSide":"right","toNode":"n_limit","toSide":"left","label":"校验约束"},
+		{"id":"e9","fromNode":"n_bw","fromSide":"bottom","toNode":"n_zeta","toSide":"top","label":"再开 I"},
+		{"id":"e10","fromNode":"n_zeta","fromSide":"right","toNode":"n_pred","toSide":"left"},
+		{"id":"e11","fromNode":"n_zeta","fromSide":"bottom","toNode":"n_verify","toSide":"top"},
+		{"id":"e12","fromNode":"n_pred","fromSide":"bottom","toNode":"n_verify","toSide":"right","label":"实验判别"}
+	]
+}

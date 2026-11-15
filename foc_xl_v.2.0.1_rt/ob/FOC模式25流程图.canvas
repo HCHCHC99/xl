@@ -1,0 +1,42 @@
+{
+	"nodes":[
+		{"id":"n_start","type":"text","text":"## 模式25 手动角度吸附 (foc_cal_angle.c/.h)\n**Watch 写一个电角度 → 磁场指向它 → 把转子吸过去 → 编码器校验吸稳 → 回刹车等下一个角度**\n\n教学用：直观理解 SVPWM 完整链路\nθ(电角度) → valpha/vbeta → SVPWM 三相占空比 (g_calang_du/dv/dw)\n→ 三相绕组合成磁场 → 转子 N 极被吸到 θ 方向（编码器实测验证）\n\n进入模式自动先跑 mode 20 式校准（4s），让 \"0°\" 有绝对意义","x":-240,"y":0,"width":470,"height":260,"color":"4"},
+		{"id":"n_init","type":"text","text":"### 启动 Foc_CalAngle_Start（主循环）\n清故障 → 自动校准（BETA 90° 吸 2s → ALPHA 0° 吸 2s → 锁零点）\n\n校准 4s 期间预设的 g_foc_angle_input 会在校准完成后立即执行\n（s_last_input 在 Start 时刻快照，作为“改值触发”的比较基准）","x":-240,"y":340,"width":470,"height":180},
+		{"id":"n_isr","type":"text","text":"### ISR 每拍（20kHz）Foc_CalAngle_Step\n① 过流检查：原始三相电流，去抖 4 拍\n② 按状态输出：校准磁场 / 刹车 50/50/50 / 目标角磁场\n③ 计时 + 判据跳转（编码器位移用 int16 回绕差值逐拍累加）","x":-240,"y":600,"width":470,"height":170},
+		{"id":"n_beta","type":"text","text":"### CAL_BETA (1)：磁场 90° 吸 2s\n静止系 90° 电角度，转子 N 极被吸过去\n计时到 2s → evt=BETA_DONE → 进 ALPHA","x":-240,"y":850,"width":470,"height":130},
+		{"id":"n_alpha","type":"text","text":"### CAL_ALPHA (2)：磁场 0° 吸 2s\n计时到 2s：offset = mod(原始计数×编码器方向, CPR)\n→ Foc_Core_SetAlignOffset 锁零点 → evt=LOCKED\n（此刻转子停在电角度 0°，这就是“表”的零点）\n校准完成 → 切刹车，模式停在 25","x":-240,"y":1060,"width":470,"height":190},
+		{"id":"n_brake","type":"text","text":"### BRAKE_WAIT (3)：刹车等待输入\n50/50/50 零矢量（三相短接，不出力）\n转子无保持力矩，会自由漂进齿槽（下次吸引要先“拔出”）\n\n每拍监视 g_foc_angle_input，改值（x→y）即触发吸附\n模式保持 25，只有 OC 会自动退回 mode 0","x":-240,"y":1330,"width":470,"height":190},
+		{"id":"n_chg","type":"text","text":"### 检测到改值？\ng_foc_angle_input != s_last_input\n（吸附中途改值也重新锁存、重新计时）","x":-240,"y":1600,"width":470,"height":110,"color":"3"},
+		{"id":"n_guide","type":"text","text":"### HOLD_ATTRACT (4) 子段1 引导点（300ms）\n触发瞬间实测转子电角度判来向 →\n引导点 = 目标 ±15°（取转子那一侧）\n先吸引导点：最后一段拉程只有 15°，到站动量小\n→ 消过冲 + 预拔齿槽\n\n已在目标 ±5° 内 → 跳过本段直接抖动","x":-240,"y":1790,"width":470,"height":190},
+		{"id":"n_dither","type":"text","text":"### 子段2 抖动（400ms）\n目标角 ±3°、50Hz 正弦摆动\n破静摩擦 + 拔出齿槽","x":-240,"y":2060,"width":470,"height":110},
+		{"id":"n_settle","type":"text","text":"### 子段3 落座（1.3s）\n磁场纯目标角，转子落座\n（三段合计 2s = CALANG_HOLD_MS）","x":-240,"y":2250,"width":470,"height":100},
+		{"id":"n_verify","type":"text","text":"### HOLD_VERIFY (5)：500ms 校验窗\n磁场仍吸在目标角，窗口内记录编码器位移 max−min\n\n位移 ≤ g_calang_stable_cnts（默认 8 counts ≈ 0.7° 机械）？\n结束时快照 meas / err（err 折叠到 (−1800,1800]，×0.1°）","x":-240,"y":2430,"width":470,"height":180,"color":"3"},
+		{"id":"n_ok","type":"text","text":"### 吸稳 DONE_OK (evt=3)\n打印：HOLD ok target= meas= err= x0.1deg\n→ 回刹车，停在 25 等下一次输入\n\n注意：ok=吸稳 ≠ 吸准，准不准看 err","x":-240,"y":2690,"width":470,"height":140,"color":"4"},
+		{"id":"n_oc","type":"text","text":"### FAULT_OC (6) 过流停机\n任何状态过流（去抖 4 拍）→ FaultStop\nevt=OC → foc_obs 打印 FAULT_OC i= mA\n→ 自动回 mode 0（唯一自动退出口）","x":460,"y":600,"width":440,"height":150,"color":"1"},
+		{"id":"n_watch","type":"text","text":"### Watch / VOFA 观测量\ng_foc_angle_input : 写这里触发（电角度 ×0.1°，0~3599，写900=90.0°）\ng_calang_state : 1 BETA / 2 ALPHA / 3 刹车 / 4 吸附 / 5 校验 / 6 OC\ng_calang_target/meas/err_deg : 目标/实测/误差快照（×0.1°，历史名保留）\ng_calang_win_moved : 校验窗位移 (counts)\ng_calang_du/dv/dw : 三相占空比 %（看 SVPWM：互差 120° 正弦）\ng_calang_volt_v : 吸附电压（运行中可调，上限 0.55V）","x":460,"y":1330,"width":440,"height":250,"color":"4"},
+		{"id":"n_math","type":"text","text":"### ⚠ g_foc_angle_input 语义陷阱\n- 电角度 ×0.1°（0~3599）静止系，写900=90.0°；0 与 3600 等价（代码内 wrap）\n- input/target/meas/err 同一单位（×0.1°整型），Watch 直接对比\n- 渐进扫描（每步 ≤900 即 90°电）：900→mech 9°、1800→18°、\n  2700→27°、0/3600→36°，每步 +9° 机械（360°/10 对极）\n- 跳变 >1800：转子走短路径（0 直接设 2700 → 倒退到 mech 351°）\n- 恰好 1800（=180°）：sin180°=0 转矩为零，死点，转子不动，实验避开","x":460,"y":1790,"width":440,"height":240,"color":"2"},
+		{"id":"n_fail","type":"text","text":"### 校验失败 DONE_FAIL (evt=4)\n打印：HOLD FAIL moved= cnts target= meas= x0.1deg\n（手扳转子 / 没跟上 / 电压不够）\n→ 同样回刹车，停在 25 等下一次输入","x":460,"y":2430,"width":440,"height":170,"color":"1"},
+		{"id":"n_prec","type":"text","text":"### ⚠ 误差来源（开环静态吸附的物理极限）\n① 编码器量化底噪 ±0.88°电/count（测量极限）\n② 静摩擦死区（主项）：转子停在吸引转矩=摩擦转矩处，Δ≈asin(T_f/T_max)\n③ 齿槽：BRAKE 期间漂进齿槽，下次吸引要先拔出\n④ 校准偏置 1~2° 公共项（ALPHA 校准同样带死区）\n\nv2 三段化后预期 ±4~5° 电角度；想再准就得闭环（那就不是开环教学了）\n提压：g_calang_volt_v 0.4→0.5V 死区约缩 20%，上限 0.55V（Rs=0.1Ω→OC 5.5A）","x":460,"y":2680,"width":440,"height":260,"color":"2"}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"n_start","fromSide":"bottom","toNode":"n_init","toSide":"top"},
+		{"id":"e2","fromNode":"n_init","fromSide":"bottom","toNode":"n_isr","toSide":"top"},
+		{"id":"e3","fromNode":"n_isr","fromSide":"bottom","toNode":"n_beta","toSide":"top"},
+		{"id":"e4","fromNode":"n_beta","fromSide":"bottom","toNode":"n_alpha","toSide":"top","label":"2s 到（evt=BETA_DONE）"},
+		{"id":"e5","fromNode":"n_alpha","fromSide":"bottom","toNode":"n_brake","toSide":"top","label":"锁零点 evt=LOCKED → 切刹车"},
+		{"id":"e6","fromNode":"n_brake","fromSide":"bottom","toNode":"n_chg","toSide":"top"},
+		{"id":"e7","fromNode":"n_chg","fromSide":"left","toNode":"n_brake","toSide":"left","color":"3","label":"否（继续等）"},
+		{"id":"e8","fromNode":"n_chg","fromSide":"bottom","toNode":"n_guide","toSide":"top","label":"是（x→y，锁存目标）"},
+		{"id":"e9","fromNode":"n_guide","fromSide":"bottom","toNode":"n_dither","toSide":"top","label":"300ms 到（±5° 内则跳过）"},
+		{"id":"e10","fromNode":"n_dither","fromSide":"bottom","toNode":"n_settle","toSide":"top","label":"400ms 到"},
+		{"id":"e11","fromNode":"n_settle","fromSide":"bottom","toNode":"n_verify","toSide":"top","label":"落座完成"},
+		{"id":"e12","fromNode":"n_verify","fromSide":"bottom","toNode":"n_ok","toSide":"top","label":"是（吸稳 evt=DONE_OK）"},
+		{"id":"e13","fromNode":"n_verify","fromSide":"right","toNode":"n_fail","toSide":"left","color":"1","label":"否（还在动 evt=DONE_FAIL）"},
+		{"id":"e14","fromNode":"n_ok","fromSide":"left","toNode":"n_brake","toSide":"left","label":"回刹车等下一次输入"},
+		{"id":"e15","fromNode":"n_fail","fromSide":"left","toNode":"n_brake","toSide":"right","label":"回刹车"},
+		{"id":"e16","fromNode":"n_isr","fromSide":"right","toNode":"n_oc","toSide":"left","color":"1","label":"过流"},
+		{"id":"e17","fromNode":"n_brake","fromSide":"right","toNode":"n_watch","toSide":"left","label":"看什么量"},
+		{"id":"e18","fromNode":"n_chg","fromSide":"right","toNode":"n_math","toSide":"left","color":"2","label":"输入语义"},
+		{"id":"e19","fromNode":"n_fail","fromSide":"bottom","toNode":"n_prec","toSide":"top","color":"2","label":"误差从哪来"}
+	]
+}
