@@ -184,6 +184,13 @@ rt_err_t rt_hw_board_pwm_init(CM_TMR4_TypeDef *CM_TMRx)
 {
     if (CM_TMRx == CM_TMR4_3)
     {
+        /* PB4 上电默认复用为 NJTRST（JTAG TRST）。
+         * 不关闭 JTAG 时 PB4 无法切到 TMR4_3_OWL，
+         * 现象是 W 相下管一直为高、该路 PWM 波形缺失。
+         * 这里只关闭 JTAG，保留 SWD（PA13/PA14）供调试。 */
+        (void)GPIO_SetDebugPort((uint8_t)(GPIO_PIN_DEBUG_JTAG & ~GPIO_PIN_DEBUG_SWD),
+                                DISABLE);
+
         (void)GPIO_SetFunc(PWM_UH_PORT, PWM_UH_PIN, PWM_UH_PIN_FUNC);
         (void)GPIO_SetFunc(PWM_UL_PORT, PWM_UL_PIN, PWM_UL_PIN_FUNC);
 

@@ -20,6 +20,8 @@
 #include "hc32_ll_fcg.h"
 #include "hc32_ll_interrupts.h"     /* INTC_IrqSignIn：TMR4 时基中断（2026-11-02） */
 #include "board_config.h"           /* BSP_TMR4_3_ISR_IRQ_NUM */
+#include "../motor/foc/foc_pwm.h"   /* FOC PWM 配置表入口（2026-11-16 方案 B） */
+#include "../motor/foc/foc_mode.h"  /* FOC 模式层：上电默认 mode 0 */
 
 /* 【2026-11-04 · Q1 方案 1】FOC 电流采样触发（外部提供）
  *
@@ -405,7 +407,8 @@ static void bsp_pwm_tim4_init(uint32_t freq_hz, uint32_t deadtime_ns)
         TMR4_PWM_SetDeadTimeValue(BSP_PWM_TIM4_UNIT, pwm_ch, TMR4_PWM_PDBR_IDX, dt_counts);
     }
 
-    rt_kprintf("[BSP-PWM] TIM4_3: freq=%uHz, period=%u, dt=%uns(%u cnt)\n",
+    rt_kprintf("[BSP-PWM] TIM4_3 legacy cfg: freq=%uHz, period=%u, dt=%uns(%u cnt)"
+               " (will be overridden by cfg_foc_table)\r\n",
                (unsigned)freq_hz, (unsigned)period,
                (unsigned)deadtime_ns, (unsigned)dt_counts);
 
@@ -616,7 +619,43 @@ int bsp_pwm_hw_init(void *arg)
     bsp_pwm_emb_init();
     bsp_pwm_tim4_init(cfg->freq_hz, cfg->deadtime_ns);
 
+    /* ============================================================
+     * 【2026-11-16 · 方案 B】TMR4 PWM 最终配置以 cfg_foc_table.h 为准
+     * ------------------------------------------------------------
+     * bsp_pwm_tim4_init() 保留原六步方波路径（时基 ISR / NVIC 路由 /
+     * EMB 封锁），随后由 FOC 配置表覆盖 PWM 几何与死区：
+     *   20kHz、互补、下桥臂采样、死区 50ns（FOC_CFG_SELECT = 2）。
+     *
+     * 覆盖顺序必须是「旧初始化 → FOC 配置」：
+     *   hw_tmr4_pwm_config() 内部 TMR4_Init 会写 CCSR 的 CLEAR/STOP，
+     *   把谷值中断使能一并清掉，所以配置后要重新使能 VALLEY 再启动。
+     *
+     * 六步方波代码不删除，只是六路 OC 在 set_all_low() 里被关闭，
+     * 即使上层误调 hw_pwm_set_duty() 也不会输出到引脚。
+     * ============================================================ */
+    bsp_pwm_emb_stop();
+
+    if (foc_pwm_apply_cfg() != 0) {
+        rt_kprintf("[BSP-PWM] FOC PWM apply failed\r\n");
+        return -1;
+    }
+
+    TMR4_IntCmd(BSP_PWM_TIM4_UNIT, TMR4_INT_CNT_VALLEY, ENABLE);
+    TMR4_Start(BSP_PWM_TIM4_UNIT);
+
+    /* 六步 ops 的占空比换算依赖该值，保持与 FOC 配置表一致 */
+    g_bsp_pwm_priv.period_counts = (uint32_t)foc_pwm_get_period_ticks();
+
+    rt_kprintf("[BSP-PWM] TMR4_3 overridden by cfg_foc_table: %lu Hz, dt=%u ns\r\n",
+               (unsigned long)foc_pwm_get_frequency(),
+               (unsigned)foc_pwm_get_deadtime_ns());
+
     g_bsp_pwm_priv.initialized = 1;
+
+    /* 上电默认进入 FOC mode 0（IDLE：六路全低 + EMB 封锁）。
+     * 后续通过 msh 命令 `focmode 0/1` 切换。 */
+    Foc_Mode_Init();
+
     return 0;
 }
 

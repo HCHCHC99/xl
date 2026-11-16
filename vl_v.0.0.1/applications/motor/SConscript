@@ -1,13 +1,14 @@
 from building import *
 
 cwd = GetCurrentDir()
-src = Glob('*.c') + Glob('drv/*.c') + Glob('fb/*.c') + Glob('ctrl/*.c')
+src = Glob('*.c') + Glob('drv/*.c') + Glob('fb/*.c') + Glob('ctrl/*.c') + Glob('foc/*.c')
 
 CPPPATH = [
     cwd,
     cwd + '/drv',
     cwd + '/fb',
     cwd + '/ctrl',
+    cwd + '/foc',
     '..',
     '../framework/core',
     '../framework/manager',

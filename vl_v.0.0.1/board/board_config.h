@@ -150,7 +150,7 @@
  *   U 相：UH-PB9 / UL-PB8
  *   V 相：VH-PB7 / VL-PB6
  *   W 相：WH-PB5 / WL-PB4
- *   复用功能：全部 GPIO_FUNC_3（TIM4_3）
+ *   复用功能：全部 GPIO_FUNC_2（TIM4_3，与参考 FOC 工程及 drv_pwm.c 一致）
  *
  * [PERF-EVAL-01] 当前使用 hc32_ll GPIO_SetFunc 直接配置。
  *   待评估：若改用 rt_pin 框架，PWM 换相 ISR 内的引脚操作开销
@@ -160,27 +160,27 @@
 
 #define PWM_UH_PORT             (GPIO_PORT_B)
 #define PWM_UH_PIN              (GPIO_PIN_09)
-#define PWM_UH_PIN_FUNC         (GPIO_FUNC_3)
+#define PWM_UH_PIN_FUNC         (GPIO_FUNC_2)
 
 #define PWM_UL_PORT             (GPIO_PORT_B)
 #define PWM_UL_PIN              (GPIO_PIN_08)
-#define PWM_UL_PIN_FUNC         (GPIO_FUNC_3)
+#define PWM_UL_PIN_FUNC         (GPIO_FUNC_2)
 
 #define PWM_VH_PORT             (GPIO_PORT_B)
 #define PWM_VH_PIN              (GPIO_PIN_07)
-#define PWM_VH_PIN_FUNC         (GPIO_FUNC_3)
+#define PWM_VH_PIN_FUNC         (GPIO_FUNC_2)
 
 #define PWM_VL_PORT             (GPIO_PORT_B)
 #define PWM_VL_PIN              (GPIO_PIN_06)
-#define PWM_VL_PIN_FUNC         (GPIO_FUNC_3)
+#define PWM_VL_PIN_FUNC         (GPIO_FUNC_2)
 
 #define PWM_WH_PORT             (GPIO_PORT_B)
 #define PWM_WH_PIN              (GPIO_PIN_05)
-#define PWM_WH_PIN_FUNC         (GPIO_FUNC_3)
+#define PWM_WH_PIN_FUNC         (GPIO_FUNC_2)
 
 #define PWM_WL_PORT             (GPIO_PORT_B)
 #define PWM_WL_PIN              (GPIO_PIN_04)
-#define PWM_WL_PIN_FUNC         (GPIO_FUNC_3)
+#define PWM_WL_PIN_FUNC         (GPIO_FUNC_2)
 
 /***********  BRAKE configure（电磁刹车） *********/
 /*
