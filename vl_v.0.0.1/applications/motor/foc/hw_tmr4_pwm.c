@@ -18,8 +18,10 @@
  *   注意：CFG_SAMPLE_* 是枚举常量，不能用 #if 判断，只能用运行期表达式。
  *=============================================================================*/
 #define TMR4_SAMPLE_IS_HIGH_SIDE   ((FOC_CFG_SAMPLE_POINT) == CFG_SAMPLE_UPPER)
-#define TMR4_OC_LOAD_COND()        ((FOC_CFG_SAMPLE_POINT) == CFG_SAMPLE_UPPER \
-                                    ? TMR4_OC_BUF_COND_VALLEY : TMR4_OC_BUF_COND_PEAK)
+#define TMR4_OC_LOAD_COND()        ((TMR4_SHADOW_OCCR_ENABLE) \
+                                    ? ((FOC_CFG_SAMPLE_POINT) == CFG_SAMPLE_UPPER \
+                                       ? TMR4_OC_BUF_COND_VALLEY : TMR4_OC_BUF_COND_PEAK) \
+                                    : TMR4_OC_BUF_COND_IMMED)
 
 /*=============================================================================
  * Single-instance state (hard-coded to TMR4_3)
@@ -822,6 +824,58 @@ void hw_tmr4_pwm_get_state(tmr4_pwm_channel_t ch, tmr4_pwm_state_t *out)
         /* 同向：上下管同相，导通窗口 (X, CPSR]，占比 = 100 - X/周期 */
         out->highPct = 100.0f - occrHPct;
         out->lowPct  = 100.0f - occrLPct;
+    }
+}
+
+/*=============================================================================
+ * ADC 采样触发点快照（诊断用）
+ *   直接读 EVT 通道 UL 的 SCCR/SCSR，反映当前实际生效的触发配置。
+ *=============================================================================*/
+void hw_tmr4_pwm_get_adc_trigger_info(tmr4_adc_trigger_info_t *out)
+{
+    if (out == NULL) return;
+
+    out->highSide     = TMR4_SAMPLE_IS_HIGH_SIDE;
+    out->periodTicks  = s_ctx.periodTicks;
+    out->compareValue = TMR4_EVT_GetCompareValue(CM_TMR4_3, TMR4_EVT_CH_UL);
+    out->matchCond    = (uint16_t)(CM_TMR4_3->SCSRUL & TMR4_EVT_MATCH_CNT_ALL);
+    out->cntNow       = TMR4_GetCountValue(CM_TMR4_3);
+    out->timerHz      = CLK_GetBusClockFreq(CLK_BUS_PCLK1);
+}
+
+/*=============================================================================
+ * 寄存器回读（诊断用）
+ *   直接读 OCCR 与 PDAR/PDBR，验证影子装载和死区是否真的写进硬件。
+ *   注意：影子装载使能时，OCCR 读回值要在一个装载点之后才更新。
+ *=============================================================================*/
+void hw_tmr4_pwm_get_regs(tmr4_pwm_channel_t ch, tmr4_pwm_regs_t *out)
+{
+    const pwm_pair_desc_t *pair;
+
+    if (out == NULL || !ChannelIsValid(ch)) return;
+
+    pair = &s_pairs[ch];
+
+    out->occrH = TMR4_OC_GetCompareValue(CM_TMR4_3, pair->ocChH);
+    out->occrL = TMR4_OC_GetCompareValue(CM_TMR4_3, pair->ocChL);
+    out->pdar  = TMR4_PWM_GetDeadTimeValue(CM_TMR4_3, pair->pwmCh,
+                                           TMR4_PWM_PDAR_IDX);
+    out->pdbr  = TMR4_PWM_GetDeadTimeValue(CM_TMR4_3, pair->pwmCh,
+                                           TMR4_PWM_PDBR_IDX);
+
+    switch (pair->pwmCh) {
+    case TMR4_CHANNEL_U:
+        out->ocer = CM_TMR4_3->OCERU;
+        out->ocsr = CM_TMR4_3->OCSRU;
+        break;
+    case TMR4_CHANNEL_V:
+        out->ocer = CM_TMR4_3->OCERV;
+        out->ocsr = CM_TMR4_3->OCSRV;
+        break;
+    default:
+        out->ocer = CM_TMR4_3->OCERW;
+        out->ocsr = CM_TMR4_3->OCSRW;
+        break;
     }
 }
 

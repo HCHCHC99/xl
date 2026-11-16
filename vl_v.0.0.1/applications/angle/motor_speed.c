@@ -53,7 +53,7 @@ void motor_speed_update(int32_t cnt_now, uint32_t now_tick)
     }
 
     /* ---- 未满窗口：直接返回 ----
-     * 注意用无符号减法，天然处理 tick 回绕（2^32/20kHz ≈ 59.6h） */
+     * 注意用无符号减法，天然处理 tick 回绕（2^32 / 当前 PWM 频率） */
     dt_ticks = now_tick - s_priv.last_tick;
     if (dt_ticks < MOTOR_SPEED_WINDOW_TICKS)
     {
@@ -102,34 +102,27 @@ void motor_speed_update(int32_t cnt_now, uint32_t now_tick)
      *
      * 推导（全部整数，避免浮点，Q-63 未批准）：
      *   输出轴转数 = delta / 4096 / i_total
-     *   时间(s)   = dt_ticks / 20000
-     *   rpm_out   = (delta / 4096 / i_total) / (dt_ticks / 20000) * 60
-     *             = delta * 20000 * 60 / (4096 * i_total * dt_ticks)
-     *             = delta * 1200000 / (4096 * i_total * dt_ticks)
+     *   时间(s)   = dt_ticks / TICK_HZ      （TICK_HZ = MOTOR_SPEED_TICK_HZ）
+     *   rpm_out   = (delta / 4096 / i_total) / (dt_ticks / TICK_HZ) * 60
+     *             = delta * TICK_HZ * 60 / (4096 * i_total * dt_ticks)
      *
      *   换成 x100（0.01 RPM）：
-     *   rpm_out_x100 = delta * 1200000 * 100 / (4096 * i_total * dt_ticks)
+     *   rpm_out_x100 = delta * TICK_HZ * 60 * 100 / (4096 * i_total * dt_ticks)
      *
      *   把 i_total 换成 i_total_x100：
      *   i_total = i_total_x100 / 100
-     *   => rpm_out_x100 = delta * 1200000 * 100 * 100
+     *   => rpm_out_x100 = delta * TICK_HZ * 60 * 100 * 100
      *                     / (4096 * i_total_x100 * dt_ticks)
-     *                   = delta * 1.2e10 / (4096 * i_total_x100 * dt_ticks)
+     *                   = delta * TICK_HZ * 600000
+     *                     / (4096 * i_total_x100 * dt_ticks)
      *
-     *   约分：12000000000 / 4096 = 2929687.5，不是整数。
-     *   改为先除公因子：1.2e10 = 12e9，4096 = 2^12
-     *     12e9 / 2^9 = 23437500，4096/2^9 = 8
-     *   => rpm_out_x100 = delta * 23437500 / (8 * i_total_x100 * dt_ticks)
-     *
+     *   20kHz 校验：600000×20000/4096 = 2929687.5
      *   i_total=1080 → i_total_x100=108000：
-     *   den = 8 * 108000 * dt = 864000 * dt
-     *   delta=-800, dt=100 → num=-800*23437500=-1.875e10
-     *                      → rpm_out_x100 = -1.875e10/8.64e7 = -217.0
-     *   => -2.17 RPM ✓ 与实测 -2.1 RPM 吻合
+     *   delta=-800, dt=100 → rpm_out_x100 ≈ -217.0 => -2.17 RPM
      *
      * 溢出核查（全用 int64）：
-     *   delta 最大 ±2048（半圈），23437500 → 4.8e13，int64 安全
-     *   den 最大 8*108000*10000 = 8.64e9，int64 安全
+     *   delta 最大 ±2048，TICK_HZ=20000 时 2048*20000*600000 ≈ 2.46e13，int64 安全
+     *   den 最大 4096*108000*10000 = 4.4e12，int64 安全
      * ============================================================ */
     rt = mech_get_rt();
 
@@ -154,14 +147,11 @@ void motor_speed_update(int32_t cnt_now, uint32_t now_tick)
         rpm_out_x100 = (int32_t)(num64 / den64);
 
         /* Z0 侧转速（诊断用，x10）：
-         * rpm_z0 = delta / 4096 / (dt/20000) * 60
-         * rpm_z0_x10 = delta * 20000 * 60 * 10 / (4096 * dt)
-         *            = delta * 12000000 / (4096 * dt)
-         * 约分：12000000/4096 = 2929.6875 → 提高精度先算
-         *       delta * 12000000 / 4096 / dt
+         * rpm_z0 = delta / 4096 / (dt/TICK_HZ) * 60
+         * rpm_z0_x10 = delta * TICK_HZ * 600 / (4096 * dt)
          * 全 int64，无需约分。 */
         {
-            int64_t nz = (int64_t)delta * 12000000LL;
+            int64_t nz = (int64_t)delta * (int64_t)MOTOR_SPEED_TICK_HZ * 600LL;
             int64_t dz = (int64_t)4096 * (int64_t)dt_ticks;
 
             rpm_z0_x10 = (int32_t)(nz / dz);

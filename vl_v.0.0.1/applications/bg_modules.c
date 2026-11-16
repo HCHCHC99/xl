@@ -61,7 +61,12 @@ extern void wdt_feed(void);
  * ============================================================ */
 static void motor_periodic_task(void)
 {
-    motor_update(&g_swing_motor);
+    /* FOC 模式独占 TMR4_3 时，不再运行旧六步电机对象。
+     * 否则 openloop_update → bldc_6step_set_output 会周期性写 OCCR/EMB，
+     * 覆盖 focmode 的占空比。 */
+    if (!Foc_Mode_PwmOwned()) {
+        motor_update(&g_swing_motor);
+    }
 
     /* 【2026-11-10】补打中断里挂起的急停日志。
      *

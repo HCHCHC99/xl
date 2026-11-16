@@ -28,14 +28,12 @@
  * 【电流采样的时间基准 —— 为什么用"计数"而不是"毫秒"】
  * ------------------------------------------------------------
  * 需求给的是时间（10ms / 100ms / 500ms / 2500ms），但电流源是
- * 20kHz（50μs 一次）。若用 tick 计时，10ms 只能分辨 2~10 个 tick，
- * 量化误差极大。
+ * FOC 的 PWM 采样率（1 tick = 1 个 PWM 周期）。若用 tick 计时，
+ * 10ms 只能分辨 2~10 个 tick，量化误差极大。
  *
- * 做法：把时间换算成"20kHz 采样点个数"
- *   N = ms * 20        （因为 1ms = 20 个采样点）
- *   55A / 10ms  → 200   点
- *   50A / 100ms → 2000  点
- *   45A / 500ms → 10000 点
+ * 做法：把时间换算成"电流采样点个数"
+ *   N = ms * STALL_SAMPLE_PER_MS   （STALL_SAMPLE_PER_MS = PWM 频率 / 1000）
+ *   例如 20kHz：55A / 10ms → 200 点，50A / 100ms → 2000 点
  * 每采到一个超过阈值的样本，对应计数器 +1；低于阈值则清零。
  * 计数器达到 N 即判定该档触发。
  *
@@ -116,7 +114,9 @@ extern "C" {
 #define STALL_DEF_AUTO_CLEAR_MS     (0U)        /* 0 = 立即清除 */
 
 /* 20kHz 采样率：1ms = 20 个样本点 */
-#define STALL_SAMPLE_PER_MS         (20U)
+/* 每毫秒的电流采样点数，直接跟随 cfg_foc_table.h 选中的 PWM 频率。
+ * 20kHz → 20 点/ms，10kHz → 10 点/ms。 */
+#define STALL_SAMPLE_PER_MS         (FOC_CFG_PWM_FREQ / 1000U)
 
 /* 低速判据分段：10 段 × 250ms = 2500ms（可在 low_ms 变化时自适应） */
 #define STALL_LOW_SEG_MAX           (16U)

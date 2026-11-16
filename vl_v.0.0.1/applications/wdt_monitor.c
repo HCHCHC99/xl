@@ -80,6 +80,55 @@ static volatile uint8_t  s_wdt_ready   = 0;
 /** @brief 本次上电的复位原因 */
 static volatile uint8_t  s_reset_cause = WDT_RESET_POR;
 
+/** @brief 本次上电的 RMU 原始复位标志（供诊断，RMU_ClearStatus 前采样） */
+static volatile uint32_t s_rmu_flags = 0U;
+
+/* 采样全部 RMU 复位标志 */
+static uint32_t wdt_sample_rmu_flags(void)
+{
+    uint32_t f = 0U;
+
+    if (RMU_GetStatus(RMU_FLAG_PWR_ON)         == SET) f |= RMU_FLAG_PWR_ON;
+    if (RMU_GetStatus(RMU_FLAG_PIN)            == SET) f |= RMU_FLAG_PIN;
+    if (RMU_GetStatus(RMU_FLAG_BROWN_OUT)      == SET) f |= RMU_FLAG_BROWN_OUT;
+    if (RMU_GetStatus(RMU_FLAG_PVD1)           == SET) f |= RMU_FLAG_PVD1;
+    if (RMU_GetStatus(RMU_FLAG_PVD2)           == SET) f |= RMU_FLAG_PVD2;
+    if (RMU_GetStatus(RMU_FLAG_WDT)            == SET) f |= RMU_FLAG_WDT;
+    if (RMU_GetStatus(RMU_FLAG_SWDT)           == SET) f |= RMU_FLAG_SWDT;
+    if (RMU_GetStatus(RMU_FLAG_PWR_DOWN)       == SET) f |= RMU_FLAG_PWR_DOWN;
+    if (RMU_GetStatus(RMU_FLAG_SW)             == SET) f |= RMU_FLAG_SW;
+    if (RMU_GetStatus(RMU_FLAG_MPU_ERR)        == SET) f |= RMU_FLAG_MPU_ERR;
+    if (RMU_GetStatus(RMU_FLAG_RAM_PARITY_ERR) == SET) f |= RMU_FLAG_RAM_PARITY_ERR;
+    if (RMU_GetStatus(RMU_FLAG_RAM_ECC)        == SET) f |= RMU_FLAG_RAM_ECC;
+    if (RMU_GetStatus(RMU_FLAG_CLK_ERR)        == SET) f |= RMU_FLAG_CLK_ERR;
+    if (RMU_GetStatus(RMU_FLAG_XTAL_ERR)       == SET) f |= RMU_FLAG_XTAL_ERR;
+    if (RMU_GetStatus(RMU_FLAG_MX)             == SET) f |= RMU_FLAG_MX;
+
+    return f;
+}
+
+/* 打印 RMU 复位标志（仅线程上下文） */
+static void wdt_print_rmu_flags(uint32_t f)
+{
+    rt_kprintf("RMU flags=0x%08X:", (unsigned)f);
+    if (f & RMU_FLAG_PWR_ON)         rt_kprintf(" POR");
+    if (f & RMU_FLAG_PIN)            rt_kprintf(" PIN");
+    if (f & RMU_FLAG_BROWN_OUT)      rt_kprintf(" BOR");
+    if (f & RMU_FLAG_PVD1)           rt_kprintf(" PVD1");
+    if (f & RMU_FLAG_PVD2)           rt_kprintf(" PVD2");
+    if (f & RMU_FLAG_WDT)            rt_kprintf(" WDT");
+    if (f & RMU_FLAG_SWDT)           rt_kprintf(" SWDT");
+    if (f & RMU_FLAG_PWR_DOWN)       rt_kprintf(" PWRDOWN");
+    if (f & RMU_FLAG_SW)             rt_kprintf(" SW");
+    if (f & RMU_FLAG_MPU_ERR)        rt_kprintf(" MPU");
+    if (f & RMU_FLAG_RAM_PARITY_ERR) rt_kprintf(" RAMPAR");
+    if (f & RMU_FLAG_RAM_ECC)        rt_kprintf(" RAMECC");
+    if (f & RMU_FLAG_CLK_ERR)        rt_kprintf(" CLKERR");
+    if (f & RMU_FLAG_XTAL_ERR)       rt_kprintf(" XTALERR");
+    if (f & RMU_FLAG_MX)             rt_kprintf(" MULTI");
+    rt_kprintf("\n");
+}
+
 /* ============================================================
  * 签到客户端表（内部）
  * ============================================================ */
@@ -229,6 +278,8 @@ int wdt_monitor_init(void)
     rt_kprintf("[WDT] SWDT started, last_reset=%s, checkin = %s\n\n",
                (s_reset_cause == WDT_RESET_SWDT) ? "SWDT" : "POR",
                s_checkin_enable ? "ON" : "OFF");
+    rt_kprintf("[WDT] ");
+    wdt_print_rmu_flags((uint32_t)s_rmu_flags);
 
     return RT_EOK;
 }
@@ -350,6 +401,8 @@ void wdt_monitor_dump(void)
     rt_kprintf("last_reset=%s  swdt_count=%u\n",
                (s_reset_cause == WDT_RESET_SWDT) ? "SWDT" : "POR",
                (unsigned)SWDT_GetCountValue());
+    rt_kprintf("[WDT] ");
+    wdt_print_rmu_flags((uint32_t)s_rmu_flags);
     rt_kprintf("-------------------------------------------------\n");
     rt_kprintf(" id | name            | timeout | age(ms) | state\n");
     rt_kprintf("-------------------------------------------------\n");

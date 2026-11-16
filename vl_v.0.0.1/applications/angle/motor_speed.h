@@ -50,8 +50,8 @@
  * 【关键：换算只做一次】
  *   不要"先算 rpm_z0 再除 1080"——那会二次整数截断。
  *   直接从 Z0 计数差一步算到输出轴转速，单次除法：
- *     rpm_out_x100 = dcnt * 600000 * 100 / (4096 * i_total_x100 * dt_ticks)
- *   减速比从 mech_cfg 的 i_total_x100 取，不硬编码。
+ *     rpm_out_x100 = dcnt * TICK_HZ * 600000 / (4096 * i_total_x100 * dt_ticks)
+ *   其中 TICK_HZ = MOTOR_SPEED_TICK_HZ，取自 cfg_foc_table.h。
  *
  * ============================================================
  * 【单位选择：输出轴用 x100，不用 x10】
@@ -85,22 +85,24 @@
 
 #include <rtthread.h>
 #include <stdint.h>
+#include "../motor/foc/cfg_foc_table.h"   /* FOC_CFG_PWM_FREQ：系统时基频率唯一来源 */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/** 速度计算窗口：速度环周期的 tick 数（5ms @ 20kHz = 100 tick） */
-#define MOTOR_SPEED_WINDOW_TICKS    (100U)
-
-/** 硬件时基频率（Hz），与 bsp_pwm 的 PWM 频率一致 */
-#define MOTOR_SPEED_TICK_HZ         (20000U)
+/** 硬件时基频率（Hz）：直接取 cfg_foc_table.h 当前选中的 PWM 频率 */
+#define MOTOR_SPEED_TICK_HZ         (FOC_CFG_PWM_FREQ)
 
 /** 每秒 tick 数（用于换算，避免魔法数字） */
 #define MOTOR_SPEED_TICKS_PER_SEC   (MOTOR_SPEED_TICK_HZ)
 
-/** 窗口过长判定：超过此值认为中断/任务被暂停，只重建基线不计算 */
-#define MOTOR_SPEED_WINDOW_MAX_TICKS (10000U)   /* 500ms */
+/** 速度计算窗口：5ms 对应的 tick 数，随 PWM 频率自动换算 */
+#define MOTOR_SPEED_WINDOW_MS       (5U)
+#define MOTOR_SPEED_WINDOW_TICKS    ((MOTOR_SPEED_TICK_HZ / 1000U) * MOTOR_SPEED_WINDOW_MS)
+
+/** 窗口过长判定：超过 500ms 认为中断/任务被暂停，只重建基线不计算 */
+#define MOTOR_SPEED_WINDOW_MAX_TICKS (MOTOR_SPEED_TICK_HZ / 2U)
 
 /* ============================================================
  * 状态
@@ -133,7 +135,7 @@ void motor_speed_init(void);
  * @brief 周期调用（与 motor_angle_update 同频，1ms，由软定时器驱动）
  *
  * @param cnt_now   当前 Z0 累计计数（来自 motor_angle_get_cnt）
- * @param now_tick  当前 20kHz 硬件 tick（来自 bsp_pwm_get_cycle_cnt）
+ * @param now_tick  当前 PWM 硬件 tick（来自 bsp_pwm_get_cycle_cnt）
  *
  * @note 【为什么传 tick 而不是 ms】
  *       调用方原先传 rt_tick_get_millisecond()，1ms 分辨率不够。

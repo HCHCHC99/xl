@@ -48,10 +48,11 @@ extern hw_brake_t g_swing_brake;
 /* 内部辅助的前向声明（定义在文件末尾） */
 uint16_t motor_stall_get_last_current(void);
 
-/* 20kHz 计数器上限保护：65535 / 20 样本每 ms = 3276ms
- * 取 3200ms 留余量，超过则钳位（配置写错也不至于溢出）。 */
-#define STALL_MAX_MS                (3200U)
+/* 计数器上限保护：65535 / STALL_SAMPLE_PER_MS。
+ * 20kHz 下 = 3276ms，再留 76ms 余量取 3200ms。
+ * 10kHz 下自动变成 6477ms，仍保证 uint16 不溢出。 */
 #define STALL_MAX_CNT               (65535U)
+#define STALL_MAX_MS                ((STALL_MAX_CNT / STALL_SAMPLE_PER_MS) - 76U)
 
 /* ============================================================
  * 模块状态

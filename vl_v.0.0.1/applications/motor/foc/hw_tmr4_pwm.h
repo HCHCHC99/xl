@@ -168,6 +168,30 @@ typedef struct {
 
 void hw_tmr4_pwm_get_state(tmr4_pwm_channel_t channel, tmr4_pwm_state_t *out);
 
+/* ADC 采样触发点快照（诊断用）：SCCR/SCSR 实际寄存器值 + 当前 CNT */
+typedef struct {
+    bool     highSide;       /* true = UPPER/peak，false = LOWER/valley */
+    uint16_t periodTicks;    /* 一个三角波周期的 tick 数 */
+    uint16_t compareValue;   /* SCCR：触发比较值 */
+    uint16_t matchCond;      /* SCSR 匹配条件位（TMR4_EVT_MATCH_CNT_*） */
+    uint16_t cntNow;         /* 读取瞬间的 CNT，仅供参考 */
+    uint32_t timerHz;        /* 计数时钟频率 */
+} tmr4_adc_trigger_info_t;
+
+void hw_tmr4_pwm_get_adc_trigger_info(tmr4_adc_trigger_info_t *out);
+
+/* 寄存器回读（诊断用）：OCCR 与死区 PDAR/PDBR 的实际寄存器值 */
+typedef struct {
+    uint16_t occrH;     /* OCCR H 通道 */
+    uint16_t occrL;     /* OCCR L 通道 */
+    uint16_t pdar;      /* 死区上升沿计数寄存器 */
+    uint16_t pdbr;      /* 死区下降沿计数寄存器 */
+    uint16_t ocer;      /* OCER：缓冲使能/装载条件 */
+    uint16_t ocsr;      /* OCSR：OC 通道使能/极性 */
+} tmr4_pwm_regs_t;
+
+void hw_tmr4_pwm_get_regs(tmr4_pwm_channel_t channel, tmr4_pwm_regs_t *out);
+
 /*=============================================================================
  * Dead-time numeric helpers (pure)
  *=============================================================================*/

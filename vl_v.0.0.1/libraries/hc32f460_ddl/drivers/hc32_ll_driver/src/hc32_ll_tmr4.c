@@ -250,9 +250,16 @@
 #define TMR4_OCER_LMCx_MASK(CH)     (((uint16_t)TMR4_OCER_LMCH) << ((CH) % 2UL))
 #define TMR4_OCER_LMMx_MASK(CH)     (((uint16_t)TMR4_OCER_LMMH) << ((CH) % 2UL))
 #define TMR4_OCER_MCECx_MASK(CH)    (((uint16_t)TMR4_OCER_MCECH) << ((CH) % 2UL))
+/* 【2026-11-17 修复】3.0.0 原实现把 LMCH/LMMH/MCECH 也左移 ((CH%2)<<1)，
+ * 对 UL/VL/WL（奇数通道）会掩掉链接位并误清同组高通道的位。
+ * 3.3.0 已改为左移 (CH%2)，这里同步修正。 */
 #define TMR4_OCER_MASK(CH)                                                   \
 (   (((uint16_t)(TMR4_OCER_CHBUFEN | TMR4_OCER_MHBUFEN)) << (((CH) % 2UL) << 1U)) | \
-    (((uint16_t)(TMR4_OCER_LMCH | TMR4_OCER_LMMH | TMR4_OCER_MCECH)) << (((CH) % 2UL) << 1U)))
+    (((uint16_t)(TMR4_OCER_LMCH | TMR4_OCER_LMMH | TMR4_OCER_MCECH)) << ((CH) % 2UL)))
+
+/* 【2026-11-17 同步 3.3.0】CCSR 的 IRQPF/IRQZF 在普通读改写中会被清掉，
+ * 所有 CCSR 写操作应把这两位一起写 1 保留。 */
+#define TMR4_CCSR_IRQF              (TMR4_CCSR_IRQZF | TMR4_CCSR_IRQPF)
 /**
  * @}
  */
@@ -846,9 +853,9 @@ void TMR4_PeriodBufCmd(CM_TMR4_TypeDef *TMR4x, en_functional_state_t enNewState)
     DDL_ASSERT(IS_FUNCTIONAL_STATE(enNewState));
 
     if (ENABLE == enNewState) {
-        SET_REG16_BIT(TMR4x->CCSR, TMR4_CCSR_BUFEN);
+        SET_REG16_BIT(TMR4x->CCSR, TMR4_CCSR_IRQF | TMR4_CCSR_BUFEN);
     } else {
-        CLR_REG16_BIT(TMR4x->CCSR, TMR4_CCSR_BUFEN);
+        MODIFY_REG16(TMR4x->CCSR, (TMR4_CCSR_IRQF | TMR4_CCSR_BUFEN), ~TMR4_CCSR_BUFEN);
     }
 }
 
@@ -1491,9 +1498,17 @@ int32_t TMR4_PWM_Init(CM_TMR4_TypeDef *TMR4x, uint32_t u32Ch, const stc_tmr4_pwm
         u16Value = (pstcTmr4PwmInit->u16Mode | pstcTmr4PwmInit->u16ClockDiv | pstcTmr4PwmInit->u16Polarity);
         WRITE_REG16(*POCR, u16Value);
 
-        /* Set RCSR register */
-        u16Value = (TMR4_RCSR_RTSx_MASK(u32Ch) | TMR4_RCSR_RTIDx_MASK(u32Ch) | TMR4_RCSR_RTICx_MASK(u32Ch));
-        MODIFY_REG16(*RCSR, TMR4_RCSR_RTEx_MASK(u32Ch), u16Value);
+        /* Set RCSR register
+         * 【2026-11-17 修复】3.0.0 只按 RTEx 一位做掩码，RTS/RTID/RTIC
+         * 不会被清除，重复初始化会残留旧值。这里改为按整个通道字段掩码，
+         * 与 3.3.0 的 TMR4_RCSR_MASK(u32Ch) 语义一致。 */
+        u16Value = (TMR4_RCSR_RTSx_MASK(u32Ch) | TMR4_RCSR_RTIDx_MASK(u32Ch) |
+                    TMR4_RCSR_RTICx_MASK(u32Ch));
+        MODIFY_REG16(*RCSR,
+                     (TMR4_RCSR_RTEx_MASK(u32Ch) | TMR4_RCSR_RTSx_MASK(u32Ch) |
+                      TMR4_RCSR_RTIDx_MASK(u32Ch) | TMR4_RCSR_RTICx_MASK(u32Ch) |
+                      TMR4_RCSR_RTIFx_MASK(u32Ch)),
+                     u16Value);
 
         i32Ret = LL_OK;
     }
@@ -1525,9 +1540,13 @@ void TMR4_PWM_DeInit(CM_TMR4_TypeDef *TMR4x, uint32_t u32Ch)
     /* Set POCR register */
     WRITE_REG16(*POCR, (TMR4_PWM_CLK_DIV1 | TMR4_PWM_MD_THROUGH | TMR4_PWM_OXH_HOLD_OXL_HOLD));
 
-    /* Set RCSR register */
-    MODIFY_REG16(*RCSR, TMR4_RCSR_RTEx_MASK(u32Ch), \
-                 (TMR4_RCSR_RTIDx_MASK(u32Ch) | TMR4_RCSR_RTSx_MASK(u32Ch) | TMR4_RCSR_RTICx_MASK(u32Ch)));
+    /* Set RCSR register
+     * 【2026-11-17 修复】同 TMR4_PWM_Init：按整个通道字段掩码。 */
+    MODIFY_REG16(*RCSR,
+                 (TMR4_RCSR_RTEx_MASK(u32Ch) | TMR4_RCSR_RTSx_MASK(u32Ch) |
+                  TMR4_RCSR_RTIDx_MASK(u32Ch) | TMR4_RCSR_RTICx_MASK(u32Ch) |
+                  TMR4_RCSR_RTIFx_MASK(u32Ch)),
+                 (TMR4_RCSR_RTSx_MASK(u32Ch) | TMR4_RCSR_RTICx_MASK(u32Ch)));
 }
 
 /**

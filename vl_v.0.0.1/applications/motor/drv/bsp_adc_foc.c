@@ -30,6 +30,16 @@
  * 软件触发抖动数微秒，而上桥导通窗口只有数微秒，必然采到开关噪声。
  *
  * ============================================================
+ * 【2026-11-17 更新：恢复 TMR4 EVT0 硬件触发】
+ * ------------------------------------------------------------
+ * 下面的 "2026-11-04 软件触发" 段落仅作为历史排查记录保留。
+ * 当前实现已改为：
+ *   TMR4_3 EVT0（SCCR/SCSR 由 cfg_foc_table.h 决定峰值/谷值）
+ *     → AOS_ADC1_0（EVT_SRC_TMR4_3_SCMP_UH）
+ *     → ADC1 SEQ_A 硬件触发 → EOCA → DMA
+ * 不再调用 ADC_Start()，因此采样点由配置表真正控制。
+ *
+ * ============================================================
  * 【2026-11-04 · Q1 方案 1：恢复 ADC_Start()，由 PWM 谷值 ISR 驱动】
  * ------------------------------------------------------------
  * 上一批（S0）把触发改为 TMR4_3 SCMP_VH + AOS，并删掉了 ADC_Start()，
@@ -101,6 +111,8 @@
 
 /* 【2026-11-09】电流零点校准需要读写 sys_config（0x0B 段） */
 #include "../../config/sys_config.h"
+
+#include "../foc/foc_eoca_probe.h"   /* EOCA/PA0 观测探针（2026-11-16） */
 
 #include <string.h>
 
@@ -599,54 +611,24 @@ int foc_adc_init(void)
     ADC_ChCmd(FOC_ADC_UNIT, ADC_SEQ_A, FOC_ADC_CH_IV,   ENABLE);
 
     /* ============================================================
-     * 【2026-11-04 / S0】改为 TMR4 硬件触发（原为软件触发）
+     * 【2026-11-17】改为 TMR4 EVT0 硬件触发（与参考工程一致）
      * ------------------------------------------------------------
-     * 原实现（方案 B）：
-     *   ADC_TriggerCmd(SEQ_A, DISABLE)
-     *   然后 init 末尾 ADC_Start() 一次
-     *   ⇒ 全工程只转换一次，conv_cnt 恒为 1，
-     *     读到的永远是同一组陈旧值，电流保护无从谈起。
+     * 触发链：
+     *   TMR4_3 特殊事件 EVT0
+     *     ├─ 采样点由 cfg_foc_table.h 的 FOC_CFG_SAMPLE_POINT 决定：
+     *     │    LOWER → 谷值（SCCR=0）
+     *     │    UPPER → 峰值（SCCR=period-1）
+     *     ├─ AOS_ADC1_0 ← EVT_SRC_TMR4_3_SCMP_UH
+     *     │    （3.0.0 中 384，等价 3.3.0 的 SCMP0）
+     *     └─ ADC1 SEQ_A 硬件触发 → 三通道扫描 → EOCA → DMA
      *
-     * 现改为 TMR4_3 比较事件经 AOS 路由触发 ADC：
-     *   每 50μs（20kHz）自动启动一次 SEQ_A 三通道扫描。
-     *
-     * 【为什么用 SCMP_VH 而不是"谷值事件"】
-     *   芯片只把 6 个 OC 通道比较事件（SCMP_UH/UL/VH/VL/WH/WL）
-     *   导出到 AOS，没有导出计数器 UDF/OVF（谷值/峰值）事件。
-     *   bsp_pwm 里的 INT_SRC_TMR4_3_UDF 是**中断源**，不能直接
-     *   作为 AOS 的触发源。
-     *
-     * 【S0 阶段选 SCMP_VH 的理由】
-     *   只需要先验证"每周期触发一次"这条链路通不通。
-     *   六步换向下 V 相的 OCCR 每周期都会被三角波经过，
-     *   故 SCMP_VH 必然每周期产生一次事件。
-     *   S4 批（FOC 上线）会改为按 min(OCCR) 动态切换触发相，
-     *   保证落在"调制相上桥导通"窗口内。
-     *
-     * 【验证方法】
-     *   烧写后 t_iadc_stat
-     *     conv_cnt 应以 20000/s 增长  → 正确
-     *     conv_cnt 以 40000/s 增长    → SCMP 上下沿都触发，需改用单沿
-     *     conv_cnt 停在 1             → AOS 路由未生效，查 AOS_ADC1_0
+     * 软件 ADC_Start() 不再参与，避免与硬件触发双启动。
+     * TMR4 侧 EVT0 的 SCCR/SCSR 由 hw_tmr4_pwm_config_adc_trigger()
+     * 按配置表设置，因此切换 FOC_CFG_SELECT 会真正改变采样时刻。
      * ============================================================ */
-    /* ============================================================
-     * 【2026-11-04 · Q1 方案 1】改用 INTC 软件启动，关闭空的硬触发
-     * ------------------------------------------------------------
-     * 详细根因分析见文件头的注释块。要点：
-     *   - 删掉 ADC_Start() 导致 STRT=0，序列根本没被 arm ⇒ 永不转换；
-     *   - AOS 指向的 SCMP_VH 事件源从未配置（SCMR/SCCR/SCSR 全是复位值 0）
-     *     ⇒ 即使有 STRT，这条路由也不会产生触发；
-     *   - 因此硬触发整条路径不可用，改为在 PWM 谷值 ISR 里软件启动。
-     *
-     * TRGENA 显式 DISABLE：
-     *   留着一个指向空事件源的硬触发只会在排障时误导。
-     *   转换的启动时机完全由 bsp_pwm.c 的谷值 ISR 决定。
-     *
-     * 为什么不再设 AOS_SetTriggerEventSrc(AOS_ADC1_0, ...)：
-     *   该路由已无使用方。保留会把 ADC1 的触发入口绑到一个不存在的
-     *   事件上，语义混乱。DMA 的触发（AOS_DMA1_2 ← ADC1_EOCA）保留，
-     *   那条是必须的、且是有效的。 */
-    ADC_TriggerCmd(FOC_ADC_UNIT, ADC_SEQ_A, DISABLE);
+    AOS_SetTriggerEventSrc(AOS_ADC1_0, EVT_SRC_TMR4_3_SCMP_UH);
+    ADC_TriggerConfig(FOC_ADC_UNIT, ADC_SEQ_A, ADC_HARDTRIG_EVT0);
+    /* TRGENA 暂不打开：等 DMA 配置完成后再使能，避免首帧在 DMA 未就绪时丢失 */
 
     /* 【2026-11-05 修复 C】数据寄存器自动清零改为 DISABLE
      *
@@ -784,21 +766,11 @@ int foc_adc_init(void)
     DMA_Cmd(CM_DMA1, ENABLE);
     (void)DMA_ChCmd(CM_DMA1, DMA_CH2, ENABLE);
 
-    /* 【2026-11-05】主动触发首帧，让 s_dma_buf 有初值。
-     *
-     * 为什么必须启动：STRT=0 时序列没被 arm，后续任何触发（本 ISR 的
-     * 软件触发）都不会真正开始转换 —— 这是上一批 conv_cnt 恒 0 的第一根因。
-     *
-     * 为什么先 Stop 再清标志再 Start：
-     *   ADC_Start() 只是"启动一次扫描"，不重置状态机。若之前在别处
-     *   （drv_adc.c:173 轮询路径）启动过，可能残留未清的 EOCA，
-     *   导致首个 DMA 请求对应上一轮陈旧数据。
-     *
-     * 首帧相位不确定（可能不在 PWM 谷值）：可接受。首帧只用于建立初值，
-     * 之后每个 20kHz 周期都会被谷值 ISR 刷新。 */
-    ADC_Stop(FOC_ADC_UNIT);
+    /* 【2026-11-17】不再手动触发首帧。
+     * DMA 已就绪，这里清残留标志后打开 ADC 硬件触发，
+     * 下一个 TMR4 EVT0 就会产生首帧。 */
     ADC_ClearStatus(FOC_ADC_UNIT, ADC_FLAG_EOCA);
-    ADC_Start(FOC_ADC_UNIT);
+    ADC_TriggerCmd(FOC_ADC_UNIT, ADC_SEQ_A, ENABLE);
 
     /* 【2026-11-05 删除原 39ms 阻塞等待】
      *
@@ -807,8 +779,8 @@ int foc_adc_init(void)
      * 而且掩盖了问题：首帧等不到就静默超时返回成功，上层无法察觉。
      *
      * 现在改为完全异步：
-     *   - 首帧由上面这次 ADC_Start() 产生，DMA 搬完后 BTC 中断自增 conv_cnt；
-     *   - 之后每个 PWM 谷值 ISR 调 foc_adc_trigger() 再 Start 一次；
+     *   - 首帧由下一个 TMR4 EVT0 硬件触发产生，DMA 搬完后 BTC 中断自增；
+     *   - 后续每个 PWM 周期由 EVT0 自动触发，无需任何软件介入；
      *   - 上层用 foc_adc_get_stat() 的 conv_cnt 判断链路是否活着
      *     （foc_adc_get_bus_current_a10() 在 conv_cnt==0 时返回 0，安全侧）。
      *
@@ -835,7 +807,7 @@ int foc_adc_init(void)
      * 位置验证（为什么放在这里）：
      *   - 启动表 foc_adc 是第 9 步，swing（回转）是第 13 步，
      *     所以此处回转电机**不可能已动作**；
-     *   - 此时 DMA 已跑、ADC 在持续采样（前面 ADC_Start 已执行）；
+     *   - 此时 DMA 已跑、TMR4 EVT0 硬件触发已使能，ADC 在持续采样；
      *   - PWM 已被 tim4_init 末尾置 EMB 封锁（SOE3=1），母线无输出。
      *   ⇒ 三个"静默"条件天然满足。
      *
@@ -906,6 +878,12 @@ int foc_adc_init(void)
 #endif /* FOC_ADC_AUTO_CAL_ON_BOOT */
 
     s_inited = 1U;
+
+    /* 【2026-11-16】EOCA 观测探针：PA0 每次 EOCA 翻转一次。
+     * 必须放在 ADC/DMA 初始化之后注册，避免被本函数前面的 ADC_Init 覆盖。
+     * 探针失败不影响采样主路径。 */
+    (void)foc_eoca_probe_init();
+
     return 0;
 }
 
@@ -958,11 +936,9 @@ void foc_adc_deinit(void)
  * ============================================================ */
 void foc_adc_trigger(void)
 {
-    if (!s_inited)
-    {
-        return;
-    }
-    ADC_Start(FOC_ADC_UNIT);
+    /* 【2026-11-17】ADC 已改为 TMR4 EVT0 硬件触发。
+     * 保留空实现，避免谷值 ISR 再次软件启动造成双触发。
+     * 触发点由 cfg_foc_table.h 的 FOC_CFG_SAMPLE_POINT 决定。 */
 }
 
 /* ============================================================

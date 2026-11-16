@@ -107,7 +107,7 @@ Additional information:
 #endif
 
 #ifndef   BUFFER_SIZE_UP
-  #define BUFFER_SIZE_UP                                  1024  // Size of the buffer for terminal output of target, up to host
+  #define BUFFER_SIZE_UP                                  8192  // Size of the buffer for terminal output of target, up to host
 #endif
 
 #ifndef   BUFFER_SIZE_DOWN

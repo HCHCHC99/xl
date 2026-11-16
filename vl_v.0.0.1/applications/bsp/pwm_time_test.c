@@ -14,7 +14,7 @@
  * 【命令清单】
  *   t_pwmtime           打印当前计数值 + 使能状态
  *   t_pwmtime 1000      连续采样 1000 次（每次间隔 1ms），统计
- *                       1ms 内的计数增量，期望 20（20kHz × 1ms）
+ *                       1ms 内的计数增量，期望 = PWM 频率 / 1000
  * ============================================================
  */
 
@@ -26,6 +26,7 @@
 /* 【2026-11-10 彩标 P4】t_pwmtime 诊断：FAIL 上色，数据保持单色 */
 #include "../log/log_color.h"
 #include "bsp_pwm.h"
+#include "../motor/foc/foc_pwm.h"   /* 实际 PWM 频率，跟随 cfg_foc_table.h */
 #include "board_config.h"           /* BSP_TMR4_3_ISR_IRQ_NUM */
 #include "mode/sys_caps.h"
 
@@ -37,7 +38,12 @@
  * ============================================================ */
 static void cmd_pwmtime(int argc, char **argv)
 {
+    uint32_t pwm_freq;
+
     if (sys_cap_require(SYS_CAP_DIAG_READ, "t_pwmtime") == 0U) { return; }
+
+    pwm_freq = foc_pwm_get_frequency();
+    if (pwm_freq == 0U) { pwm_freq = 20000U; }
 
     /* ---- 无参数：单次快照 ---- */
     if (argc < 2)
@@ -65,14 +71,16 @@ static void cmd_pwmtime(int argc, char **argv)
                    (unsigned)us,
                    (unsigned)(us / 1000000U),
                    (unsigned)((us / 1000U) % 1000U));
-        rt_kprintf("  expect 20 cycles per ms (20kHz PWM)\n");
+        rt_kprintf("  expect %u cycles per ms (%u Hz PWM)\n",
+                   (unsigned)(pwm_freq / 1000U), (unsigned)pwm_freq);
         rt_kprintf("  wrap in %u hours\n",
-                   (unsigned)((0xFFFFFFFFULL / 20000ULL) / 3600ULL));
+                   (unsigned)((0xFFFFFFFFULL / pwm_freq) / 3600ULL));
 
         /* ---- 寄存器直读：一次就能区分"计数器没跑"和"中断没来" ---- */
         rt_kprintf("  ---- raw registers ----\n");
-        rt_kprintf("    CNTR   = %5u   (tri-wave 0..2500, must CHANGE if running)\n",
-                   (unsigned)s[1]);
+        rt_kprintf("    CNTR   = %5u   (tri-wave 0..%u, must CHANGE if running)\n",
+                   (unsigned)s[1],
+                   (unsigned)(foc_pwm_get_period_ticks() - 1U));
         rt_kprintf("    CCSR   = 0x%04X\n", (unsigned)s[2]);
         rt_kprintf("    STOP   = %u   (bit6, 0=running 1=stopped)\n", (unsigned)s[3]);
         rt_kprintf("    IRQZEN = %u   (bit13, valley int enable)\n", (unsigned)s[4]);
@@ -124,8 +132,8 @@ static void cmd_pwmtime(int argc, char **argv)
 
                 bsp_pwm_tb_event_cnt(e);
                 rt_kprintf("    ---- event counters ----\n");
-                rt_kprintf("      valley   = %u   (expect rising at 20kHz)\n",
-                           (unsigned)e[0]);
+                rt_kprintf("      valley   = %u   (expect rising at %u Hz)\n",
+                           (unsigned)e[0], (unsigned)pwm_freq);
                 rt_kprintf("      peak     = %u\n", (unsigned)e[1]);
                 rt_kprintf("      spurious = %u   (should stay 0)\n",
                            (unsigned)e[2]);
@@ -197,6 +205,12 @@ static void cmd_pwmtime(int argc, char **argv)
         uint32_t max_d = 0U;
         uint32_t sum_d = 0U;
         uint32_t samples = 0U;
+        uint32_t exp_delta = pwm_freq / 1000U;   /* 1ms 期望计数增量 */
+        uint32_t lo_d, hi_d;
+
+        if (exp_delta == 0U) { exp_delta = 1U; }
+        lo_d = (exp_delta * 3U) / 4U;
+        hi_d = (exp_delta * 5U) / 4U;
 
         if (n <= 0)    { n = 100; }
         if (n > 5000)  { n = 5000; }
@@ -207,7 +221,8 @@ static void cmd_pwmtime(int argc, char **argv)
             return;
         }
 
-        rt_kprintf("[t_pwmtime] sampling %d x 1ms, expect ~20 cycles each\n", n);
+        rt_kprintf("[t_pwmtime] sampling %d x 1ms, expect ~%u cycles each (%u Hz)\n",
+                   n, (unsigned)exp_delta, (unsigned)pwm_freq);
         rt_kprintf("  k    cnt       delta\n");
 
         prev = bsp_pwm_get_cycle_cnt();
@@ -239,12 +254,12 @@ static void cmd_pwmtime(int argc, char **argv)
                 }
 
                 /* 只打印前 10 行和异常的，避免刷屏 */
-                if ((k < 10) || (d < 15U) || (d > 25U))
+                if ((k < 10) || (d < lo_d) || (d > hi_d))
                 {
                     rt_kprintf("  %3d  %8u  %5u%s\n",
                                k, (unsigned)now, (unsigned)d,
                                ((k == 0) ? "  (first, excluded from stats)"
-                                         : (((d < 15U) || (d > 25U)) ? "  <-- OUT OF RANGE" : "")));
+                                         : (((d < lo_d) || (d > hi_d)) ? "  <-- OUT OF RANGE" : "")));
                 }
             }
             prev = now;
@@ -256,23 +271,31 @@ static void cmd_pwmtime(int argc, char **argv)
         if (samples > 0U)
         {
             uint32_t avg_x100 = (sum_d * 100U) / samples;
+            uint32_t target_x100 = pwm_freq / 10U;   /* freq/1000 * 100 */
+            uint32_t tol_x100 = target_x100 / 200U;  /* ±0.5% */
 
             rt_kprintf("    min = %u   max = %u   avg = %u.%02u cycles/ms\n",
                        (unsigned)min_d, (unsigned)max_d,
                        (unsigned)(avg_x100 / 100U), (unsigned)(avg_x100 % 100U));
 
-            /* 判定：期望 20 cycles/ms（20kHz） */
-            if ((avg_x100 >= 1990U) && (avg_x100 <= 2010U))
+            /* 判定：期望 pwm_freq/1000 cycles/ms */
+            if ((avg_x100 + tol_x100 >= target_x100) &&
+                (avg_x100 <= target_x100 + tol_x100))
             {
                 rt_kprintf("    FREQ OK: %u.%02u kHz, matches PWM setting\n",
                            (unsigned)(avg_x100 / 100U),
                            (unsigned)(avg_x100 % 100U));
-                rt_kprintf("    (target 20.00 kHz, tolerance +/-0.5%%)\n");
+                rt_kprintf("    (target %u.%02u kHz, tolerance +/-0.5%%)\n",
+                           (unsigned)(target_x100 / 100U),
+                           (unsigned)(target_x100 % 100U));
             }
             else
             {
-                rt_kprintf("    FREQ MISMATCH: expect 20.00 cycles/ms\n");
-                rt_kprintf("    check: PWM freq = 20000Hz ? PCLK1 = 100MHz ?\n");
+                rt_kprintf("    FREQ MISMATCH: expect %u.%02u cycles/ms\n",
+                           (unsigned)(target_x100 / 100U),
+                           (unsigned)(target_x100 % 100U));
+                rt_kprintf("    check: PWM freq = %u Hz ? PCLK1 = 100MHz ?\n",
+                           (unsigned)pwm_freq);
             }
 
             if (max_d > (min_d * 2U))

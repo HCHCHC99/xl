@@ -23,24 +23,11 @@
 #include "../motor/foc/foc_pwm.h"   /* FOC PWM 配置表入口（2026-11-16 方案 B） */
 #include "../motor/foc/foc_mode.h"  /* FOC 模式层：上电默认 mode 0 */
 
-/* 【2026-11-04 · Q1 方案 1】FOC 电流采样触发（外部提供）
- *
- * 为什么由 PWM 谷值 ISR 驱动：
- *   三路电流采的是高边（上桥臂 D 端），只有上桥导通时才有真实电流。
- *   三角波谷值（CNT≈0）是七段式 SVPWM 零矢量 111 段的中点，
- *   三相上桥同时导通，正是唯一能"一次采全三路"的时刻。
- *
- * 为什么这里只做声明、不在本文件放 RT_WEAK 空实现：
- *   若本文件写 RT_WEAK 定义，bsp_adc_foc.c 再写强定义，
- *   两个翻译单元各有一份同名符号 —— GCC 下 weak+strong 可以链接，
- *   但一旦哪天 bsp_adc_foc.c 未参与编译（裁剪配置），
- *   就变成"有个空函数在跑"而没有任何提示，电流永远读 0 且不报错。
- *   这类静默失效正是本工程反复踩的坑。
- *   ⇒ 由调用方保证：要么 foc_adc_trigger() 有真实实现，
- *     要么在缺少该模块时链接期就报 undefined reference（显式失败）。
- *     当前 foc_adc（启动表第 9 步）是 BOOT_OPTIONAL，
- *     但 bsp_adc_foc.c 始终参与编译，故符号必然存在。 */
-extern void foc_adc_trigger(void);
+/* 【2026-11-17】ADC 采样已改为 TMR4 EVT0 硬件触发：
+ *   触发点由 cfg_foc_table.h 的 FOC_CFG_SAMPLE_POINT 决定，
+ *   由 hw_tmr4_pwm_config_adc_trigger() 配置 EVT0，
+ *   AOS_ADC1_0 → ADC1 SEQ_A，底层在 bsp_adc_foc.c。
+ *   本文件的谷值 ISR 只维护 20kHz 时基，不再软件启动 ADC。 */
 
 /* ============================================================
  * 编译期裁剪
@@ -121,16 +108,8 @@ static void bsp_pwm_tmr4_isr(void)
     {
         s_pwm_cycle_cnt++;
 
-        /* 【2026-11-04 · Q1 方案 1】谷值 = 零矢量 111 段中点，
-         * 三相上桥同时导通，三路高边电流采样唯一有效的时刻。
-         *
-         * 放在清标志之后、ISR 末尾之前：
-         *   - 清标志在前，避免 ADC 转换期间又被新事件覆盖；
-         *   - 触发在计数之后，保证 cycle_cnt 与采样帧一一对应。
-         *
-         * 为什么用弱符号：见文件头 foc_adc_trigger() 的说明。
-         * 未接入电流采样时是空函数，开销 0。 */
-        foc_adc_trigger();
+        /* ADC 采样由 TMR4 EVT0 硬件触发，这里只维护时基计数。
+         * 好处：采样点与 PWM 严格同相，不受 ISR 延迟影响。 */
     }
     if (is_peak)
     {
@@ -162,9 +141,15 @@ uint32_t bsp_pwm_get_cycle_cnt(void)
  */
 uint32_t bsp_pwm_cycle_to_us(uint32_t cycles)
 {
-    /* 20 kHz ⇒ 1 周期 = 50 μs
-     * 写成乘法而非除法，避免 50 被当作固定除数影响精度 */
-    return cycles * 50U;
+    uint32_t freq = foc_pwm_get_frequency();
+
+    /* 频率由 cfg_foc_table.h 决定，不能再写死 20kHz。
+     * 例：20kHz → 50μs/周期；10kHz → 100μs/周期。 */
+    if (freq == 0U) {
+        freq = 20000U;
+    }
+
+    return cycles * (1000000U / freq);
 }
 
 /**
@@ -702,6 +687,14 @@ static rt_err_t bsp_pwm_set_duty_impl(hw_pwm_t *self, uint8_t phase, uint32_t du
     uint16_t cmp;
 
     (void)self;
+
+    /* FOC 模式已接管 TMR4_3：旧六步路径（bg_sched → motor_update →
+     * openloop_update → bldc_6step_set_output）每 5ms 会把 OCCR 写回 0%，
+     * 覆盖 focmode 设置的占空比。这里直接忽略旧路径的写入。 */
+    if (Foc_Mode_PwmOwned()) {
+        return RT_EOK;
+    }
+
     if (!g_bsp_pwm_priv.initialized) return -RT_ERROR;
 
     cmp = bsp_pwm_duty_to_cmp(duty);

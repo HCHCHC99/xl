@@ -7,6 +7,7 @@
 #include "../../bsp/bsp_hall.h"
 #include "../../bsp/bsp_pwm.h"
 #include "../../hw/hw_pwm.h"
+#include "../foc/foc_mode.h"   /* FOC_DISABLE_LEGACY_6STEP / Foc_Mode_PwmOwned */
 #include "framework/state_engine/sm_assert.h"
 #include <string.h>
 #include <rtthread.h>
@@ -85,6 +86,8 @@ static void bldc_hall_callback(hw_hall_t *hall, void *user_data);
  * ============================================================ */
 static void set_bridge_output(bldc_6step_data_t *data, uint8_t step, uint32_t duty)
 {
+    if (Foc_Mode_PwmOwned()) return;   /* FOC 独占 PWM，旧六步禁止写占空比 */
+
     if (step < 1 || step > 6) return;
 
     uint8_t upper = g_step_phase[step][0];
@@ -203,6 +206,9 @@ static void bldc_6step_set_output(motor_t *self, int32_t output)
     bldc_6step_data_t *data = (bldc_6step_data_t*)self->drv_data;
     SM_ASSERT_PTR(data);
 
+    /* FOC 独占 TMR4_3 时，旧六步路径不得使能/写占空比 */
+    if (Foc_Mode_PwmOwned()) return;
+
     /* 方向跟随 motor->direction */
     data->reverse = (self->direction == MOTOR_DIR_CCW) ? 1U : 0U;
 
@@ -250,6 +256,8 @@ static void bldc_6step_set_output(motor_t *self, int32_t output)
  * ============================================================ */
 static void bldc_6step_brake(motor_t *self)
 {
+    if (Foc_Mode_PwmOwned()) return;
+
     bldc_6step_data_t *data = (bldc_6step_data_t*)self->drv_data;
     SM_ASSERT_PTR(data);
 
@@ -266,6 +274,8 @@ static void bldc_6step_coast(motor_t *self)
 {
     bldc_6step_data_t *data = (bldc_6step_data_t*)self->drv_data;
     SM_ASSERT_PTR(data);
+
+    if (Foc_Mode_PwmOwned()) return;   /* FOC 独占 PWM，旧六步禁止关闭通道 */
 
     hw_pwm_disable(&g_swing_pwm);
     data->duty              = 0;
@@ -293,6 +303,8 @@ static void bldc_6step_update(motor_t *self)
     bldc_6step_data_t *data = (bldc_6step_data_t*)self->drv_data;
     SM_ASSERT_PTR(data);
 
+    if (Foc_Mode_PwmOwned()) return;
+
     uint8_t hall = hw_hall_read_state(&g_swing_hall);
     if (hall == data->hall_state) return;
 
@@ -316,6 +328,8 @@ static void bldc_6step_tick(motor_t *self, uint32_t dt_ms)
 {
     bldc_6step_data_t *data = (bldc_6step_data_t*)self->drv_data;
     SM_ASSERT_PTR(data);
+
+    if (Foc_Mode_PwmOwned()) return;
 
     if (!data->forcestart_active) return;
 

@@ -48,11 +48,12 @@ static void motor_angle_timer_cb(void *param)
 
     s_task_tick++;
 
-    /* 【2026-11-03 修正】时间源改用 20kHz 硬件 tick，不再用 rt_tick(1ms)
+    /* 【2026-11-03 修正】时间源改用 PWM 硬件 tick，不再用 rt_tick(1ms)
      *
      * 原因：5ms 窗口下 rt_tick 的 1ms 分辨率导致 dt 只能是 5 或 6，
      *       量化误差最坏 ±20%，远大于角度量化（±0.08%）。
-     *       bsp_pwm_get_cycle_cnt() 是 50us 分辨率，误差降到 ±0.5%。
+     *       bsp_pwm_get_cycle_cnt() 是 1 个 PWM 周期分辨率，误差降到 ±0.5%。
+     *       tick 频率跟随 cfg_foc_table.h 的 FOC_CFG_PWM_FREQ。
      *
      * 注意：tick 由 PWM 时基中断维护，若该中断未工作，此值恒 0，
      *       motor_speed_update 会因 dt 永不增长而一直不出结果。
@@ -280,9 +281,11 @@ static void cmd_mspeed(int argc, char **argv)
                (unsigned)st.update_cnt, (unsigned)st.reject_cnt,
                (unsigned)st.rebase_cnt, (unsigned)st.dt_max_ticks);
     rt_kprintf("    units: rpm_out=x0.01RPM  omega=x0.001deg/s\n");
-    rt_kprintf("           rpm_z0=x0.1RPM    dt_tk=x50us\n");
-    rt_kprintf("    expect dt_tk = %u (5ms @20kHz), tolerance +/-5\n",
-               (unsigned)MOTOR_SPEED_WINDOW_TICKS);
+    rt_kprintf("           rpm_z0=x0.1RPM    dt_tk=x%uus (1 PWM cycle)\n",
+               (unsigned)bsp_pwm_cycle_to_us(1U));
+    rt_kprintf("    expect dt_tk = %u (5ms @ %u Hz), tolerance +/-5\n",
+               (unsigned)MOTOR_SPEED_WINDOW_TICKS,
+               (unsigned)(1000000U / bsp_pwm_cycle_to_us(1U)));
 
     {
         const mech_rt_t *rt = mech_get_rt();
