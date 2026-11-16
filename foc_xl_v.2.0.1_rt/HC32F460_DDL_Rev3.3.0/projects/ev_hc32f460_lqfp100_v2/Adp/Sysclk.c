@@ -45,8 +45,13 @@ static int32_t SysTick_LRC_Init(void);
  * 函数实现
  *============================================================================*/
 
+/* RT-Thread OS tick callback, defined in RTE/RTOS/board.c */
+extern void rt_os_tick_callback(void);
+
 void SysTick_Handler(void)
-{}
+{
+    rt_os_tick_callback();
+}
 
 /**
  * @brief SysTick定时器初始化(唯一对外接口)

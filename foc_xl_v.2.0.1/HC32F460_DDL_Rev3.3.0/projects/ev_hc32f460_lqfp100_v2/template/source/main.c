@@ -1351,25 +1351,29 @@ int main(void)
         }
 
         /* POSITION å‚æ•°ä¸Žä½ç½®å‘¨æœŸæ‰“å°ï¼ˆ500ms ä¸€æ¬¡ï¼‰ */
+        /* POSITION 周期打印（50ms 一次）：
+         *   位置单位 x1e4 rev（0.1 mrev），速度 rpm，电流 mA
+         *   排查收尾抖动时看 pos/err/cmd/ramp/filt/out/iterm 的相位关系 */
         if (g_mode_cmd == 10) {
             static uint32_t s_last_pos_log_ms = 0;
             uint32_t now_ms = tickTimer_GetCount();
 
-            if ((now_ms - s_last_pos_log_ms) >= 500u) {
+            if ((now_ms - s_last_pos_log_ms) >= 50u) {
                 s_last_pos_log_ms = now_ms;
-                MAIN_D("[POS] dec=%ld rpm/s kd_x1000=%ld vmax=%ld iq_lim=%ld db_x10000=%ld",
-                       (long)g_pos_dec_rpm_s,
-                       (long)(g_pos_kd_rpm_per_rpm * 1000.0f),
-                       (long)g_pos_v_max_rpm,
-                       (long)g_pos_iq_limit_ma,
-                       (long)(g_pos_deadband_rev * 10000.0f));
-                MAIN_D("[POS] tgt_x1000=%ld pos_x1000=%ld err_x1000=%ld rev, "
-                       "cmd=%ld rpm in_pos=%u",
-                       (long)(g_pos_target_rev * 1000.0f),
-                       (long)(g_pos_fb_rev * 1000.0f),
-                       (long)(g_pos_err_rev * 1000.0f),
+                MAIN_D("[POS] tgt=%ld pos=%ld err=%ld x1e4rev | "
+                       "cmd=%ld ramp=%ld filt=%ld rpm | out=%ld iterm=%ld iq=%ld mA | "
+                       "inpos=%u act=%u",
+                       (long)(g_pos_target_rev * 10000.0f),
+                       (long)(g_pos_fb_rev * 10000.0f),
+                       (long)(g_pos_err_rev * 10000.0f),
                        (long)g_pos_cmd_rpm,
-                       (unsigned)g_pos_in_pos);
+                       (long)g_spd_ramp_rpm,
+                       (long)g_spd_filt_rpm,
+                       (long)g_spd_out_ma,
+                       (long)g_spd_iterm_ma,
+                       (long)(g_fc_iq * 1000.0f),
+                       (unsigned)g_pos_in_pos,
+                       (unsigned)g_pos_active);
             }
         }
 
