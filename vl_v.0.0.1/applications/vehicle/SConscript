@@ -1,0 +1,19 @@
+import os
+from building import *
+
+cwd = GetCurrentDir()
+src = Glob('*.c')
+CPPPATH = [
+    cwd,
+    '..',
+    '../framework/core',
+    '../framework/executor',
+    '../framework/manager',
+    '../framework/state_engine',
+    '../framework/port',
+    '../CAN',
+    '../keyboard',
+]
+
+group = DefineGroup('Vehicle', src, depend = [''], CPPPATH = CPPPATH)
+Return('group')

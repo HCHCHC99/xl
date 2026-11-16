@@ -1,0 +1,16 @@
+from building import *
+
+cwd = GetCurrentDir()
+src = Glob('*.c')
+CPPPATH = [
+    cwd,
+    '..',
+    '../framework/core',
+    '../framework/manager',
+    '../framework/executor',
+    '../storage',
+    '../sys_param',
+]
+
+group = DefineGroup('Lift', src, depend = [''], CPPPATH = CPPPATH)
+Return('group')

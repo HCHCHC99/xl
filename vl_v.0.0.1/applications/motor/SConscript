@@ -1,0 +1,21 @@
+from building import *
+
+cwd = GetCurrentDir()
+src = Glob('*.c') + Glob('drv/*.c') + Glob('fb/*.c') + Glob('ctrl/*.c')
+
+CPPPATH = [
+    cwd,
+    cwd + '/drv',
+    cwd + '/fb',
+    cwd + '/ctrl',
+    '..',
+    '../framework/core',
+    '../framework/manager',
+    '../hw',
+    '../bsp',
+    '../storage',
+    '../sys_param',
+]
+
+group = DefineGroup('Motor', src, depend = [''], CPPPATH = CPPPATH)
+Return('group')

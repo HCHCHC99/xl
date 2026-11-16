@@ -12,6 +12,8 @@
  *   err   = clamp(target, ±limit) - pos
  *   vcmd  = sign(err) × min(sqrt(120·dec·|err|), v_max) - kd × 实测转速
  *   到位窗口内 vcmd = 0
+ *   到位判据：|err| <= 死区 且 |实测转速| <= g_pos_v_inpos_rpm
+ *   换向（vcmd 符号翻转）时清速度环积分，避免旧方向的积分蓄力顶住制动
  *
  *   包络保证从任意速度按 dec 减速都能恰好停在目标处，速度环的目标斜坡
  *   （g_spd_accel_rpm_s）按同一减速度设定，所以大行程不会过冲；
@@ -38,6 +40,9 @@
 #define POS_ISR_HZ          (20000.0f)
 #define POS_DT_MS           ((float)POS_CTRL_DIV * 1000.0f / POS_ISR_HZ)   /* 2ms */
 
+/* 换向清积分的最小指令幅值，rpm：防止 kd 阻尼在 0 附近抖动时反复清积分 */
+#define POS_REV_MIN_RPM     (5.0f)
+
 /*---------------------------------------------------------------------------
  * 可调参数变量
  *---------------------------------------------------------------------------*/
@@ -49,6 +54,7 @@ volatile float   g_pos_kd_rpm_per_rpm    = POS_KD_RPM_PER_RPM_INIT;
 volatile float   g_pos_v_max_rpm         = POS_V_MAX_RPM_INIT;
 volatile float   g_pos_iq_limit_ma       = POS_IQ_LIMIT_MA_INIT;
 volatile float   g_pos_deadband_rev      = POS_DEADBAND_REV_INIT;
+volatile float   g_pos_v_inpos_rpm       = POS_V_INPOS_RPM_INIT;
 volatile float   g_pos_err_max_rev       = POS_ERR_MAX_REV_INIT;
 volatile float   g_pos_limit_rev         = POS_LIMIT_REV_INIT;
 
@@ -68,6 +74,7 @@ static bool     s_ready          = false;
 static uint16_t s_div_cnt        = 0u;
 static float    s_pos_offset_rev = 0.0f;
 static float    s_fb_rev         = 0.0f;
+static float    s_vcmd_last      = 0.0f;   /* 上一个非零速度指令，用于换向检测 */
 
 /* 当前位置（圈），正方向与速度环一致 */
 static float pos_read_rev(void)
@@ -90,6 +97,7 @@ void Foc_Position_Init(void)
     s_div_cnt        = 0u;
     s_pos_offset_rev = 0.0f;
     s_fb_rev         = 0.0f;
+    s_vcmd_last      = 0.0f;
 
     g_pos_active  = 0u;
     g_pos_in_pos  = 0u;
@@ -100,7 +108,7 @@ void Foc_Position_Init(void)
     s_ready = true;
 
     MAIN_D("[POS] P-loop ready: div=%u dt_ms_x10=%ld dec=%ld rpm/s kd_x1000=%ld "
-           "vmax=%ld iq_lim=%ld db_x10000=%ld limit_rev=%ld",
+           "vmax=%ld iq_lim=%ld db_x10000=%ld v_inpos=%ld limit_rev=%ld",
            (unsigned)POS_CTRL_DIV,
            (long)(POS_DT_MS * 10.0f),
            (long)g_pos_dec_rpm_s,
@@ -108,6 +116,7 @@ void Foc_Position_Init(void)
            (long)g_pos_v_max_rpm,
            (long)g_pos_iq_limit_ma,
            (long)(g_pos_deadband_rev * 10000.0f),
+           (long)g_pos_v_inpos_rpm,
            (long)g_pos_limit_rev);
 }
 
@@ -120,8 +129,9 @@ void Foc_Position_Reset(void)
         return;
     }
 
-    s_div_cnt = 0u;
-    s_fb_rev  = pos_read_rev();
+    s_div_cnt   = 0u;
+    s_fb_rev    = pos_read_rev();
+    s_vcmd_last = 0.0f;
 
     g_pos_fb_rev  = s_fb_rev;
     g_pos_err_rev = 0.0f;
@@ -139,7 +149,8 @@ void Foc_Position_Stop(void)
         return;
     }
 
-    s_div_cnt = 0u;
+    s_div_cnt   = 0u;
+    s_vcmd_last = 0.0f;
 
     g_pos_err_rev = 0.0f;
     g_pos_cmd_rpm = 0.0f;
@@ -162,6 +173,7 @@ void Foc_Position_Task20k(void)
     float kd;
     float vmax;
     float iq_lim;
+    float v_inpos;
     float vallow;
     float vcmd;
 
@@ -231,6 +243,10 @@ void Foc_Position_Task20k(void)
     if (iq_lim < 1.0f) {
         iq_lim = 1.0f;
     }
+    v_inpos = g_pos_v_inpos_rpm;
+    if (v_inpos < 0.0f) {
+        v_inpos = 0.0f;
+    }
 
     /* ---- 目标软行程限位 ---- */
     target = g_pos_target_rev;
@@ -258,6 +274,18 @@ void Foc_Position_Task20k(void)
         }
     }
 
+    /* ---- 换向清积分：vcmd 符号翻转时，旧方向的积分蓄力会顶住制动 ----
+     * 只在上一次非零指令与本次指令反号时清；+ -> 0 -> - 也算换向（0 不更新记忆）
+     * 再要求 |err| > 2×deadband，避免在死区边缘量化抖动时反复清积分丢掉保持力矩 */
+    if ((fabsf(err_raw) > 2.0f * db) &&
+        (((vcmd > POS_REV_MIN_RPM) && (s_vcmd_last < -POS_REV_MIN_RPM)) ||
+         ((vcmd < -POS_REV_MIN_RPM) && (s_vcmd_last > POS_REV_MIN_RPM)))) {
+        Foc_Speed_ResetIntegral();
+    }
+    if ((vcmd > POS_REV_MIN_RPM) || (vcmd < -POS_REV_MIN_RPM)) {
+        s_vcmd_last = vcmd;   /* 只记有效幅值的指令，0 和小抖动不覆盖记忆 */
+    }
+
     g_pos_cmd_rpm     = vcmd;
     g_spd_target_rpm  = vcmd;
     g_spd_iq_limit_ma = iq_lim;
@@ -269,7 +297,9 @@ void Foc_Position_Task20k(void)
         if (err >  err_max) err =  err_max;
         if (err < -err_max) err = -err_max;
 
-        g_pos_in_pos = (fabsf(err_raw) <= db) ? 1u : 0u;
+        /* 到位 = 位置进窗口 且 实测转速低于门限；只看位置会把"高速冲过"误判成到位 */
+        g_pos_in_pos = ((fabsf(err_raw) <= db) &&
+                        (fabsf(g_spd_filt_rpm) <= v_inpos)) ? 1u : 0u;
 
         g_pos_err_rev = err;
     }
