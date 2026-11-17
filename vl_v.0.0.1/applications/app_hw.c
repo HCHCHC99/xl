@@ -10,6 +10,7 @@
 #include "bsp/bsp_pwm.h"
 #include "bsp/bsp_brake.h"
 #include "bsp/bsp_hall.h"
+#include "board_config.h"        /* BSP_USING_ABS_ENCODER */
 #include "framework/state_engine/sm_assert.h"
 #include <rtthread.h>
 
@@ -53,7 +54,10 @@ int app_hw_init(void)
         return -1;
     }
 
-    /* 3. 回转轴 Hall */
+    /* 3. 回转轴 Hall
+     * BSP_USING_ABS_ENCODER=1：ABZ 编码器接替角度反馈，Hall 硬件不再初始化，
+     * 这里也必须跳过 Hall 对象初始化，否则 app_hw 会失败并阻断后续启动。 */
+#if !BSP_USING_ABS_ENCODER
     ret = hw_hall_init(&g_swing_hall,
                        &g_swing_hall_cfg,
                        &g_bsp_hall_ops);
@@ -61,6 +65,11 @@ int app_hw_init(void)
         rt_kprintf("[App-HW] swing hall init failed (%d)\n", ret);
         return -1;
     }
+#else
+    (void)g_swing_hall;
+    (void)g_swing_hall_cfg;
+    (void)g_bsp_hall_ops;
+#endif
 
     rt_kprintf("[App-HW] All hardware objects initialized.\n\n");
     return 0;

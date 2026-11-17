@@ -78,13 +78,14 @@ extern "C" {
  * ============================================================ */
 #define FOC_ADC_UNIT                CM_ADC1
 
-#define FOC_ADC_CH_IBUS             (3U)    /* PA3 CURRENT_TOTAL */
-#define FOC_ADC_CH_IW               (4U)    /* PA4 CURRENT_W     */
-#define FOC_ADC_CH_IV               (5U)    /* PA5 CURRENT_V     */
+#define FOC_ADC_CH_IBUS             (3U)    /* PA3：母线电流 / U 相电流 */
+#define FOC_ADC_CH_IW               (4U)    /* PA4：W 相 */
+#define FOC_ADC_CH_IV               (5U)    /* PA5：V 相 */
+#define FOC_ADC_CH_VBUS             (6U)    /* PA6：母线电压 */
 
-/* 扫描序列的通道顺序。这是 DMA 搬运后数组下标的唯一依据，
- * 改动必须同步 foc_iabc_t 的字段顺序和 DMA 长度。 */
-#define FOC_ADC_SEQ_LEN             (3U)
+/* 扫描序列的通道顺序（CH3 → CH4 → CH5 → CH6）。
+ * 这是 DMA 搬运后数组下标的唯一依据，改动必须同步 foc_iabc_t 与 DMA 长度。 */
+#define FOC_ADC_SEQ_LEN             (4U)
 
 /* ============================================================
  * 二、标定常量（整数运算，禁用浮点的前提下也能用）
@@ -100,9 +101,8 @@ extern "C" {
 #define FOC_CUR_ZERO_RAW            ((uint16_t)(((uint32_t)FOC_CUR_ZERO_MV * \
                                                   FOC_ADC_FULL_SCALE) / FOC_ADC_VREF_MV))
 
-/* 采样时间：上桥臂 D 端经采样电阻+运放，属低阻源，
- * 但 PWM 开关噪声大，取 40 ADCLK 让 S/H 充分建立（≈0.4us@100MHz） */
-#define FOC_ADC_SAMPLE_TIME_CLK     (40U)
+/* 采样时间：50 ADCLK（与 FOC 工程 CFG_SAMPLING_ADC_SAMPLE_TIME 一致） */
+#define FOC_ADC_SAMPLE_TIME_CLK     (50U)
 
 /* ============================================================
  * 电流零点校准总开关（2026-11-09）
@@ -170,8 +170,19 @@ extern "C" {
  * 相邻变量塞进来导致越界写。 */
 typedef struct
 {
-    volatile uint16_t raw[FOC_ADC_SEQ_LEN];   /* [0]=ibus [1]=iw [2]=iv */
+    volatile uint16_t raw[FOC_ADC_SEQ_LEN];   /* [0]=CH3 [1]=CH4(iw) [2]=CH5(iv) [3]=CH6(vbus) */
 } foc_adc_dma_buf_t;
+
+/* FOC 采样快照（浮点，按 CFG_SAMPLING_BOARD_IU_SENSOR 板型换算） */
+typedef struct
+{
+    float i_total;  /* A，母线电流（仅板型 0 有效，板型 1/2 恒为 0） */
+    float iu;       /* A，U 相（板型 1 用 CH3；板型 0/2 由 -iv-iw 重构） */
+    float iv;       /* A，V 相（CH5） */
+    float iw;       /* A，W 相（CH4） */
+    float vbus;     /* V，母线电压（真实模式 CH6，模拟模式固定 12V） */
+    uint32_t seq;   /* 采样序号，每帧 +1 */
+} foc_sample_t;
 
 /* 一次电流快照，已换算为物理单位 */
 typedef struct
@@ -375,6 +386,11 @@ void foc_adc_cal_begin(void);
 uint8_t foc_adc_cal_get_result(uint16_t out[3]);
 
 /**
+ * @brief  停止零偏累加（取完结果后调用，避免 ISR 永久累加）
+ */
+void foc_adc_cal_stop(void);
+
+/**
  * @brief  取已采集的样本数（诊断用）
  */
 uint32_t foc_adc_cal_get_sample_count(void);
@@ -395,6 +411,30 @@ int foc_adc_cal_commit(const uint16_t raw3[3]);
  * @note   即使返回 0，out 里仍是有效值（默认 2048）。
  */
 uint8_t foc_adc_get_zero(uint16_t out[3]);
+
+/* ============================================================
+ * FOC 控制层接口（2026-11-17 新增）
+ * ============================================================ */
+
+/**
+ * @brief  取最近一帧浮点采样（板型映射 + 真实/模拟 vbus）
+ * @note   ISR 安全：只读 DMA 缓冲与标定系数，无除法表
+ */
+int foc_adc_get_sample(foc_sample_t *s);
+
+/**
+ * @brief  注册"采样帧完成"回调（DMA BTC 中断内调用）
+ * @note   FOC 控制层用它在 20kHz 执行 Foc_Control_Step()；
+ *         传 NULL 取消回调。
+ */
+void foc_adc_set_frame_callback(void (*cb)(void));
+
+/**
+ * @brief  把三路 raw 零偏写入浮点采样换算（FOC 用）
+ * @param  raw3  [0]=CH3 [1]=CH4 [2]=CH5，通常来自 foc_adc_cal_get_result()
+ * @note   只更新 RAM 中的标定系数，不写 Flash、不改 legacy s_zero_raw。
+ */
+void foc_adc_apply_offset_raw(const uint16_t raw3[3]);
 
 #ifdef __cplusplus
 }

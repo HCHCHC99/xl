@@ -6,6 +6,7 @@
  */
 
 #include "boot_table.h"
+#include "board_config.h"
 
 /* 【2026-11-10 彩标 P3】hw_check 结果：错误位图=ERR，全部通过=OK */
 #include "../log/log_color.h"
@@ -23,7 +24,8 @@ extern int  sys_config_init(void);       /* 系统配置表：运行参数（202
 extern int  bg_scheduler_init(void);
 extern int  app_hw_init(void);
 extern int  motor_module_init(void);
-extern int  foc_adc_init(void);          /* FOC 电流采样：ADC1 三路 + DMA1 CH2 */
+extern int  foc_adc_init(void);          /* FOC 电流采样：ADC1 四路 + DMA1 CH2 */
+extern void Foc_Control_Init(void);        /* FOC 20kHz 控制层（挂采样帧回调） */
 extern int  motor_angle_task_init(void);   /* 电机虚拟角度 + 转速（1ms 软定时器）*/
 /* 堵转保护（2026-11-05 / S1）。
  * 参数用 void* 而不是 motor_t*：boot_table.c 刻意不 include motor.h
@@ -101,6 +103,13 @@ static int boot_stall_init(void)
     return motor_stall_init(boot_get_swing_motor());
 }
 
+/* ===================== FOC 控制层 ===================== */
+static int boot_foc_ctrl_init(void)
+{
+    Foc_Control_Init();
+    return 0;
+}
+
 /* ===================== 线程创建 ===================== */
 static int boot_create_threads(void)
 {
@@ -176,6 +185,10 @@ const boot_step_t g_boot_steps[] = {
      *   - 用 NONFATAL：电流采样起不来不应阻断整机启动，
      *     由 foc_adc_read() 返回错误让上层降级（FOC 未上线前无影响）。 */
     {"foc_adc",          foc_adc_init,         BOOT_LV_HW,         BOOT_OPTIONAL, 0, {"motor"}},
+    /* FOC 20kHz 控制层（2026-11-17）
+     * 依赖 foc_adc：注册采样帧完成回调，之后每个 DMA BTC 中断执行控制链。
+     * BOOT_OPTIONAL：控制层起不来时 PWM 仍保持 IDLE 全低，安全侧。 */
+    {"foc_ctrl",         boot_foc_ctrl_init,   BOOT_LV_HW,         BOOT_OPTIONAL, 0, {"foc_adc"}},
     /* 电机虚拟角度 + 转速（FOC 基础设施，2026-11-02）
      * 位置约束：
      *   - 必须在 mech_cfg 之后：motor_angle_solve 需要减速比与行程
@@ -184,7 +197,9 @@ const boot_step_t g_boot_steps[] = {
      *   - BOOT_OPTIONAL：角度起不来不应阻断整机（HMI/手动模式仍可用）
      * 注意：本步只**启动定时器**，不做三颗解算。
      *       解算需 mech_cfg 就绪且编码器可读，由 t_mangle_solve 显式触发。 */
+#if !BSP_USING_ABS_ENCODER
     {"mangle",           motor_angle_task_init, BOOT_LV_APP,       BOOT_OPTIONAL, 0, {"mech_cfg", "foc_adc"}},
+#endif
     /* 【2026-11-05 / S1】堵转保护初始化
      * 位置约束：
      *   - 必须在 sys_config（第 4 步）之后：stall_load_cfg 要读 0x09xx 十一项

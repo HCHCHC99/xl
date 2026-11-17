@@ -114,6 +114,12 @@
 
 #include "../foc/foc_eoca_probe.h"   /* EOCA/PA0 观测探针（2026-11-16） */
 
+/* 【2026-11-17】ABZ 编码器：20kHz 采样中断内同步 TMRA1 计数 */
+#include "../foc/hw_encoder.h"
+
+/* 【2026-11-17】采样板型/标定配置（FOC 工程 cfg_sampling.h） */
+#include "../foc/cfg_sampling.h"
+
 #include <string.h>
 
 /* ============================================================
@@ -123,6 +129,28 @@ static foc_adc_dma_buf_t s_dma_buf;
 static volatile foc_adc_stat_t s_stat;
 static volatile uint32_t s_seq;              /* 采样序号 */
 static uint8_t s_inited;
+
+/* 【2026-11-17】FOC 浮点采样标定（板型/零点由 cfg_sampling.h 决定）
+ *   current = (raw - offset) × scale
+ *   vbus    = raw × vbus_scale（真实模式）
+ * 零点初值为 CFG_SAMPLING_CURRENT_OFFSET（板型 1/2 = 1551，板型 0 = 2048），
+ * mode 3 的 ZERO 阶段会采样并覆盖。 */
+static struct {
+    float    current_scale;
+    float    current_offset[3];
+    float    vbus_scale;
+    uint16_t vbus_ch;
+} s_scale = {
+    CFG_SAMPLING_CURRENT_SCALE,
+    { CFG_SAMPLING_CURRENT_OFFSET,
+      CFG_SAMPLING_CURRENT_OFFSET,
+      CFG_SAMPLING_CURRENT_OFFSET },
+    CFG_SAMPLING_VBUS_SCALE,
+    FOC_ADC_CH_VBUS
+};
+
+/* 采样帧完成回调（FOC 控制层注册） */
+static void (*s_frame_cb)(void) = RT_NULL;
 
 /* ============================================================
  * 【2026-11-09 新增】三路电流零点（raw 域）
@@ -339,6 +367,12 @@ void foc_adc_load_zero(void)
             (s_zero_raw[2] != FOC_CUR_ZERO_RAW))
         {
             s_zero_valid = 1U;
+
+            /* 已存零点同步到 FOC 浮点换算；
+             * 未校准（全 2048）时保留板型默认零点（板型 1/2 = 1551） */
+            s_scale.current_offset[0] = (float)s_zero_raw[0];
+            s_scale.current_offset[1] = (float)s_zero_raw[1];
+            s_scale.current_offset[2] = (float)s_zero_raw[2];
         }
         else
         {
@@ -374,6 +408,11 @@ uint32_t foc_adc_cal_get_sample_count(void)
     if (s_cal_cnt[1] < n) { n = s_cal_cnt[1]; }
     if (s_cal_cnt[2] < n) { n = s_cal_cnt[2]; }
     return n;
+}
+
+void foc_adc_cal_stop(void)
+{
+    s_cal_running = 0U;
 }
 
 uint8_t foc_adc_cal_get_result(uint16_t out[3])
@@ -437,6 +476,9 @@ int foc_adc_cal_commit(const uint16_t raw3[3])
     s_zero_raw[1] = raw3[1];
     s_zero_raw[2] = raw3[2];
 
+    /* FOC 浮点换算同步 */
+    foc_adc_apply_offset_raw(raw3);
+
     /* "已校准" = 三路不全等于默认 2048（与 load_zero 判据一致） */
     if ((raw3[0] != FOC_CUR_ZERO_RAW) ||
         (raw3[1] != FOC_CUR_ZERO_RAW) ||
@@ -496,8 +538,35 @@ static void foc_adc_dma_isr(void)
         s_stat.conv_cnt++;
         s_seq++;
 
-        /* 堵转保护：把刚搬完的这一帧电流喂给 20kHz 判据 */
+        /* 零偏校准累加（mode 3 ZERO 阶段使能；三路 uint32 加法，ISR 安全） */
+        if (s_cal_running != 0U)
+        {
+            if (s_cal_cnt[0] < 500000U)
+            {
+                s_cal_sum[0] += s_dma_buf.raw[0];
+                s_cal_sum[1] += s_dma_buf.raw[1];
+                s_cal_sum[2] += s_dma_buf.raw[2];
+                s_cal_cnt[0]++;
+                s_cal_cnt[1]++;
+                s_cal_cnt[2]++;
+            }
+        }
+
+        /* 堵转保护：母线段电流只在板型 0 有效 */
+#if (CFG_SAMPLING_BOARD_IU_SENSOR == 0)
         stall_on_current(foc_adc_get_bus_current_dev_raw());
+#endif
+
+        /* ABZ 编码器：与电流同拍锁存 TMRA1 计数，保证 FOC 角度/电流同相位 */
+#if BSP_USING_ABS_ENCODER
+        hw_encoder_update_count_from_isr();
+#endif
+
+        /* FOC 控制层：一帧数据已就绪，执行 20kHz 控制链 */
+        if (s_frame_cb != RT_NULL)
+        {
+            s_frame_cb();
+        }
     }
     if (DMA_GetErrStatus(CM_DMA1, DMA_INT_TRANS_ERR_CH2) == SET)
     {
@@ -577,9 +646,10 @@ int foc_adc_init(void)
      * 但必须放在解锁窗口内，否则 bsp_hall/bsp_i2c 留下的 GPIO 锁会让它失效。 */
     (void)GPIO_StructInit(&stcGpioInit);
     stcGpioInit.u16PinAttr = PIN_ATTR_ANALOG;
-    (void)GPIO_Init(GPIO_PORT_A, GPIO_PIN_03, &stcGpioInit);   /* ibus */
-    (void)GPIO_Init(GPIO_PORT_A, GPIO_PIN_04, &stcGpioInit);   /* iw   */
-    (void)GPIO_Init(GPIO_PORT_A, GPIO_PIN_05, &stcGpioInit);   /* iv   */
+    (void)GPIO_Init(GPIO_PORT_A, GPIO_PIN_03, &stcGpioInit);   /* CH3 iu/ibus */
+    (void)GPIO_Init(GPIO_PORT_A, GPIO_PIN_04, &stcGpioInit);   /* CH4 iw     */
+    (void)GPIO_Init(GPIO_PORT_A, GPIO_PIN_05, &stcGpioInit);   /* CH5 iv     */
+    (void)GPIO_Init(GPIO_PORT_A, GPIO_PIN_06, &stcGpioInit);   /* CH6 vbus   */
 
     /* ---------------- 4. ADC1 配置 ---------------- */
     ADC_DeInit(FOC_ADC_UNIT);
@@ -603,12 +673,19 @@ int foc_adc_init(void)
     ADC_SetSampleTime(FOC_ADC_UNIT, FOC_ADC_CH_IW,   FOC_ADC_SAMPLE_TIME_CLK);
     ADC_SetSampleTime(FOC_ADC_UNIT, FOC_ADC_CH_IV,   FOC_ADC_SAMPLE_TIME_CLK);
 
-    /* 使能三个通道进 SEQ_A。注意顺序无所谓，
-     * 转换顺序由 CHSELRA 的位序决定（通道号从小到大），
-     * 即 CH3 → CH4 → CH5，与 s_dma_buf.raw[] 的下标一致。 */
+    /* 使能四个通道进 SEQ_A。转换顺序由 CHSELRA 的位序决定
+     * （通道号从小到大），即 CH3 → CH4 → CH5 → CH6，
+     * 与 s_dma_buf.raw[] 的下标一致。 */
     ADC_ChCmd(FOC_ADC_UNIT, ADC_SEQ_A, FOC_ADC_CH_IBUS, ENABLE);
     ADC_ChCmd(FOC_ADC_UNIT, ADC_SEQ_A, FOC_ADC_CH_IW,   ENABLE);
     ADC_ChCmd(FOC_ADC_UNIT, ADC_SEQ_A, FOC_ADC_CH_IV,   ENABLE);
+
+    /* CH6 必须始终参与扫描：DMA 每帧固定搬 4 个半字，
+     * 模拟 vbus 模式下也要采（只是换算时不使用），否则帧长度不匹配。 */
+    if (s_scale.vbus_ch != 0U) {
+        ADC_SetSampleTime(FOC_ADC_UNIT, s_scale.vbus_ch, FOC_ADC_SAMPLE_TIME_CLK);
+        ADC_ChCmd(FOC_ADC_UNIT, ADC_SEQ_A, s_scale.vbus_ch, ENABLE);
+    }
 
     /* ============================================================
      * 【2026-11-17】改为 TMR4 EVT0 硬件触发（与参考工程一致）
@@ -964,6 +1041,7 @@ int foc_adc_read(foc_iabc_t *out)
 {
     uint16_t raw[FOC_ADC_SEQ_LEN];
     uint8_t  i;
+    foc_sample_t s;
 
     if ((!s_inited) || (out == RT_NULL))
     {
@@ -979,66 +1057,20 @@ int foc_adc_read(foc_iabc_t *out)
     out->raw_w   = raw[1];
     out->raw_v   = raw[2];
 
-    /* 【2026-11-09】校准采集：被动累加，不新增任务
-     *
-     * 为什么放在这里而不是 20kHz ISR：
-     *   校准要求"母线无电流"的静态条件，慢一点更稳；
-     *   而且累加是 32 位加法，放任务侧无并发问题。
-     *
-     * 采样值用的是**当前零点尚未参与换算的原始 raw**，
-     * 所以校准结果与现有零点设置无关（可反复校准）。 */
-    if (s_cal_running != 0U)
-    {
-        /* 单路累加上限保护：避免长时间不取结果导致溢出。
-         * 4096 * 1000000 = 4.1e9 会溢出 uint32，
-         * 故上限取 500000（25 秒 @20kHz），足够。 */
-        if (s_cal_cnt[0] < 500000U)
-        {
-            s_cal_sum[0] += raw[0];
-            s_cal_sum[1] += raw[1];
-            s_cal_sum[2] += raw[2];
-            s_cal_cnt[0]++;
-            s_cal_cnt[1]++;
-            s_cal_cnt[2]++;
-        }
-    }
+    /* 零偏累加已移到 DMA 中断（FOC 控制层每帧都要用最新数据，
+     * 任务侧的被动累加在 FOC 上线后可能永远不被调用）。 */
 
-    out->i_bus_a10 = foc_adc_raw_to_a10_chn(raw[0], FOC_ADC_CHN_BUS);
-    out->i_w_a10   = foc_adc_raw_to_a10_chn(raw[1], FOC_ADC_CHN_W);
-    out->i_v_a10   = foc_adc_raw_to_a10_chn(raw[2], FOC_ADC_CHN_V);
+    (void)foc_adc_get_sample(&s);
 
-    /* U 相重构：iu = -(iv + iw)
-     * 为什么能这样算：三相星形连接，ia+ib+ic = 0（无中线）。
-     *
-     * 【2026-11-09 重要：IV/IW 必须是有符号的】
-     *   本式只有在 iv/iw 保留符号时才成立。
-     *   若数据层取绝对值，iu 会算成 -(|iv|+|iw|)，
-     *   幅值和符号全部错误（例：iv=+3A, iw=-1.5A
-     *   正确 iu=-1.5A，取绝对值后 iu=-4.5A）。
-     *
-     *   因此：
-     *     母线电流 → 无符号（物理上不反向）
-     *     IV/IW/IU → **有符号**（相电流可正可负）
-     *   三者类型不同是刻意的，不可统一。 */
-    out->i_u_a10 = (int16_t)(-(out->i_v_a10 + out->i_w_a10));
+    out->i_bus_a10 = (int16_t)(s.i_total * 10.0f + ((s.i_total >= 0.0f) ? 0.5f : -0.5f));
+    out->i_u_a10   = (int16_t)(s.iu * 10.0f + ((s.iu >= 0.0f) ? 0.5f : -0.5f));
+    out->i_v_a10   = (int16_t)(s.iv * 10.0f + ((s.iv >= 0.0f) ? 0.5f : -0.5f));
+    out->i_w_a10   = (int16_t)(s.iw * 10.0f + ((s.iw >= 0.0f) ? 0.5f : -0.5f));
 
-    out->seq = s_seq;
+    out->seq = s.seq;
 
     /* 饱和统计：只有"贴满量程上沿"才算饱和。
-     *
-     * 【2026-11-04 修正：raw==0 不应计入 sat_cnt】
-     *   原实现把 raw==0 也算饱和，但 0 有两种完全不同的来源：
-     *     ① 输入真的低于 0V（不可能，霍尔输出 0.5~2.8V）—— 极罕见
-     *     ② 根本没转换过 / DMA 没搬数据 —— **这才是常见的**
-     *   实测：ADC 未转换时三路 raw 全 0，t_iadc_stat 报 sat_cnt=21，
-     *   看起来像"量程不够"，实际是"采样链路断了"。
-     *   两种含义混在一个计数器里，排障时会往错误方向查。
-     *
-     *   现改为：
-     *     raw >= 上沿  → sat_cnt++（真饱和，量程或极性异常）
-     *     raw == 0     → 不计入 sat_cnt；由 conv_cnt 判断链路是否活着
-     *   若需要单独看"读到 0"的次数，看 conv_cnt 与 raw 值即可，
-     *   不必再加计数器（raw 是否为 0 在 t_iadc 里直接可见）。 */
+     * raw == 0 不计入 sat_cnt —— 那通常意味着链路断了，由 conv_cnt 判断。 */
     if ((raw[0] >= FOC_ADC_RAW_MAX) ||
         (raw[1] >= FOC_ADC_RAW_MAX) ||
         (raw[2] >= FOC_ADC_RAW_MAX))
@@ -1047,6 +1079,72 @@ int foc_adc_read(foc_iabc_t *out)
     }
 
     return 0;
+}
+
+/* ============================================================
+ * FOC 浮点采样
+ * ------------------------------------------------------------
+ * 板型映射（CFG_SAMPLING_BOARD_IU_SENSOR）：
+ *   0：CH3 = 母线电流；iu = -iv - iw
+ *   1：CH3 = iu 直接使用
+ *   2：CH3 只采样观测；iu = -iv - iw
+ * vbus：
+ *   CFG_SAMPLING_USE_REAL_ADC=1 -> CH6 × vbus_scale
+ *   0 -> CFG_SAMPLING_SIM_VBUS_V
+ * ============================================================ */
+int foc_adc_get_sample(foc_sample_t *s)
+{
+    float raw_i, iw, iv;
+
+    if ((!s_inited) || (s == RT_NULL))
+    {
+        return -RT_ERROR;
+    }
+
+    raw_i = (float)s_dma_buf.raw[0];
+    iw    = ((float)s_dma_buf.raw[1] - s_scale.current_offset[1]) * s_scale.current_scale;
+    iv    = ((float)s_dma_buf.raw[2] - s_scale.current_offset[2]) * s_scale.current_scale;
+
+    s->iw = iw;
+    s->iv = iv;
+
+#if (CFG_SAMPLING_BOARD_IU_SENSOR == 1)
+    s->iu      = (raw_i - s_scale.current_offset[0]) * s_scale.current_scale;
+    s->i_total = 0.0f;
+#else
+    s->iu = 0.0f - iv - iw;
+  #if (CFG_SAMPLING_BOARD_IU_SENSOR == 0)
+    s->i_total = (raw_i - s_scale.current_offset[0]) * s_scale.current_scale;
+  #else
+    s->i_total = 0.0f;
+  #endif
+#endif
+
+#if (CFG_SAMPLING_USE_REAL_ADC != 0)
+    s->vbus = (float)s_dma_buf.raw[3] * s_scale.vbus_scale;
+#else
+    s->vbus = CFG_SAMPLING_SIM_VBUS_V;
+#endif
+
+    s->seq = s_seq;
+    return 0;
+}
+
+void foc_adc_set_frame_callback(void (*cb)(void))
+{
+    s_frame_cb = cb;
+}
+
+void foc_adc_apply_offset_raw(const uint16_t raw3[3])
+{
+    if (raw3 == RT_NULL)
+    {
+        return;
+    }
+
+    s_scale.current_offset[0] = (float)raw3[0];
+    s_scale.current_offset[1] = (float)raw3[1];
+    s_scale.current_offset[2] = (float)raw3[2];
 }
 
 /**
@@ -1083,6 +1181,31 @@ int foc_adc_read(foc_iabc_t *out)
  */
 uint16_t foc_adc_get_bus_current_a10(void)
 {
+#if (CFG_SAMPLING_BOARD_IU_SENSOR != 0)
+    /* 板型 1/2 没有母线电流传感器：用三相电流最大幅值代替，
+     * 供 legacy 过流判据使用（语义从"母线电流"变为"相电流峰值"） */
+    foc_sample_t s;
+    float m, a;
+
+    if ((!s_inited) || (s_stat.conv_cnt == 0U))
+    {
+        return 0U;
+    }
+
+    if (foc_adc_get_sample(&s) != 0)
+    {
+        return 0U;
+    }
+
+    a = (s.iu >= 0.0f) ? s.iu : -s.iu;
+    m = a;
+    a = (s.iv >= 0.0f) ? s.iv : -s.iv;
+    if (a > m) { m = a; }
+    a = (s.iw >= 0.0f) ? s.iw : -s.iw;
+    if (a > m) { m = a; }
+
+    return (uint16_t)(m * 10.0f + 0.5f);
+#else
     int16_t a10;
 
     /* 未初始化或还没有任何一帧 DMA 完成：返回 0，
@@ -1094,17 +1217,13 @@ uint16_t foc_adc_get_bus_current_a10(void)
 
     a10 = foc_adc_raw_to_a10(s_dma_buf.raw[0]);
 
-    /* 物理上母线电流不反向；a10 < 0 只可能是零点偏移（未校准）
-     * 或噪声造成的假象，按 0 处理。这是"符合物理的钳位"，
-     * 不是"取绝对值"—— 两者语义不同：
-     *   取绝对值：把 -5A 变成 +5A（凭空造出 5A 电流）
-     *   钳位到 0：把 -5A 视为 0A（承认"没有正向电流"）
-     * 后者才是正确的处理。 */
+    /* 物理上母线电流不反向；a10 < 0 只可能是零点偏移或噪声造成的假象 */
     if (a10 < 0)
     {
         return 0U;
     }
     return (uint16_t)a10;
+#endif
 }
 
 /* ============================================================

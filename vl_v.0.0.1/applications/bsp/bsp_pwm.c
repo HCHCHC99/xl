@@ -36,6 +36,14 @@
 #define BSP_PWM_USE_BRAKE_LOW       0   /* 0: 刹车后高阻；                   1: 刹车后低电平 */
 #define BSP_PWM_USE_DUTY_CACHE      0   /* 0：ISR 里立即写寄存器 ；1: 三相同步缓存更新 */
 
+/* EMB 功率级封锁总开关（2026-11-17）
+ *   0 = 不启用：SOE3 不置位，原封锁代码保留但不执行
+ *   1 = 启用：恢复原行为（上电/IDLE/故障时封锁功率级）
+ * 置 0 后安全停机只依赖 hw_tmr4_pwm_set_all_low()（六路 OC 关闭）。 */
+#ifndef BSP_PWM_EMB_ENABLE
+#define BSP_PWM_EMB_ENABLE          0
+#endif
+
 /* ============================================================
  * 硬件常量
  * ============================================================ */
@@ -270,7 +278,11 @@ bsp_pwm_priv_t g_bsp_pwm_priv = {0};
  * ============================================================ */
 static inline void bsp_pwm_emb_stop(void)
 {
+#if BSP_PWM_EMB_ENABLE
     BSP_PWM_EMB_SOE3 |= 1UL;
+#else
+    /* 用户裁定：不启用 EMB 功率级封锁，原代码保留 */
+#endif
 }
 
 static inline void bsp_pwm_emb_release(void)
@@ -821,7 +833,11 @@ const hw_pwm_ops_t g_bsp_pwm_ops = {
  * ============================================================ */
 void bsp_pwm_emergency_brake(void)
 {
+#if BSP_PWM_EMB_ENABLE
     BSP_PWM_EMB_SOE3 |= 1UL;
+#else
+    /* 用户裁定：不启用 EMB 功率级封锁；停机由 hw_tmr4_pwm_set_all_low() 保证 */
+#endif
 }
 
 void bsp_pwm_emergency_release(void)

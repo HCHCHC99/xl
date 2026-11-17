@@ -21,6 +21,7 @@
 #include "bsp_adc.h"
 #include "bsp_drv_spi.h"          /* 【A-01，2026-10-28】bsp_dev_spi_init() */
 #include "../hw/hw_pwm.h"
+#include "../motor/foc/hw_encoder.h"   /* ABZ：TMRA1 正交计数 + Z 索引 */
 
 #include <rtthread.h>
 
@@ -39,6 +40,20 @@ static int hw_step_pwm_pin(void *arg)
     return (int)rt_hw_board_pwm_init(CM_TMR4_3);
 }
 
+/* PC15 上电使能：推挽输出，初始高电平（引脚定义见 board_config.h） */
+static int hw_step_pc15_en(void *arg)
+{
+    stc_gpio_init_t stcGpio;
+
+    (void)arg;
+    (void)GPIO_StructInit(&stcGpio);
+    stcGpio.u16PinState = PIN_STAT_SET;
+    stcGpio.u16PinDir   = PIN_DIR_OUT;
+    stcGpio.u16PinAttr  = PIN_ATTR_DIGITAL;
+    (void)GPIO_Init(BSP_PC15_EN_PORT, BSP_PC15_EN_PIN, &stcGpio);
+    return 0;
+}
+
 /* 【A-01，2026-10-28】SPI1 初始化接入。
  *
  * 缺陷背景：bsp_dev_spi_init() 全工程零调用者（原仅 bsp_mod_abs_angle.c:560
@@ -53,12 +68,23 @@ static int hw_step_pwm_pin(void *arg)
  *
  * 顺序约束：PWM/Hall 之后。SPI 与 TIM4、EXTI 无资源共享，
  *   放最后只为保证"先建立安全态（刹车），再开数据通道"这一原则。 */
+#if BSP_USING_ABS_ENCODER
+static int hw_step_abz_encoder(void *arg)
+{
+    (void)arg;
+    hw_encoder_init();
+    return 0;
+}
+#endif
+
+#if !BSP_USING_ABS_ENCODER
 static int hw_step_spi_encoder(void *arg)
 {
     (void)arg;
     bsp_dev_spi_init();
     return 0;      /* bsp_dev_spi_init() 无返回值，内部失败已由日志体现 */
 }
+#endif
 
 /* ADC 外设当前由 bsp_adc.c 的 bsp_adc_init() 承担（内部仍为 TODO 桩），
  * 暂以非关键步骤接入，避免阻塞其他硬件初始化。 */
@@ -79,16 +105,27 @@ static int hw_step_adc_unit(void *arg)
  * ============================================================ */
 const hw_init_step_t g_hw_init_steps[] = {
     /*   name          fn                 arg                      critical */
+    { "pc15_en",    hw_step_pc15_en,    RT_NULL,                 0 },
     { "brake_pin",  hw_step_brake_pin,  RT_NULL,                 0 },
     { "pwm_pin",    hw_step_pwm_pin,    RT_NULL,                 0 },
     /* tim4 的参数为 const 配置表指针；此处去掉 const 仅为适配 void* 签名，
      * 实现侧会立即转回 const hw_pwm_cfg_t*，不会写回。 */
     { "tim4",       bsp_pwm_hw_init,    (void *)&g_swing_pwm_cfg, 1 },
+#if BSP_USING_ABS_ENCODER
+    /* ABZ 编码器：TMRA1 正交计数 + Z 索引，PA8/PA9/PA10 */
+    { "abz_enc",    hw_step_abz_encoder, RT_NULL,                0 },
+#endif
+#if !BSP_USING_ABS_ENCODER
     { "hall_exti",  bsp_hall_hw_init,   RT_NULL,                 1 },
+#endif
     { "adc_unit",   hw_step_adc_unit,   RT_NULL,                 0 },
+#if !BSP_USING_ABS_ENCODER
     /* 【A-01，2026-10-28】三编码器 SPI1，必须在任何编码器读取之前完成。
-     * 见 hw_step_spi_encoder() 上方说明。 */
+     * 见 hw_step_spi_encoder() 上方说明。
+     * BSP_USING_ABS_ENCODER=1 时保留 SPI 代码但不初始化，
+     * PA8/PA9/PA10 让给 TMRA1 ABZ 编码器。 */
     { "spi_enc",    hw_step_spi_encoder, RT_NULL,                0 },
+#endif
 };
 
 const uint16_t g_hw_init_step_count =

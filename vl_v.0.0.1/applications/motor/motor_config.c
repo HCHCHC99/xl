@@ -5,9 +5,6 @@
 
 #include "motor_config.h"
 #include "board_motor_cfg.h"
-#include "drv/motor_drv_bldc_6step.h"
-#include "fb/motor_fb_hall.h"
-#include "ctrl/motor_ctrl_openloop.h"
 #include <string.h>
 
 /* ============================================================
@@ -17,14 +14,6 @@ static const motor_pwm_cfg_t g_swing_pwm_cfg = {
     .pwm_freq_hz      = MOTOR_PWM_FREQ_HZ,
     .pwm_deadtime_ns  = MOTOR_PWM_DEADTIME_NS,
     .max_duty         = MOTOR_PWM_MAX_DUTY,
-};
-
-/* ============================================================
- * 回转电机 Hall 配置
- * ============================================================ */
-static const motor_hall_cfg_t g_swing_hall_cfg = {
-    .hall_state_table  = MOTOR_HALL_TABLE,
-    .hall_active_level = MOTOR_HALL_ACTIVE_LEVEL,
 };
 
 /* ============================================================
@@ -61,24 +50,27 @@ static const motor_oc_cfg_t g_swing_oc_cfg = {
  * 电机配置表
  * ============================================================ */
 const motor_config_t g_motor_configs[] = {
-    /* ----- 回转电机：BLDC + 六步换向 + Hall ----- */
+    /* ----- FOC 独立控制阶段：不绑定六步/Hall/开环 -----
+     * FOC 暂时由 msh 直接控制；成功后再把 FOC 的 drv/fb/ctrl ops
+     * 接回这里。现在 ops 置 NULL，motor_init 只建立对象和安全层，
+     * 不会初始化旧六步、Hall 或开环控制。 */
     {
         .name = "swing_motor",
 
-        /* D1：电机类型 */
-        .type       = MOTOR_TYPE_BLDC,
-        .pole_pairs = MOTOR_POLE_PAIRS,
+        /* D1：电机类型（FOC 工程 3505，10 极对） */
+        .type       = MOTOR_TYPE_PMSM,
+        .pole_pairs = 10,
 
         /* D2：驱动方式 */
         .drv_hw     = MOTOR_DRV_HW_PWM,
         .drv_hw_cfg = &g_swing_pwm_cfg,
 
-        /* D3：换向信号 */
-        .comm_type = MOTOR_COMM_HALL,
-        .comm_cfg  = &g_swing_hall_cfg,
+        /* D3：换向信号（ABZ 增量编码器，FOC 自己读取） */
+        .comm_type = MOTOR_COMM_ENCODER,
+        .comm_cfg  = NULL,
 
         /* D4：驱动算法 */
-        .default_algo = MOTOR_ALGO_SIX_STEP,
+        .default_algo = MOTOR_ALGO_FOC,
 
         /* D5：工作模式 */
         .default_mode = MOTOR_MODE_SPEED,
@@ -89,10 +81,10 @@ const motor_config_t g_motor_configs[] = {
         /* 安全层：过流保护 */
         .oc_cfg = &g_swing_oc_cfg,
 
-        /* 三层接口 */
-        .drv_ops  = &motor_drv_bldc_6step_ops,
-        .fb_ops   = &motor_fb_hall_ops,
-        .ctrl_ops = &motor_ctrl_openloop_ops,   /* 先用开环 */
+        /* 三层接口：FOC 独立阶段暂不绑定 */
+        .drv_ops  = NULL,
+        .fb_ops   = NULL,
+        .ctrl_ops = NULL,
 
         /* 实时性 */
         .update_period_ms     = MOTOR_UPDATE_PERIOD_MS,

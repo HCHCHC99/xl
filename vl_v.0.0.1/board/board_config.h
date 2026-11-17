@@ -17,6 +17,38 @@
 #include "hc32_ll.h"
 #include "drv_config.h"
 
+/* ============================================================
+ * 编码器选择
+ *   1 = FOC 工程的 ABZ 增量编码器（TMRA1，4096 CPR，PA8/PA9/PA10）
+ *   0 = 原 SPI 绝对编码器（KTH7812，SPI1）
+ *
+ * 注意：为 1 时 SPI 编码器代码仍然编译保留，但 bsp_hw_init 不再初始化它。
+ * ============================================================ */
+#ifndef BSP_USING_ABS_ENCODER
+#define BSP_USING_ABS_ENCODER           1
+#endif
+
+#if BSP_USING_ABS_ENCODER
+/* ABZ 编码器（FOC 工程）：TMRA1 正交计数 + Z 索引
+ *   PA8  = A 相（TIMA1_CLKA）
+ *   PA9  = B 相（TIMA1_CLKB）
+ *   PA10 = Z 索引（EXTINT_CH10）
+ */
+#define ENC_A_PORT                      (GPIO_PORT_A)
+#define ENC_A_PIN                       (GPIO_PIN_08)
+#define ENC_A_FUNC                      (GPIO_FUNC_4)
+
+#define ENC_B_PORT                      (GPIO_PORT_A)
+#define ENC_B_PIN                       (GPIO_PIN_09)
+#define ENC_B_FUNC                      (GPIO_FUNC_4)
+
+#define ENC_Z_PORT                      (GPIO_PORT_A)
+#define ENC_Z_PIN                       (GPIO_PIN_10)
+#define ENC_Z_EIRQ                      (EXTINT_CH10)
+#define ENC_Z_IRQn                      (INT010_IRQn)
+#define ENC_Z_IRQ_SRC                   (INT_SRC_PORT_EIRQ10)
+#endif
+
 
 /************************ USART port **********************/
 #if defined(BSP_USING_UART1)
@@ -190,6 +222,11 @@
 #define BRAKE_PORT              (GPIO_PORT_B)
 #define BRAKE_PIN               (GPIO_PIN_14)
 #define BRAKE_ACTIVE_LOW        (0)     /* 0：高电平解锁；1：低电平解锁 */
+
+/***********  PC15 上电使能 *********/
+/* 上电后立即配置为推挽输出并输出高电平。 */
+#define BSP_PC15_EN_PORT        (GPIO_PORT_C)
+#define BSP_PC15_EN_PIN         (GPIO_PIN_15)
 
 /***********  编码器 ABZ 增量信号（Q35：本批仅预留，不实现功能） ***********/
 /*
