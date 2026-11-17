@@ -43,6 +43,10 @@ static volatile float      s_vq       = 0.0f;
 static volatile float      s_vd       = 0.0f;
 static volatile float      s_lock_duty = FOC_LOCK_DUTY_PCT;
 
+/* mode 4 的 id/iq 指令缓存：支持运行中单独修改其中一个 */
+static volatile float      s_cl_id_cmd = 0.0f;
+static volatile float      s_cl_iq_cmd = 0.5f;
+
 volatile foc_mode_t g_fm_mode     = FOC_MODE_IDLE;
 volatile float      g_fm_theta_e  = 0.0f;
 volatile float      g_fm_freq_hz  = 0.0f;
@@ -526,6 +530,211 @@ static void foc_mode_print_duties(void)
 }
 
 /*=============================================================================
+ * 运行中可调参数
+ *   进入 mode 4/9/10 时打印参数表；
+ *   之后发 "focmode set <name> <value>" 可实时修改其中一个参数
+ *=============================================================================*/
+static void fm_print_num(int v, int dec)
+{
+    if (v < 0) {
+        rt_kprintf("-");
+        v = -v;
+    }
+    if (dec == 0) {
+        rt_kprintf("%d", v);
+    } else if (dec == 1) {
+        rt_kprintf("%d.%d", v / 10, v % 10);
+    } else if (dec == 2) {
+        rt_kprintf("%d.%02d", v / 100, v % 100);
+    } else {
+        rt_kprintf("%d.%03d", v / 1000, v % 1000);
+    }
+}
+
+static int fm_scale(float v, int dec)
+{
+    float sc = (dec == 0) ? 1.0f
+             : (dec == 1) ? 10.0f
+             : (dec == 2) ? 100.0f : 1000.0f;
+
+    return (int)(v * sc + ((v >= 0.0f) ? 0.5f : -0.5f));
+}
+
+static void fm_param_line(const char *name, const char *desc, const char *unit,
+                          float def, float now, int dec)
+{
+    int sc = fm_scale(def, dec);
+    int sn = fm_scale(now, dec);
+
+    rt_kprintf("  %-6s %-24s [%s] def=", name, desc, unit);
+    fm_print_num(sc, dec);
+    rt_kprintf(" now=");
+    fm_print_num(sn, dec);
+    rt_kprintf("\r\n");
+}
+
+static int fm_ack(const char *name, float v, int dec)
+{
+    rt_kprintf("[FOC-MODE] set %s -> ", name);
+    fm_print_num(fm_scale(v, dec), dec);
+    rt_kprintf(" (mode %d)\r\n", (int)s_mode);
+    return 0;
+}
+
+static void foc_mode_print_params(foc_mode_t m)
+{
+    if (m == FOC_MODE_CURRENT) {
+        rt_kprintf("[FOC-MODE] mode 4 CURRENT adjustable params:\r\n");
+        fm_param_line("iq",    "target q-axis current",  "A",  0.50f, s_cl_iq_cmd, 3);
+        fm_param_line("id",    "target d-axis current",  "A",  0.00f, s_cl_id_cmd, 3);
+        fm_param_line("imax",  "current ref limit",      "A",  CL_IREF_MAX_INIT, g_cl_iref_max, 2);
+        fm_param_line("vmax",  "output voltage limit",   "V",  CL_VMAX_INIT, g_cl_vmax_watch, 2);
+        rt_kprintf("[FOC-MODE] e.g. focmode set iq -1.5  ('-' = reverse torque)\r\n");
+    } else if (m == FOC_MODE_SPEED) {
+        rt_kprintf("[FOC-MODE] mode 9 SPEED adjustable params:\r\n");
+        fm_param_line("rpm",   "target speed",           "rpm",   0.0f, g_spd_target_rpm, 1);
+        fm_param_line("accel", "speed slew limit",       "rpm/s", SPD_ACCEL_RPM_S_INIT, g_spd_accel_rpm_s, 0);
+        fm_param_line("iqlim", "speed loop iq limit",    "mA",    SPD_IQ_LIMIT_MA_INIT, g_spd_iq_limit_ma, 0);
+        fm_param_line("kp",    "speed PI kp",            "-",     SPD_KP_INIT, g_spd_kp, 2);
+        fm_param_line("ki",    "speed PI ki",            "-",     SPD_KI_INIT, g_spd_ki, 2);
+        fm_param_line("kd",    "speed PI kd",            "-",     SPD_KD_INIT, g_spd_kd, 2);
+        fm_param_line("iterm", "speed integral limit",   "mA",    SPD_ITERM_MAX_MA_INIT, g_spd_iterm_max_ma, 0);
+        fm_param_line("ff",    "speed feedforward",      "mA",    SPD_FF_MA_INIT, g_spd_ff_ma, 0);
+        rt_kprintf("[FOC-MODE] e.g. focmode set rpm -500   ('-' = reverse)\r\n");
+        rt_kprintf("[FOC-MODE] e.g. focmode set iqlim 1500  (0=no torque limit change)\r\n");
+    } else if (m == FOC_MODE_POSITION) {
+        rt_kprintf("[FOC-MODE] mode 10 POSITION adjustable params:\r\n");
+        fm_param_line("rev",   "target position",        "rev",   0.0f, g_pos_target_rev, 2);
+        fm_param_line("vmax",  "speed cmd limit",        "rpm",   POS_V_MAX_RPM_INIT, g_pos_v_max_rpm, 0);
+        fm_param_line("iqlim", "speed loop iq limit",    "mA",    POS_IQ_LIMIT_MA_INIT, g_pos_iq_limit_ma, 0);
+        fm_param_line("dec",   "planned deceleration",   "rpm/s", POS_DEC_RPM_S_INIT, g_pos_dec_rpm_s, 0);
+        fm_param_line("db",    "in-position window",     "rev",   POS_DEADBAND_REV_INIT, g_pos_deadband_rev, 2);
+        fm_param_line("kd",    "speed damping",          "rpm/rpm", POS_KD_RPM_PER_RPM_INIT, g_pos_kd_rpm_per_rpm, 2);
+        fm_param_line("limit", "soft travel limit",      "rev",   POS_LIMIT_REV_INIT, g_pos_limit_rev, 0);
+        rt_kprintf("  %-6s %-24s [-]\r\n", "zero", "set current position as 0");
+        rt_kprintf("[FOC-MODE] e.g. focmode set rev 2.5    ('-' = reverse)\r\n");
+        rt_kprintf("[FOC-MODE] e.g. focmode set zero 1\r\n");
+    } else {
+        rt_kprintf("[FOC-MODE] mode %d has no live params (use 4/9/10)\r\n", (int)m);
+    }
+}
+
+static int foc_mode_set_param(const char *name, float val)
+{
+    if (s_mode == FOC_MODE_CURRENT) {
+        if (rt_strcmp(name, "iq") == 0) {
+            s_cl_iq_cmd = val;
+            Foc_CurrentLoop_SetRef(s_cl_id_cmd, s_cl_iq_cmd);
+            return fm_ack("iq", s_cl_iq_cmd, 3);
+        }
+        if (rt_strcmp(name, "id") == 0) {
+            s_cl_id_cmd = val;
+            Foc_CurrentLoop_SetRef(s_cl_id_cmd, s_cl_iq_cmd);
+            return fm_ack("id", s_cl_id_cmd, 3);
+        }
+        if (rt_strcmp(name, "imax") == 0) {
+            if (val < 0.0f) val = 0.0f;
+            g_cl_iref_max = val;
+            Foc_CurrentLoop_SetRef(s_cl_id_cmd, s_cl_iq_cmd);
+            return fm_ack("imax", g_cl_iref_max, 2);
+        }
+        if (rt_strcmp(name, "vmax") == 0) {
+            if (val < 1.0f) {
+                rt_kprintf("[FOC-MODE] vmax must be >= 1.0 V\r\n");
+                return -1;
+            }
+            Foc_CurrentLoop_SetVmax(val);
+            g_cl_vmax_watch = val;
+            return fm_ack("vmax", val, 2);
+        }
+    } else if (s_mode == FOC_MODE_SPEED) {
+        if (rt_strcmp(name, "rpm") == 0) {
+            g_spd_target_rpm = val;
+            return fm_ack("rpm", g_spd_target_rpm, 1);
+        }
+        if (rt_strcmp(name, "accel") == 0) {
+            if (val < 0.0f) val = 0.0f;
+            g_spd_accel_rpm_s = val;
+            return fm_ack("accel", g_spd_accel_rpm_s, 0);
+        }
+        if (rt_strcmp(name, "iqlim") == 0) {
+            if (val < 1.0f) val = 1.0f;
+            g_spd_iq_limit_ma = val;
+            return fm_ack("iqlim", g_spd_iq_limit_ma, 0);
+        }
+        if (rt_strcmp(name, "kp") == 0) {
+            g_spd_kp = val;
+            return fm_ack("kp", g_spd_kp, 2);
+        }
+        if (rt_strcmp(name, "ki") == 0) {
+            g_spd_ki = val;
+            return fm_ack("ki", g_spd_ki, 2);
+        }
+        if (rt_strcmp(name, "kd") == 0) {
+            g_spd_kd = val;
+            return fm_ack("kd", g_spd_kd, 2);
+        }
+        if (rt_strcmp(name, "iterm") == 0) {
+            if (val < 0.0f) val = 0.0f;
+            g_spd_iterm_max_ma = val;
+            return fm_ack("iterm", g_spd_iterm_max_ma, 0);
+        }
+        if (rt_strcmp(name, "ff") == 0) {
+            if (val < 0.0f) val = 0.0f;
+            g_spd_ff_ma = val;
+            return fm_ack("ff", g_spd_ff_ma, 0);
+        }
+    } else if (s_mode == FOC_MODE_POSITION) {
+        if (rt_strcmp(name, "rev") == 0) {
+            g_pos_target_rev = val;
+            return fm_ack("rev", g_pos_target_rev, 2);
+        }
+        if (rt_strcmp(name, "vmax") == 0) {
+            if (val < 0.0f) val = 0.0f;
+            g_pos_v_max_rpm = val;
+            return fm_ack("vmax", g_pos_v_max_rpm, 0);
+        }
+        if (rt_strcmp(name, "iqlim") == 0) {
+            if (val < 1.0f) val = 1.0f;
+            g_pos_iq_limit_ma = val;
+            return fm_ack("iqlim", g_pos_iq_limit_ma, 0);
+        }
+        if (rt_strcmp(name, "dec") == 0) {
+            if (val < 1.0f) val = 1.0f;
+            g_pos_dec_rpm_s = val;
+            return fm_ack("dec", g_pos_dec_rpm_s, 0);
+        }
+        if (rt_strcmp(name, "db") == 0) {
+            if (val < 0.0f) val = 0.0f;
+            g_pos_deadband_rev = val;
+            return fm_ack("db", g_pos_deadband_rev, 2);
+        }
+        if (rt_strcmp(name, "kd") == 0) {
+            if (val < 0.0f) val = 0.0f;
+            g_pos_kd_rpm_per_rpm = val;
+            return fm_ack("kd", g_pos_kd_rpm_per_rpm, 2);
+        }
+        if (rt_strcmp(name, "limit") == 0) {
+            if (val < 0.0f) val = 0.0f;
+            g_pos_limit_rev = val;
+            return fm_ack("limit", g_pos_limit_rev, 0);
+        }
+        if (rt_strcmp(name, "zero") == 0) {
+            g_pos_zero_req = 1u;
+            rt_kprintf("[FOC-MODE] zero requested, current position becomes 0\r\n");
+            return 0;
+        }
+    } else {
+        rt_kprintf("[FOC-MODE] no live params in mode %d\r\n", (int)s_mode);
+        return -1;
+    }
+
+    rt_kprintf("[FOC-MODE] unknown param '%s' in mode %d\r\n", name, (int)s_mode);
+    foc_mode_print_params(s_mode);
+    return -1;
+}
+
+/*=============================================================================
  * msh 命令
  *   focmode            打印当前模式
  *   focmode 0          IDLE
@@ -539,6 +748,7 @@ static void foc_mode_print_duties(void)
  *   focmode 9 [rpm]    速度闭环
  *   focmode 10 [rev]   位置闭环
  *   focmode stat       关键观测量
+ *   focmode set <name> <value>   运行中修改当前模式的参数
  *=============================================================================*/
 static int foc_mode_msh(int argc, char **argv)
 {
@@ -550,7 +760,8 @@ static int foc_mode_msh(int argc, char **argv)
         rt_kprintf("usage: focmode <0..10> [args]\r\n"
                    "  0=IDLE 1=LOCK[duty%%] 2=IF[freq,volt] 3=CALIB 4=CURRENT[id,iq]\r\n"
                    "  5=SWEEP 6=REV 7=ALIGN7 9=SPEED[rpm] 10=POSITION[rev]\r\n"
-                   "  focmode stat\r\n");
+                   "  focmode stat          print key observations\r\n"
+                   "  focmode set <name> <value>   live tune (list on entry)\r\n");
         return 0;
     }
 
@@ -594,6 +805,23 @@ static int foc_mode_msh(int argc, char **argv)
         rt_kprintf("[FC] duty ");
         foc_mode_print_duties();
         return 0;
+    }
+
+    if (rt_strcmp(argv[1], "set") == 0) {
+        if (argc < 3) {
+            foc_mode_print_params(Foc_Mode_GetMode());
+            return 0;
+        }
+        if (argc < 4) {
+            rt_kprintf("usage: focmode set <name> <value>\r\n");
+            foc_mode_print_params(Foc_Mode_GetMode());
+            return -1;
+        }
+        if (foc_mode_parse_float(argv[3], &v1) != 0) {
+            rt_kprintf("invalid value: %s\r\n", argv[3]);
+            return -1;
+        }
+        return foc_mode_set_param(argv[2], v1);
     }
 
     m = (int)(argv[1][0] - '0');
@@ -645,26 +873,37 @@ static int foc_mode_msh(int argc, char **argv)
         return 0;
 
     case 4:
-        v1 = 0.0f;
-        v2 = 0.5f;
+        v1 = s_cl_id_cmd;
+        v2 = s_cl_iq_cmd;
         if (argc >= 3) { if (foc_mode_parse_float(argv[2], &v1) != 0) return -1; }
         if (argc >= 4) { if (foc_mode_parse_float(argv[3], &v2) != 0) return -1; }
-        Foc_Mode_SetMode(FOC_MODE_CURRENT);
+        s_cl_id_cmd = v1;
+        s_cl_iq_cmd = v2;
+        if (Foc_Mode_GetMode() != FOC_MODE_CURRENT) {
+            Foc_Mode_SetMode(FOC_MODE_CURRENT);
+        }
         Foc_CurrentLoop_SetRef(v1, v2);
+        foc_mode_print_params(FOC_MODE_CURRENT);
         return 0;
 
     case 9:
-        v1 = 0.0f;
+        v1 = g_spd_target_rpm;   /* 不带参数时保持当前目标 */
         if (argc >= 3) { if (foc_mode_parse_float(argv[2], &v1) != 0) return -1; }
-        Foc_Mode_SetMode(FOC_MODE_SPEED);
+        if (Foc_Mode_GetMode() != FOC_MODE_SPEED) {
+            Foc_Mode_SetMode(FOC_MODE_SPEED);
+        }
         g_spd_target_rpm = v1;
+        foc_mode_print_params(FOC_MODE_SPEED);
         return 0;
 
     case 10:
-        v1 = 0.0f;
+        v1 = (Foc_Mode_GetMode() == FOC_MODE_POSITION) ? g_pos_target_rev : 0.0f;
         if (argc >= 3) { if (foc_mode_parse_float(argv[2], &v1) != 0) return -1; }
-        Foc_Mode_SetMode(FOC_MODE_POSITION);
+        if (Foc_Mode_GetMode() != FOC_MODE_POSITION) {
+            Foc_Mode_SetMode(FOC_MODE_POSITION);
+        }
         g_pos_target_rev = v1;
+        foc_mode_print_params(FOC_MODE_POSITION);
         return 0;
 
     case 0:
