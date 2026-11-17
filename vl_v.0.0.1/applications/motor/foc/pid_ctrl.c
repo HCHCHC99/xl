@@ -14,6 +14,9 @@
 
 #include "pid_ctrl.h"
 
+/* 电流环每拍调用：-O0 下函数指针 + 浮点运算开销大。只对本文件开 O2。 */
+#pragma GCC optimize("O2")
+
 /* 无 libc 依赖的整块清零：逐字段赋值，编译器可优化成高效序列 */
 static void pid_priv_clear(struct pid_priv *priv)
 {

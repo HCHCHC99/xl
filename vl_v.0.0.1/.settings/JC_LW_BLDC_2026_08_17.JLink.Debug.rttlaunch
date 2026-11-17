@@ -25,7 +25,7 @@
 <intAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.firstResetSpeed" value="1000"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.firstResetType" value=""/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.flashDeviceName" value="HC32F460PETB"/>
-<stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.flashDownloadHex" value="false"/>
+<stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.flashDownloadHex" value="true"/>
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.forceQuitGdbServer" value="false"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.gdbClientOtherCommands" value="set mem inaccessible-by-default off"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.gdbClientOtherOptions" value=""/>

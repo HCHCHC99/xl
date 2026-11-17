@@ -27,6 +27,9 @@
 
 #include <stddef.h>
 
+/* 20kHz ISR 热路径：Debug 构建是 -O0，闭环时单拍容易超时。只对本文件开 O2。 */
+#pragma GCC optimize("O2")
+
 #define FM_TWO_PI          6.28318530f
 #define FOC_LOCK_DUTY_PCT  (2.0f)
 

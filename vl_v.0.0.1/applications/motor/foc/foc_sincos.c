@@ -8,6 +8,9 @@
 #include "foc_sincos.h"
 #include <math.h>
 
+/* 20kHz ISR 热路径：只对本文件开 O2，降低单拍耗时。 */
+#pragma GCC optimize("O2")
+
 #define SC_PI       3.141592653589793f
 #define SC_HALF_PI  1.570796326794897f
 #define SC_2PI      6.283185307179586f

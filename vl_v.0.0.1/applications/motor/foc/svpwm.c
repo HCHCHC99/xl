@@ -8,6 +8,9 @@
 #include "svpwm.h"
 #include <math.h>
 
+/* 20kHz ISR 热路径：只对本文件开 O2，降低单拍耗时。 */
+#pragma GCC optimize("O2")
+
 #define SQRT3          1.7320508f
 #define SQRT3_DIV2     0.8660254f
 #define ONE_DIV_SQRT3  0.57735027f

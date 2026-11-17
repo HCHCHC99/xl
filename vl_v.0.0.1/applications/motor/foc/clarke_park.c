@@ -9,6 +9,9 @@
 #include "foc_sincos.h"
 #include <stddef.h>
 
+/* 20kHz ISR 热路径：只对本文件开 O2，降低单拍耗时。 */
+#pragma GCC optimize("O2")
+
 /* 角度归一化到 [0, 2π)，恒定时间 */
 float Angle_Normalize(float theta)
 {

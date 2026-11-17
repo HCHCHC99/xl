@@ -43,6 +43,32 @@ typedef struct {
 
 static rtt_con_stat_t s_rtt_stat;
 
+/* 【2026-11-18】RTT 输入轮询定时器
+ * 原实现只在 idle 钩子里取键；电机闭环时 20kHz ISR 占用接近满载，
+ * idle 长时间得不到调度，下行命令永远没人取，表现为 msh 输入无效。
+ * 这里改用 10ms 软件定时器轮询，定时器线程优先级高于 idle，
+ * 只要还有一点 CPU 余量就能把输入取出来。 */
+static struct rt_timer s_rtt_rx_poll_timer;
+static volatile rt_uint8_t s_rtt_rx_gate;   /* 检测到下行数据 = 1 */
+
+static void segger_rtt_check(void);
+
+static void rtt_rx_poll_timeout(void *parameter)
+{
+    (void)parameter;
+
+    /* 轻量检测：只判断缓冲里有没有数据，避免每 10ms 都进一遍串口 ISR */
+    if (SEGGER_RTT_HASDATA(RTT_DEFAULT_BUFFER_INDEX) != 0u) {
+        s_rtt_rx_gate = 1u;
+    }
+
+    /* 门控消费：真正取键、喂给 tshell 的动作在这里做 */
+    if (s_rtt_rx_gate != 0u) {
+        s_rtt_rx_gate = 0u;
+        segger_rtt_check();
+    }
+}
+
 /* 下行缓冲有效容量的边界值（SizeOfBuffer − 1）。
  * pending 达到这个值就说明缓冲已满，下一次主机写入必然被整段丢弃。 */
 static rt_uint32_t _rtt_down_capacity(void)
@@ -128,7 +154,7 @@ static struct rt_uart_ops _jlink_rtt_ops =
 #endif
 };
 
-static void segger_rtt_check(void)
+static void segger_rtt_check_body(void)
 {
     rt_uint32_t pending;
 
@@ -167,11 +193,29 @@ static void segger_rtt_check(void)
 #endif
 }
 
+/* 防重入：idle 钩子可能被定时器线程打断，两边不能同时操作串口 FIFO */
+static volatile rt_uint8_t s_rtt_in_check;
+
+static void segger_rtt_check(void)
+{
+    if (s_rtt_in_check != 0u) {
+        return;
+    }
+    s_rtt_in_check = 1u;
+    segger_rtt_check_body();
+    s_rtt_in_check = 0u;
+}
+
 
 int rt_hw_jlink_rtt_init(void)
 {
     SEGGER_RTT_Init();
+
+    /* 恢复 idle 钩子：这是调度器启动前/后的兜底输入通路。
+     * 定时器轮询必须放到 INIT_APP（调度器和 timer 系统初始化之后），
+     * 否则 rt_system_timer_init() 会把提前启动的定时器从链表里丢掉。 */
     rt_thread_idle_sethook(segger_rtt_check);
+
     SEGGER_RTT_SetTerminal(RTT_DEFAULT_TERMINAL_INDEX);
 
     SEGGER_RTT_ConfigUpBuffer(RTT_DEFAULT_BUFFER_INDEX, "RTTUP", NULL, 0, SEGGER_RTT_MODE_NO_BLOCK_SKIP);
@@ -205,6 +249,22 @@ INIT_APP_EXPORT(rt_hw_jlink_console_init);
 #ifdef RT_USING_SERIAL_V1
 INIT_BOARD_EXPORT(rt_hw_jlink_console_init);
 #endif
+
+/* 【2026-11-18】10ms 输入轮询：检测到下行数据就置门控并在本循环消费。
+ * 必须放在 INIT_APP：rt_hw_board_init() 早于 rt_system_timer_init()，
+ * 在 INIT_BOARD 里启动的定时器会被后者从链表里丢掉，永远不触发。 */
+static int rtt_rx_poll_init(void)
+{
+    rt_timer_init(&s_rtt_rx_poll_timer,
+                  "rttpoll",
+                  rtt_rx_poll_timeout,
+                  RT_NULL,
+                  rt_tick_from_millisecond(10),
+                  RT_TIMER_FLAG_PERIODIC | RT_TIMER_FLAG_SOFT_TIMER);
+    rt_timer_start(&s_rtt_rx_poll_timer);
+    return 0;
+}
+INIT_APP_EXPORT(rtt_rx_poll_init);
 
 /* ============================================================
  * 【2026-10-27 · P4】t_con —— RTT 控制台链路诊断

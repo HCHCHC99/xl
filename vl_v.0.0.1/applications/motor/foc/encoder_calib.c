@@ -117,6 +117,7 @@ static int32_t  s_rev_cyc_max_l = 0;
 #define EC_ZERO_SKIP   200u
 #define EC_ZERO_AVG    400u
 static uint32_t s_zero_cnt = 0u;
+static uint16_t s_zero_wait_ms = 0u;             /* ZERO 阶段看门狗 */
 static volatile uint8_t s_zero_apply_req = 0u;   /* 1ms 上下文里应用零偏 */
 static volatile uint8_t s_zero_done_req  = 0u;   /* 1ms 上下文里打印 ZERO 计数 */
 static int32_t  s_zero_hw_l = 0;                 /* ZERO 结束时的 ABZ 计数 */
@@ -285,16 +286,17 @@ void EncoderCalib_StartAlign(void)
     s_zero_done_req   = 0u;
     s_zero_apply_req  = 0u;
 
-    g_align_active = 1u;
-    hw_tmr4_pwm_resume_output();
-
-    /* ZERO：零矢量 50/50/50，等待电流/PWM 稳定，同时采样电流零偏 */
+    /* ZERO 准备：先把状态机和标志都置好，再动 PWM。
+     * 若先置标志后置状态，ISR 可能看到“标志=1 但状态=IDLE”而清掉标志；
+     * 若先写 PWM 后置标志，ISR 又会用旧模式输出覆盖零矢量。 */
     s_zero_cnt = 0u;
-    foc_adc_cal_begin();
-    ec_output_zero_vector();
-
     s_hold_cnt = 0u;
-    s_ec_state = EC_ZERO;
+    foc_adc_cal_begin();
+    s_ec_state    = EC_ZERO;
+    g_align_active = 1u;
+
+    hw_tmr4_pwm_resume_output();
+    ec_output_zero_vector();
 
     rt_kprintf("[CAL] StartAlign: volt_x100=%ld hold_ms=%u th1_x1000=%ld th2_x1000=%ld\r\n",
                (long)(align_volt * 100.0f),
@@ -342,14 +344,13 @@ void EncoderCalib_StartAlign7(void)
     s_zero_hw_l       = 0;
     s_zero_done_req   = 0u;
 
-    g_align_active = 1u;
-    hw_tmr4_pwm_resume_output();
-
     s_zero_cnt = 0u;
-    ec_output_zero_vector();
-
     s_hold_cnt = 0u;
     s_ec_state = EC_ZERO;
+    g_align_active = 1u;
+
+    hw_tmr4_pwm_resume_output();
+    ec_output_zero_vector();
 
     rt_kprintf("[CAL7] start: volt_x100=%ld ramp_ms=%lu hold_ms=%lu\r\n",
                (long)(align_volt * 100.0f),
@@ -386,13 +387,14 @@ void EncoderCalib_StartSweep(void)
 
     ec_precompute_duty(align_volt);
 
-    g_align_active = 1u;
     hw_tmr4_pwm_resume_output();
     ec_output_first_segment();
     ec_seg_reset();
 
+    /* 先状态后标志，避免 ISR 落在两句之间误清 g_align_active */
     s_hold_cnt = 0u;
     s_ec_state = EC_BETA;
+    g_align_active = 1u;
 
     rt_kprintf("[EC] StartSweep: volt_x100=%ld hold_ms=%u th1_x1000=%ld th2_x1000=%ld\r\n",
                (long)(align_volt * 100.0f),
@@ -445,12 +447,12 @@ void EncoderCalib_StartRevMeasure(void)
     g_rev_slip      = 0u;
     g_align_evt     = EC_EVT_NONE;
 
-    g_align_active = 1u;
-    hw_tmr4_pwm_resume_output();
-    ec_output_vector(0.0f, volt);
-
     s_hold_cnt = 0u;
     s_ec_state = EC_REV_ALIGN0;
+    g_align_active = 1u;
+
+    hw_tmr4_pwm_resume_output();
+    ec_output_vector(0.0f, volt);
 
     rt_kprintf("[REV] start: volt_x100=%ld f_x100=%ld align_ms=%lu ramp_ms=%lu revs=%u\r\n",
                (long)(volt * 100.0f),
@@ -523,6 +525,20 @@ void EncoderCalib_Task1ms(void)
     if (s_zero_apply_req != 0u) {
         s_zero_apply_req = 0u;
         ec_apply_zero_offset();
+    }
+
+    /* ZERO 正常 30ms 结束；超过 100ms 说明 20kHz 没有喂 Task20k */
+    if ((s_ec_state == EC_ZERO) && (g_align_active != 0u)) {
+        if (++s_zero_wait_ms >= 100u) {
+            s_zero_wait_ms = 0u;
+            rt_kprintf("[CAL] WARN: ZERO stuck, cnt=%lu active=%u busy=%u isr=%lu\r\n",
+                       (unsigned long)s_zero_cnt,
+                       (unsigned)g_align_active,
+                       (unsigned)EncoderCalib_IsBusy(),
+                       (unsigned long)g_fc_isr_cnt);
+        }
+    } else {
+        s_zero_wait_ms = 0u;
     }
 
     if (g_fp_state != FP_STATE_NORMAL) {

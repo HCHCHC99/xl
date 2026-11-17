@@ -8,6 +8,9 @@
 #include <rtthread.h>
 #include "cfg_foc_table.h"
 
+/* 20kHz ISR 每拍调用 set_duty3：只对本文件开 O2，降低寄存器写入开销。 */
+#pragma GCC optimize("O2")
+
 /*=============================================================================
  * 采样臂 / 影子装载点（编译期，由 cfg_foc_table.h 决定）
  *

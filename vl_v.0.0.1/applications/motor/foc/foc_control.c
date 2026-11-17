@@ -33,6 +33,11 @@
 
 #include <rtthread.h>
 
+/* 20kHz ISR 热路径：Debug 构建是 -O0，闭环时单拍容易超过 50us，
+ * 导致 idle 线程得不到调度、msh 输入失效。只对本文件开 O2，
+ * 其余模块仍保持 -O0 方便调试。 */
+#pragma GCC optimize("O2")
+
 /*---------------------------------------------------------------------------
  * 节拍测量
  *---------------------------------------------------------------------------*/
@@ -205,14 +210,12 @@ void Foc_Control_Step(void)
     Clarke(g_fc_iu, g_fc_iv, g_fc_iw, &ialpha, &ibeta);
     Park(ialpha, ibeta, theta_e, (float *)&g_fc_id, (float *)&g_fc_iq);
 
-    /* ---- Mode 3 对齐期间：ISR 不碰 PWM ---- */
-    if (g_align_active) {
-        if (EncoderCalib_IsBusy() != 0u) {
-            EncoderCalib_Task20k();
-            return;
-        }
-        /* 状态机已结束但标志残留：清掉后继续走正常控制链 */
-        g_align_active = 0u;
+    /* ---- Mode 3 对齐期间：ISR 不碰 PWM ----
+     * 注意：这里不能在“标志=1 但状态机尚未置忙”的启动窗口里清标志。
+     * Start*() 已经改成先置状态再置标志；本分支只负责喂 20kHz 计时。 */
+    if ((g_align_active != 0u) && (EncoderCalib_IsBusy() != 0u)) {
+        EncoderCalib_Task20k();
+        return;
     }
 
     /* ---- 控制链 ---- */
@@ -294,6 +297,17 @@ static void foc_1ms_timer_cb(void *param)
                        c[0] / 100, c[0] % 100,
                        c[1] / 100, c[1] % 100,
                        c[2] / 100, c[2] % 100);
+        } else {
+            /* 闭环模式下的 ISR 超时告警：dt 是两次 ISR 入口间隔，
+             * 正常应等于 PWM 周期；大于周期说明本拍没跑完就被下一次打断。 */
+            uint32_t period_us = 1000000u / FOC_CFG_PWM_FREQ;
+
+            if (g_fc_isr_dt_last_us > (period_us + 2u)) {
+                rt_kprintf("[FC] WARN: ISR overrun mode=%d dt=%lu us > period %lu us\r\n",
+                           (int)Foc_Mode_GetMode(),
+                           (unsigned long)g_fc_isr_dt_last_us,
+                           (unsigned long)period_us);
+            }
         }
     }
 }

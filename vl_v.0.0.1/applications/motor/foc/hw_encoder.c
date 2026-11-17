@@ -16,6 +16,9 @@
 #include <rtthread.h>
 #include <finsh.h>
 
+/* 20kHz ISR 每拍读取计数/电角度：只对本文件开 O2。 */
+#pragma GCC optimize("O2")
+
 #if !BSP_USING_ABS_ENCODER
 /* ------------------------------------------------------------
  * BSP_USING_ABS_ENCODER = 0：保留 SPI 编码器方案，
