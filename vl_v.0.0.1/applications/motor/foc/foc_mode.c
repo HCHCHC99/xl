@@ -735,6 +735,60 @@ static int foc_mode_set_param(const char *name, float val)
 }
 
 /*=============================================================================
+ * 简化命令：直接输入“参数名 + 数值”，按当前模式自动分发
+ *   例如：rev 2.5 / rpm -500 / iq 1.2 / zero
+ * 参数名与 focmode set <name> <value> 完全一致。
+ *=============================================================================*/
+static int foc_param_cmd(const char *name, int argc, char **argv)
+{
+    float v = 0.0f;
+
+    if (argc < 2) {
+        rt_kprintf("[FOC-MODE] usage: %s <value>\r\n", name);
+        return -1;
+    }
+    if (foc_mode_parse_float(argv[1], &v) != 0) {
+        rt_kprintf("[FOC-MODE] %s: invalid value '%s'\r\n", name, argv[1]);
+        return -1;
+    }
+    return foc_mode_set_param(name, v);
+}
+
+#define FOC_PARAM_CMD(pname)                                          \
+static void cmd_foc_##pname(int argc, char **argv)                    \
+{                                                                     \
+    (void)foc_param_cmd(#pname, argc, argv);                          \
+}                                                                     \
+MSH_CMD_EXPORT_ALIAS(cmd_foc_##pname, pname, set FOC param)
+
+/* mode 4 / 9 / 10 的可调参数快捷命令 */
+FOC_PARAM_CMD(iq);
+FOC_PARAM_CMD(id);
+FOC_PARAM_CMD(imax);
+FOC_PARAM_CMD(vmax);
+FOC_PARAM_CMD(rpm);
+FOC_PARAM_CMD(accel);
+FOC_PARAM_CMD(iqlim);
+FOC_PARAM_CMD(kp);
+FOC_PARAM_CMD(ki);
+FOC_PARAM_CMD(kd);
+FOC_PARAM_CMD(iterm);
+FOC_PARAM_CMD(ff);
+FOC_PARAM_CMD(rev);
+FOC_PARAM_CMD(dec);
+FOC_PARAM_CMD(db);
+FOC_PARAM_CMD(limit);
+
+/* zero 不需要数值：把当前位置设为 0 */
+static void cmd_foc_zero(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    (void)foc_mode_set_param("zero", 1.0f);
+}
+MSH_CMD_EXPORT_ALIAS(cmd_foc_zero, zero, set current position as 0);
+
+/*=============================================================================
  * msh 命令
  *   focmode            打印当前模式
  *   focmode 0          IDLE

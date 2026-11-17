@@ -123,6 +123,8 @@ float Foc_CurrentLoop_GetVmagRaw(void);
 float Foc_CurrentLoop_GetVmax(void);
 float Foc_CurrentLoop_GetIdRefRamped(void);
 float Foc_CurrentLoop_GetIqRefRamped(void);
+float Foc_CurrentLoop_GetIdRef(void);
+float Foc_CurrentLoop_GetIqRef(void);
 
 #ifdef __cplusplus
 }

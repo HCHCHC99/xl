@@ -522,3 +522,13 @@ float Foc_CurrentLoop_GetIqRefRamped(void)
 {
     return s_iq_ref_ramped;
 }
+
+float Foc_CurrentLoop_GetIdRef(void)
+{
+    return s_id_ref;
+}
+
+float Foc_CurrentLoop_GetIqRef(void)
+{
+    return s_iq_ref;
+}

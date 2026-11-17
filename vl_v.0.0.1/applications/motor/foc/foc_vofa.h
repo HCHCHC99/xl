@@ -9,12 +9,14 @@
  *          TX 走 DMA2 CH0，AOS 由 USART1_TI 触发
  *        （PB12/PB13 是 CAN1，VOFA 不再占用，避免与 CAN 冲突）
  *
- *        通道（5 路，JustFloat）：
- *          ch0 = U 相电流 A
- *          ch1 = V 相电流 A
- *          ch2 = W 相电流 A
- *          ch3 = 编码器圈内计数 0 ~ CPR-1
- *          ch4 = 圈数（累计计数 / CPR，向下取整）
+ *        通道（19 路，JustFloat，与参考 FOC 工程一致）：
+ *          ch0  位置目标 rev            ch1  有效给定位 (fb+err) rev
+ *          ch2  位置反馈 rev            ch3  总电流 A
+ *          ch4~6  iu / iv / iw A       ch7~8  iq / id A
+ *          ch9~10 iq_ref / id_ref A    ch11~12 斜坡后 iq / id A
+ *          ch13 电角度 rad             ch14 机械角度 rad
+ *          ch15 圈内计数 0~CPR-1       ch16 IF 电角度 rad
+ *          ch17 速度环斜坡 rpm         ch18 速度环实测 rpm
  *******************************************************************************
  */
 
@@ -66,8 +68,13 @@
 #define FOC_VOFA_DMA_TC_FLAG        DMA_FLAG_TC_CH0
 #define FOC_VOFA_DMA_TC_INT         DMA_INT_TC_CH0
 
+/* 发送超时（ms）：按帧长和波特率自动计算（10bit/字节 + 5ms 余量）。
+ * 19ch/80B @115200 -> 约 11ms；@921600 -> 5ms */
+#define FOC_VOFA_TX_TIMEOUT_MS                                  \
+    ((FOC_VOFA_FRAME_BYTES * 10U * 1000U) / FOC_VOFA_BAUDRATE + 5U)
+
 /* ---- JustFloat 帧 ---- */
-#define FOC_VOFA_CH_NUM             5U
+#define FOC_VOFA_CH_NUM             19U
 #define FOC_VOFA_FLOAT_BYTES        (FOC_VOFA_CH_NUM * 4U)
 #define FOC_VOFA_TAIL_BYTES         4U
 #define FOC_VOFA_FRAME_BYTES        (FOC_VOFA_FLOAT_BYTES + FOC_VOFA_TAIL_BYTES)

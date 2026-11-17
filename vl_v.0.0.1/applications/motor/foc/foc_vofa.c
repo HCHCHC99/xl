@@ -1,14 +1,12 @@
 /**
  *******************************************************************************
  * @file  foc_vofa.c
- * @brief VOFA+ JustFloat 5 通道输出（USART1 + DMA2 CH0）
+ * @brief VOFA+ JustFloat 19 通道输出（USART1 + DMA2 CH0）
  *
  *        引脚：PA1 = USART1_RX(FUNC_33)，PA2 = USART1_TX(FUNC_32)
  *        （PB12/PB13 保留给 CAN1）
- *        帧格式：5 个 little-endian float + 00 00 80 7F（+Inf 结尾）
- *        ch0~2 = iu/iv/iw (A)
- *        ch3    = 编码器圈内计数 0 ~ CPR-1
- *        ch4    = 圈数（累计计数 / CPR 向下取整）
+ *        帧格式：19 个 little-endian float + 00 00 80 7F（+Inf 结尾）
+ *        通道与参考 FOC 工程一致（位置/电流/角度/速度全链路）
  *
  *        发送方式：1ms 软定时器（timer 线程上下文）+ DMA，轮询 TC 完成。
  *******************************************************************************
@@ -21,6 +19,9 @@
 #include "foc_control.h"
 #include "hw_encoder.h"
 #include "cfg_motor.h"
+#include "foc_mode.h"
+#include "foc_speed_loop.h"
+#include "foc_position_loop.h"
 #include "hc32_ll_aos.h"
 #include "hc32_ll_dma.h"
 #include "hc32_ll_usart.h"
@@ -116,7 +117,7 @@ static void foc_vofa_send(const float *ch)
  *     1) DMA TC 置位（剩余字节都已写入 DR）
  *     2) USART TX_CPLT 置位（最后一个字节已完全移出，包括停止位）
  *   确认后关 TX、清标志、关 DMA 通道，避免尾字节被下一帧截断。
- *   异常：5ms 仍未完成 -> 强制关通道并复位，避免永久停发。
+ *   异常：超过 FOC_VOFA_TX_TIMEOUT_MS 仍未完成 -> 强制关通道并复位
  *---------------------------------------------------------------------------*/
 static void foc_vofa_poll_tc(void)
 {
@@ -137,7 +138,7 @@ static void foc_vofa_poll_tc(void)
         return;
     }
 
-    if (++s_busy_ms >= 5u) {
+    if (++s_busy_ms >= FOC_VOFA_TX_TIMEOUT_MS) {
         (void)DMA_ChCmd(FOC_VOFA_DMA_UNIT, FOC_VOFA_DMA_CH, DISABLE);
         DMA_ClearTransCompleteStatus(FOC_VOFA_DMA_UNIT, FOC_VOFA_DMA_TC_FLAG);
         s_busy    = 0u;
@@ -152,8 +153,8 @@ static void foc_vofa_poll_tc(void)
 static void foc_vofa_timer_cb(void *parameter)
 {
     float   ch[FOC_VOFA_CH_NUM];
+    uint8_t i;
     int32_t c;
-    int32_t turns;
 
     (void)parameter;
 
@@ -168,33 +169,39 @@ static void foc_vofa_timer_cb(void *parameter)
 
     if (s_test_pending != 0u) {
         s_test_pending = 0u;
-        ch[0] = 0.0f;
-        ch[1] = 1.0f;
-        ch[2] = 2.0f;
-        ch[3] = 3.0f;
-        ch[4] = 4.0f;
+        for (i = 0u; i < FOC_VOFA_CH_NUM; i++) {
+            ch[i] = (float)i;
+        }
         foc_vofa_send(ch);
         return;
     }
 
-    ch[0] = g_fc_iu;
-    ch[1] = g_fc_iv;
-    ch[2] = g_fc_iw;
+    /* 与参考 FOC 工程 Foc_AdcDebug_VofaFill 的 19 通道一致 */
+    ch[0]  = g_pos_target_rev;
+    ch[1]  = g_pos_fb_rev + g_pos_err_rev;
+    ch[2]  = g_pos_fb_rev;
+    ch[3]  = g_fc_i_total;
+    ch[4]  = g_fc_iu;
+    ch[5]  = g_fc_iv;
+    ch[6]  = g_fc_iw;
+    ch[7]  = g_fc_iq;
+    ch[8]  = g_fc_id;
+    ch[9]  = Foc_CurrentLoop_GetIqRef();
+    ch[10] = Foc_CurrentLoop_GetIdRef();
+    ch[11] = Foc_CurrentLoop_GetIqRefRamped();
+    ch[12] = Foc_CurrentLoop_GetIdRefRamped();
+    ch[13] = g_fc_enc_elec_deg * 0.0174532925f;   /* 电角度 rad */
+    ch[14] = g_fc_enc_mech_deg * 0.0174532925f;   /* 机械角度 rad */
 
     c = g_enc_count % (int32_t)CFG_ENCODER_CPR;
     if (c < 0) {
         c += (int32_t)CFG_ENCODER_CPR;
     }
+    ch[15] = (float)c;                            /* 圈内计数 */
 
-    if (g_enc_count >= 0) {
-        turns = g_enc_count / (int32_t)CFG_ENCODER_CPR;
-    } else {
-        turns = -(((-g_enc_count) + (int32_t)CFG_ENCODER_CPR - 1) /
-                  (int32_t)CFG_ENCODER_CPR);
-    }
-
-    ch[3] = (float)c;
-    ch[4] = (float)turns;
+    ch[16] = g_fm_theta_e;                        /* IF 电角度 rad */
+    ch[17] = g_spd_ramp_rpm;
+    ch[18] = g_spd_filt_rpm;
 
     foc_vofa_send(ch);
 }
@@ -272,8 +279,9 @@ int foc_vofa_init(void)
     rt_timer_start(&s_vofa_timer);
 
     /* 打印 BRR/PR 实配值，便于核对波特率是否真的写进寄存器 */
-    rt_kprintf("[VOFA] USART1 PA1(RX)/PA2(TX) %lu bps, 5ch JustFloat, %d ms\r\n",
+    rt_kprintf("[VOFA] USART1 PA1(RX)/PA2(TX) %lu bps, %uch JustFloat, %d ms\r\n",
                (unsigned long)FOC_VOFA_BAUDRATE,
+               (unsigned)FOC_VOFA_CH_NUM,
                (int)FOC_VOFA_PERIOD_MS);
     rt_kprintf("[VOFA] usart_rc=%ld baud_err_x100=%ld BRR=0x%08lX PR=0x%08lX poll=1\r\n",
                (long)i32UsartRet,
@@ -312,7 +320,8 @@ static void cmd_t_vofa(int argc, char **argv)
                    (argv[1][2] == 's') && (argv[1][3] == 't') &&
                    (argv[1][4] == '\0')) {
             s_test_pending = 1u;   /* 由 1ms 定时器线程实际发送 */
-            rt_kprintf("[VOFA] test frame queued (0,1,2,3,4)\r\n");
+            rt_kprintf("[VOFA] test frame queued (0..%u)\r\n",
+                       (unsigned)(FOC_VOFA_CH_NUM - 1u));
         } else {
             rt_kprintf("usage: t_vofa [0|1|test]\r\n");
             return;
