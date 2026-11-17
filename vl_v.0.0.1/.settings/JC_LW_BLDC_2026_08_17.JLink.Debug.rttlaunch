@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <launchConfiguration type="ilg.gnumcueclipse.debug.gdbjtag.jlink.launchConfigurationType">
-<stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.PERIPHERALS" value="&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot; standalone=&quot;no&quot;?&gt;&#13;&#10;&lt;peripherals&gt;&#13;&#10;&lt;peripheral name=&quot;GPIO&quot;/&gt;&#13;&#10;&lt;/peripherals&gt;&#13;&#10;"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.adapterName" value="J-Link"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.binFileStartAddress" value=""/>
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.doConnectToRunning" value="false"/>
@@ -15,18 +14,18 @@
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.doGdbServerVerifyDownload" value="true"/>
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.doSecondReset" value="true"/>
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.doStartGdbServer" value="true"/>
-<booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.enableFlashBreakpoints" value="true"/>
-<booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.enableSemihosting" value="true"/>
+<booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.enableFlashBreakpoints" value="false"/>
+<booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.enableSemihosting" value="false"/>
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.enableSemihostingIoclientGdbClient" value="false"/>
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.enableSemihostingIoclientTelnet" value="true"/>
-<booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.enableSwo" value="true"/>
+<booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.enableSwo" value="false"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.eraseEndAddress" value=""/>
 <intAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.eraseMode" value="1"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.eraseStartAddress" value=""/>
-<intAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.firstResetSpeed" value="100"/>
+<intAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.firstResetSpeed" value="1000"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.firstResetType" value=""/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.flashDeviceName" value="HC32F460PETB"/>
-<stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.flashDownloadHex" value="true"/>
+<stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.flashDownloadHex" value="false"/>
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.forceQuitGdbServer" value="false"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.gdbClientOtherCommands" value="set mem inaccessible-by-default off"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.gdbClientOtherOptions" value=""/>
@@ -35,7 +34,7 @@
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.gdbServerDebugInterface" value="swd"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.gdbServerDeviceEndianness" value="little"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.gdbServerDeviceName" value="HC32F460PETB"/>
-<stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.gdbServerDeviceSpeed" value="auto"/>
+<stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.gdbServerDeviceSpeed" value="1000"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.gdbServerExecutable" value="${debugger_install_path}/${jlink_debugger_relative_path}\JLinkGDBServerCL.exe"/>
 <intAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.gdbServerGdbPortNumber" value="2331"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.gdbServerLog" value=""/>
@@ -54,7 +53,7 @@
 <intAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.swoEnableTargetCpuFreq" value="0"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.swoEnableTargetPortMask" value="0x1"/>
 <intAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.swoEnableTargetSwoFreq" value="0"/>
-<stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.svdPath" value="D:\RT-ThreadStudio\workspace\JC_LEIWO_BLDC\libraries\hc32f460_ddl\drivers\cmsis\Device\HDSC\hc32f4xx\Source\GCC\svd\HDSC_HC32F460.svd"/>
+<stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.svdPath" value="D:\xl\vl_v.0.0.1\libraries\hc32f460_ddl\drivers\cmsis\Device\HDSC\hc32f4xx\Source\GCC\svd\HDSC_HC32F460.svd"/>
 <stringAttribute key="org.eclipse.cdt.debug.gdbjtag.core.imageFileName" value=""/>
 <stringAttribute key="org.eclipse.cdt.debug.gdbjtag.core.imageOffset" value=""/>
 <stringAttribute key="org.eclipse.cdt.debug.gdbjtag.core.ipAddress" value="localhost"/>
