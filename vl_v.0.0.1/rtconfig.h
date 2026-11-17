@@ -16,6 +16,11 @@
 #define RT_USING_IDLE_HOOK
 #define RT_IDLE_HOOK_LIST_SIZE 4
 #define IDLE_THREAD_STACK_SIZE 1024
+/* 软件定时器：让 RT_TIMER_FLAG_SOFT_TIMER 的定时器回调真正跑在 timer 线程，
+ * 而不是 SysTick 中断里。VOFA(1ms)/foc_1ms/rtppoll 都依赖这一点。 */
+#define RT_USING_TIMER_SOFT
+#define RT_TIMER_THREAD_PRIO 4
+#define RT_TIMER_THREAD_STACK_SIZE 1024
 
 /* kservice optimization */
 

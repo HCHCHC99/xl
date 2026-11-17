@@ -196,7 +196,7 @@ const boot_step_t g_boot_steps[] = {
      * 依赖 foc_adc：注册采样帧完成回调，之后每个 DMA BTC 中断执行控制链。
      * BOOT_OPTIONAL：控制层起不来时 PWM 仍保持 IDLE 全低，安全侧。 */
     {"foc_ctrl",         boot_foc_ctrl_init,   BOOT_LV_HW,         BOOT_OPTIONAL, 0, {"foc_adc"}},
-    /* VOFA+：USART3 PB12/PB13 921600，DMA2 CH0；依赖 FOC 采样变量 */
+    /* VOFA+：USART1 PA1(RX)/PA2(TX) 921600，DMA2 CH0；依赖 FOC 采样变量 */
     {"vofa",             boot_vofa_init,       BOOT_LV_APP,        BOOT_OPTIONAL, 0, {"foc_adc"}},
     /* 电机虚拟角度 + 转速（FOC 基础设施，2026-11-02）
      * 位置约束：

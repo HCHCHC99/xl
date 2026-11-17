@@ -5,7 +5,8 @@
  *
  * Originally hardcoded to USART3/DMA2.  Now fully configurable via struct —
  * same code works with any USARTx + DMAx combination by passing a different
- * config.  NULL = use default (USART3, PB12/PB13, DMA2 CH0, 115200).
+ * config.  NULL = use default (pin/USART selected by USART3_HW_USE_PA1_PA2;
+ * DMA2 CH0, 115200).
  *
  * Responsibilities:
  *   - GPIO pin mux
@@ -29,6 +30,47 @@
 
 #ifdef __cplusplus
 extern "C" {
+#endif
+
+/*******************************************************************************
+ * VOFA 串口选择（只改这一处）
+ *
+ *   USART3_HW_USE_PA1_PA2 = 0 : PB12(RX)/PB13(TX) + USART3（原接线，默认）
+ *   USART3_HW_USE_PA1_PA2 = 1 : PA1(RX)/PA2(TX)   + USART1
+ *
+ * 两种线序都使用 GPIO_FUNC_33(RX) / GPIO_FUNC_32(TX)。
+ * 下面的 *_DEFAULT 配置和 Usart3_HW.c 会自动跟随这个宏。
+ ******************************************************************************/
+#ifndef USART3_HW_USE_PA1_PA2
+#define USART3_HW_USE_PA1_PA2       1
+#endif
+
+#if USART3_HW_USE_PA1_PA2
+    /* PA1 = USART1_RX, PA2 = USART1_TX */
+    #define USART3_HW_RX_PORT       (GPIO_PORT_A)
+    #define USART3_HW_RX_PIN        (GPIO_PIN_01)
+    #define USART3_HW_RX_FUNC       (GPIO_FUNC_33)
+    #define USART3_HW_TX_PORT       (GPIO_PORT_A)
+    #define USART3_HW_TX_PIN        (GPIO_PIN_02)
+    #define USART3_HW_TX_FUNC       (GPIO_FUNC_32)
+    #define USART3_HW_FCG_PERIPH    (FCG1_PERIPH_USART1)
+    #define USART3_HW_USART_BASE    (CM_USART1)
+    #define USART3_HW_AOS_EVENT     (EVT_SRC_USART1_TI)
+    #define USART3_HW_RX_ERR_SRC    (INT_SRC_USART1_EI)
+    #define USART3_HW_RX_FULL_SRC   (INT_SRC_USART1_RI)
+#else
+    /* PB12 = USART3_RX, PB13 = USART3_TX */
+    #define USART3_HW_RX_PORT       (GPIO_PORT_B)
+    #define USART3_HW_RX_PIN        (GPIO_PIN_12)
+    #define USART3_HW_RX_FUNC       (GPIO_FUNC_33)
+    #define USART3_HW_TX_PORT       (GPIO_PORT_B)
+    #define USART3_HW_TX_PIN        (GPIO_PIN_13)
+    #define USART3_HW_TX_FUNC       (GPIO_FUNC_32)
+    #define USART3_HW_FCG_PERIPH    (FCG1_PERIPH_USART3)
+    #define USART3_HW_USART_BASE    (CM_USART3)
+    #define USART3_HW_AOS_EVENT     (EVT_SRC_USART3_TI)
+    #define USART3_HW_RX_ERR_SRC    (INT_SRC_USART3_EI)
+    #define USART3_HW_RX_FULL_SRC   (INT_SRC_USART3_RI)
 #endif
 
 /*******************************************************************************
@@ -71,7 +113,7 @@ typedef struct {
  * Default configs (pass to Init or copy as starting point)
  ******************************************************************************/
 
-/** USART3, PB12(RX)/PB13(TX), DMA2 CH0, 115200 — current project default */
+/** 默认配置：引脚/USART 由 USART3_HW_USE_PA1_PA2 选择，DMA2 CH0，115200 */
 extern const Usart3_HW_Config_t USART3_HW_CONFIG_DEFAULT;
 
 /*******************************************************************************

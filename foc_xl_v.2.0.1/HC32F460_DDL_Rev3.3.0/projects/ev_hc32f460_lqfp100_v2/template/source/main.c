@@ -1327,6 +1327,8 @@ int main(void)
         }
 
         /* SPEED å…³é”®å˜é‡å‘¨æœŸæ‰“å°ï¼?0ms ä¸€æ¬¡ï¼‰ */
+        /* 原 mode 9 的 [SPD] 周期打印临时关闭，改为在 VOFA 发送处打印实际数据 */
+#if 0
         if (g_mode_cmd == 9) {
             static uint32_t s_last_spd_log_ms = 0;
             uint32_t now_ms = tickTimer_GetCount();
@@ -1349,6 +1351,7 @@ int main(void)
                        (long)g_spd_iterm_max_ma);
             }
         }
+#endif
 
         /* POSITION å‚æ•°ä¸Žä½ç½®å‘¨æœŸæ‰“å°ï¼ˆ500ms ä¸€æ¬¡ï¼‰ */
         /* POSITION 周期打印（50ms 一次）：

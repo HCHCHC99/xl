@@ -1,12 +1,13 @@
 /**
  *******************************************************************************
  * @file  foc_vofa.h
- * @brief VOFA+ JustFloat 输出（USART3，PB12/PB13，921600）
+ * @brief VOFA+ JustFloat 输出（USART1，PA1/PA2，115200/921600 可选）
  *
- *        与 FOC 示例工程接线一致：
- *          PB12 = USART3_RX = FUNC_33
- *          PB13 = USART3_TX = FUNC_32
- *          TX 走 DMA2 CH0，AOS 由 USART3_TI 触发
+ *        接线：
+ *          PA1 = USART1_RX = FUNC_33
+ *          PA2 = USART1_TX = FUNC_32
+ *          TX 走 DMA2 CH0，AOS 由 USART1_TI 触发
+ *        （PB12/PB13 是 CAN1，VOFA 不再占用，避免与 CAN 冲突）
  *
  *        通道（5 路，JustFloat）：
  *          ch0 = U 相电流 A
@@ -23,7 +24,7 @@
 #include "hc32_ll.h"
 #include <stdint.h>
 
-/* 总开关：0 = 不初始化 USART3/DMA，也不发帧 */
+/* 总开关：0 = 不初始化 USART1/DMA，也不发帧 */
 #ifndef FOC_VOFA_ENABLE
 #define FOC_VOFA_ENABLE             1
 #endif
@@ -33,30 +34,37 @@
 #define FOC_VOFA_PERIOD_MS          1
 #endif
 
-/* ---- 引脚 / 外设（PB12/PB13，与 FOC 示例工程一致） ---- */
-#define FOC_VOFA_USART              CM_USART3
-#define FOC_VOFA_FCG_USART          FCG1_PERIPH_USART3
+/* ---- 引脚 / 外设（PA1/PA2，USART1） ---- */
+#define FOC_VOFA_USART              CM_USART1
+#define FOC_VOFA_FCG_USART          FCG1_PERIPH_USART1
 
-#define FOC_VOFA_RX_PORT            (GPIO_PORT_B)
-#define FOC_VOFA_RX_PIN             (GPIO_PIN_12)
+#define FOC_VOFA_RX_PORT            (GPIO_PORT_A)
+#define FOC_VOFA_RX_PIN             (GPIO_PIN_01)
 #define FOC_VOFA_RX_FUNC            (GPIO_FUNC_33)
 
-#define FOC_VOFA_TX_PORT            (GPIO_PORT_B)
-#define FOC_VOFA_TX_PIN             (GPIO_PIN_13)
+#define FOC_VOFA_TX_PORT            (GPIO_PORT_A)
+#define FOC_VOFA_TX_PIN             (GPIO_PIN_02)
 #define FOC_VOFA_TX_FUNC            (GPIO_FUNC_32)
 
-#define FOC_VOFA_BAUDRATE           921600UL
+/* ---- 波特率：直接填 115200 或 921600（也可以填其他标准波特率） ---- */
+#define FOC_VOFA_BAUDRATE           115200UL
 
-/* ---- DMA2 CH0：USART3_TI 触发，搬一个字节到 TDR ---- */
+/* USART 时钟分频自动跟随波特率，与参考工程 HW_GetClkDiv 规则一致：
+ *   > 115200 -> DIV1，否则 DIV4 */
+#if (FOC_VOFA_BAUDRATE > 115200UL)
+#define FOC_VOFA_USART_CLK_DIV      USART_CLK_DIV1
+#else
+#define FOC_VOFA_USART_CLK_DIV      USART_CLK_DIV4
+#endif
+
+/* ---- DMA2 CH0：USART1_TI 触发，每触发一次搬一个字节到数据寄存器 ---- */
 #define FOC_VOFA_DMA_UNIT           CM_DMA2
 #define FOC_VOFA_DMA_CH             DMA_CH0
 #define FOC_VOFA_DMA_FCG            FCG0_PERIPH_DMA2
 #define FOC_VOFA_DMA_AOS            AOS_DMA2_0
-#define FOC_VOFA_DMA_AOS_EVT        EVT_SRC_USART3_TI
+#define FOC_VOFA_DMA_AOS_EVT        EVT_SRC_USART1_TI
 #define FOC_VOFA_DMA_TC_FLAG        DMA_FLAG_TC_CH0
 #define FOC_VOFA_DMA_TC_INT         DMA_INT_TC_CH0
-#define FOC_VOFA_DMA_TC_IRQn        INT042_IRQn
-#define FOC_VOFA_DMA_TC_INT_SRC     INT_SRC_DMA2_TC0
 
 /* ---- JustFloat 帧 ---- */
 #define FOC_VOFA_CH_NUM             5U

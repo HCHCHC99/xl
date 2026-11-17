@@ -16,34 +16,36 @@
  * Default configs
  *============================================================================*/
 
-/** USART3, PB12(RX)=FUNC_33, PB13(TX)=FUNC_32, DMA2 CH0, 115200 */
+/** 默认配置：引脚/USART 由 Usart3_HW.h 的 USART3_HW_USE_PA1_PA2 选择。
+ *  0 = USART3 + PB12/PB13；1 = USART1 + PA1/PA2。
+ *  DMA 固定 DMA2 CH0，默认 115200。 */
 const Usart3_HW_Config_t USART3_HW_CONFIG_DEFAULT = {
     /* GPIO */
-    .rx_port    = GPIO_PORT_B,
-    .rx_pin     = GPIO_PIN_12,
-    .rx_func    = GPIO_FUNC_33,
-    .tx_port    = GPIO_PORT_B,
-    .tx_pin     = GPIO_PIN_13,
-    .tx_func    = GPIO_FUNC_32,
+    .rx_port    = USART3_HW_RX_PORT,
+    .rx_pin     = USART3_HW_RX_PIN,
+    .rx_func    = USART3_HW_RX_FUNC,
+    .tx_port    = USART3_HW_TX_PORT,
+    .tx_pin     = USART3_HW_TX_PIN,
+    .tx_func    = USART3_HW_TX_FUNC,
     /* USART */
     .baudrate   = 115200UL,
-    .fcg_periph = FCG1_PERIPH_USART3,
-    .usart_base = CM_USART3,
+    .fcg_periph = USART3_HW_FCG_PERIPH,
+    .usart_base = USART3_HW_USART_BASE,
     /* DMA */
     .dma_base   = CM_DMA2,
     .dma_ch     = DMA_CH0,
     .dma_fcg    = FCG0_PERIPH_DMA2,
     .aos_target = AOS_DMA2_0,
-    .aos_event  = EVT_SRC_USART3_TI,
+    .aos_event  = USART3_HW_AOS_EVENT,
     .dma_tc_flag = DMA_FLAG_TC_CH0,
     .dma_tc_int  = DMA_INT_TC_CH0,
     /* IRQ */
     .rx_err_irqn    = INT004_IRQn,
-    .rx_err_int_src = (en_int_src_t)INT_SRC_USART3_EI,
+    .rx_err_int_src = USART3_HW_RX_ERR_SRC,
     .rx_full_irqn   = INT005_IRQn,
-    .rx_full_int_src = (en_int_src_t)INT_SRC_USART3_RI,
+    .rx_full_int_src = USART3_HW_RX_FULL_SRC,
     .dma_tc_irqn    = INT042_IRQn,
-    .dma_tc_int_src = (en_int_src_t)INT_SRC_DMA2_TC0,
+    .dma_tc_int_src = INT_SRC_DMA2_TC0,
 };
 
 /*=============================================================================

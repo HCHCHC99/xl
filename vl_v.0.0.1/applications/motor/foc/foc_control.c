@@ -329,6 +329,8 @@ void Foc_Control_Init(void)
         s_ticks_per_us = 1u;
     }
 
+    Foc_Control_DwtInit();   /* 使能 DWT 周期计数，ISR dt 统计才有效 */
+
     Foc_SinCos_Init();
 
     Foc_CurrentLoop_Init();

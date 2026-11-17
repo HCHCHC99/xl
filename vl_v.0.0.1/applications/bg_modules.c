@@ -8,6 +8,7 @@
 #include "device_info/device_info.h"
 #include "motor/motor.h"                 /* 【R7】motor_update */
 #include "motor/motor_stall.h"           /* 【S1】stall_on_tick */
+#include "motor/foc/foc_mode.h"          /* Foc_Mode_PwmOwned */
 #include "hw/hw_brake.h"                 /* 【2026-11-10】hw_brake_flush_log */
 #include <stdint.h>
 #include <stddef.h>
