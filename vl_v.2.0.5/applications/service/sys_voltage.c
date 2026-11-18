@@ -44,17 +44,6 @@ static volatile uint32_t s_vbus_meas_mv = 0U;   /* 标定前的母线电压 mV�
 static volatile uint32_t s_bus_mv_1ms   = 0U;   /* 1ms 平均母线电压 mV（标定后） */
 static volatile uint32_t s_bus_mv_cached = 0U;  /* 最近一次读取值 mV */
 
-/* 临时调试：每 5s 打印一次 PA6 的原始码与换算电压。
- * 由 sys_voltage_read_bus_mv() 的调用节拍触发（vehicle_poll，50ms）。
- * 调试完成后把 SYS_VOLT_DEBUG_5S 改为 0 即可关闭。 */
-#ifndef SYS_VOLT_DEBUG_5S
-#define SYS_VOLT_DEBUG_5S           1
-#endif
-
-#if SYS_VOLT_DEBUG_5S
-static rt_tick_t s_dbg_tick = 0U;
-#endif
-
 int sys_voltage_init(void)
 {
     s_vbus_ring_idx = 0U;
@@ -134,28 +123,6 @@ uint32_t sys_voltage_read_bus_mv(void)
     uint32_t bus_mv = s_bus_mv_1ms;
 
     s_bus_mv_cached = bus_mv;
-
-#if SYS_VOLT_DEBUG_5S
-    {
-        rt_tick_t now = rt_tick_get();
-
-        if ((now - s_dbg_tick) >= rt_tick_from_millisecond(5000)) {
-            uint32_t meas_mv = s_vbus_meas_mv;
-
-            s_dbg_tick = now;
-
-            rt_kprintf("[VOLT5S] PA6 raw=%u meas=%u.%02uV bus=%u.%02uV div=%u.%02ux board=%d\r\n",
-                       (unsigned)s_vbus_avg_raw,
-                       (unsigned)(meas_mv / 1000U),
-                       (unsigned)((meas_mv % 1000U) / 10U),
-                       (unsigned)(bus_mv / 1000U),
-                       (unsigned)((bus_mv % 1000U) / 10U),
-                       (unsigned)(SYS_VOLT_DIV_X100 / 100U),
-                       (unsigned)(SYS_VOLT_DIV_X100 % 100U),
-                       (int)CFG_SAMPLING_BOARD_IU_SENSOR);
-        }
-    }
-#endif
 
     return bus_mv;
 }

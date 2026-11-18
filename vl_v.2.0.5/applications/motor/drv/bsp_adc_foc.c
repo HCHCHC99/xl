@@ -136,8 +136,8 @@ static uint8_t s_inited;
 
 /* 【2026-11-17】FOC 浮点采样标定（板型/零点由 cfg_sampling.h 决定）
  *   current = (raw - offset) × scale
- * 母线电压由 sys_voltage 统一采集（PA6，板型决定 25×/31× 分压），
- * FOC 只读取其缓存值，不再占用 ADC1 CH6。 */
+ * 母线电压 PA6 仍由本模块 ADC1 CH6 每帧采样（raw[3]），原始值送
+ * sys_voltage 做 1ms 平均与板型换算，FOC 只读取其缓存值。 */
 static struct {
     float    current_scale;
     float    current_offset[3];
@@ -725,12 +725,12 @@ int foc_adc_init(void)
      *
      * 【关键】为什么是 DR3 而不是 DR0：
      *   HC32F460 的 ADC 数据寄存器按**通道号**索引，
-     *   DRn 对应 CHn。CH3/CH4/CH5 连续，所以从 DR3 起、
-     *   16bit 宽度、源地址自增，正好依次读到 CH3→CH4→CH5。
+     *   DRn 对应 CHn。CH3/CH4/CH5/CH6 连续，所以从 DR3 起、
+     *   16bit 宽度、源地址自增，正好依次读到 CH3→CH4→CH5→CH6。
      *   若错用 DR0 会读到 CH0/CH1/CH2（未使能，恒 0）。
      *
      * 目的地址：s_dma_buf.raw[]
-     * 传输长度：FOC_ADC_SEQ_LEN = 3
+     * 传输长度：FOC_ADC_SEQ_LEN = 4（CH3/CH4/CH5/CH6，raw[3] 为 vbus）
      * 循环模式：用 DMA_SetTransCount + repeat 实现，见下 */
     (void)DMA_StructInit(&stcDmaInit);
     stcDmaInit.u32IntEn       = DMA_INT_ENABLE;

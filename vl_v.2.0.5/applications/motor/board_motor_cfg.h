@@ -70,8 +70,9 @@ extern "C" {
  *   W 相电流: PA4 → ADC1_IN4 → ADC1 CH4
  *   V 相电流: PA5 → ADC1_IN5 → ADC1 CH5
  *
- * ⚠️ PA6 是系统电压 AD_VM（ADC12_IN6 → ADC2 CH2），属 service/sys_voltage.c，
- *    不是电流采样脚。历史上把这几个混淆过，别再改回去。
+ * ⚠️ PA6 是系统电压 AD_VM（ADC12_IN6 → ADC1 CH6，随 FOC 20kHz 同步采样），
+ *    原始值由 service/sys_voltage.c 做 1ms 平均与标定，不是电流采样脚。
+ *    历史上把这几个混淆过，别再改回去。
  * ============================================================ */
 
 /* ADC 通道号（与实际生效的 FOC_ADC_CH_* 保持一致） */
