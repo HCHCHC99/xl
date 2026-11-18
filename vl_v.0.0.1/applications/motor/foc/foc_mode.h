@@ -35,6 +35,8 @@ typedef enum {
     FOC_MODE_ALIGN7   = 7,   /* 斜坡对齐（mode 7） */
     FOC_MODE_SPEED    = 9,   /* 速度外环 + 电流环 */
     FOC_MODE_POSITION = 10,  /* 位置外环 + 速度环 + 电流环 */
+    FOC_MODE_OFFCAL_NOPWM = 12,  /* 无 PWM 电流零偏校准（阻塞，完成后保持 IDLE） */
+    FOC_MODE_OFFCAL_PWM50 = 13,  /* PWM 50% 零矢量下的电流零偏校准 */
 } foc_mode_t;
 
 /* L6 每拍产出的控制指令 */
@@ -48,6 +50,10 @@ typedef struct {
 void       Foc_Mode_Init(void);
 void       Foc_Mode_SetMode(foc_mode_t mode);
 foc_mode_t Foc_Mode_GetMode(void);
+
+/* 上电一次电流零偏校准（无 PWM，阻塞约 100ms，结果只写 RAM）
+ * 由启动表在 foc_ctrl 步骤内调用；不改变当前模式（默认 IDLE）。 */
+void       Foc_Mode_PowerOnCal(void);
 
 /* IF 参数设置（不改变当前模式） */
 void Foc_Mode_SetOpenloop(float freq_hz, float vq_volts, float vd_volts);

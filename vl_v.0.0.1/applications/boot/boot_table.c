@@ -27,6 +27,7 @@ extern int  app_hw_init(void);
 extern int  motor_module_init(void);
 extern int  foc_adc_init(void);          /* FOC 电流采样：ADC1 四路 + DMA1 CH2 */
 extern void Foc_Control_Init(void);        /* FOC 20kHz 控制层（挂采样帧回调） */
+extern void Foc_Mode_PowerOnCal(void);     /* 上电一次电流零偏校准（无 PWM） */
 extern int  motor_angle_task_init(void);   /* 电机虚拟角度 + 转速（1ms 软定时器）*/
 /* 堵转保护（2026-11-05 / S1）。
  * 参数用 void* 而不是 motor_t*：boot_table.c 刻意不 include motor.h
@@ -108,6 +109,11 @@ static int boot_stall_init(void)
 static int boot_foc_ctrl_init(void)
 {
     Foc_Control_Init();
+
+    /* 上电一次电流零偏校准（无 PWM，结果只写 RAM）。
+     * 位置约束：必须在 foc_adc（DMA 采样已运行）与 Foc_Control_Init 之后，
+     *           且此时模式为 IDLE、PWM 全低，满足"零电流"条件。 */
+    Foc_Mode_PowerOnCal();
     return 0;
 }
 

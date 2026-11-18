@@ -1,0 +1,13 @@
+from building import *
+
+cwd = GetCurrentDir()
+src = Glob('*.c')
+
+CPPPATH = [
+    cwd,
+    '..',
+    '../mode',
+]
+
+group = DefineGroup('Log', src, depend = [''], CPPPATH = CPPPATH)
+Return('group')

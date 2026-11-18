@@ -1,0 +1,18 @@
+from building import *
+
+# 获取当前脚本的路径
+cwd     = GetCurrentDir() 
+
+# 将当前路径加入构建搜索的头文件路径
+CPPPATH = [cwd] 
+src = Glob('*.c')
+
+
+group = DefineGroup(
+    'device_info',
+    src,
+    depend = [''],
+    CPPPATH = CPPPATH 
+)
+
+Return('group')

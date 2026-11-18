@@ -1,0 +1,33 @@
+
+Import('RTT_ROOT')
+Import('rtconfig')
+from building import *
+
+cwd     = os.path.join(str(Dir('#')), 'applications')
+src	= Glob('*.c')
+CPPPATH = [cwd, str(Dir('#'))]
+
+# 手动指定需要加入头文件搜索路径的子目录
+subdirs = ['storage', 'sys_param', 'device_info', 'ota_shared', 'lift', 'CAN', 'service', 'framework', 'mode', 'swing', 'motor', 'motor/foc', 'sequence','hw', 'bsp', 'keyboard', 'config',
+           'angle', 'vehicle', 'framework/state_engine']   # 【2026-11-03】angle/config 此前缺失，补上避免新目录掉出构建
+for d in subdirs:
+    subdir = os.path.join(cwd, d)
+    if os.path.exists(subdir):
+        CPPPATH.append(subdir)
+
+# framework 下的三个子目录
+for d in ['framework/core', 'framework/executor', 'framework/manager', 'framework/port']:
+    path = os.path.join(cwd, d)
+    if os.path.exists(os.path.join(path, 'SConscript')):
+        objs += SConscript(os.path.join(d, 'SConscript'))
+    else:
+        objs += Glob(os.path.join(d, '*.c'))
+        CPPPATH.append(path)
+                
+        
+group = DefineGroup('Applications', 
+                     src, 
+                     depend = [''], 
+                     CPPPATH = CPPPATH)
+
+Return('group')

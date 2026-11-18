@@ -1,0 +1,20 @@
+# Eclipse 托管构建产物（自动生成，不入库）
+Debug/
+test/
+build_tmp/
+
+# 编译中间文件
+*.o
+*.d
+*.su
+*.elf
+*.hex
+*.bin
+*.map
+
+# 备份
+_backup*/
+
+# 系统
+Thumbs.db
+.DS_Store

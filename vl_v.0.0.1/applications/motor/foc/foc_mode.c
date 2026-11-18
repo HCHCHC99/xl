@@ -20,6 +20,7 @@
 #include "cfg_sampling.h"
 #include "hw_tmr4_pwm.h"
 #include "foc_eoca_probe.h"
+#include "../drv/bsp_adc_foc.h"
 #include "../../bsp/bsp_pwm.h"
 
 #include <rtthread.h>
@@ -67,6 +68,8 @@ static const char *foc_mode_name(foc_mode_t m)
     case FOC_MODE_ALIGN7:   return "ALIGN7, ramp align";
     case FOC_MODE_SPEED:    return "SPEED, speed loop";
     case FOC_MODE_POSITION: return "POSITION, position loop";
+    case FOC_MODE_OFFCAL_NOPWM: return "OFFCAL, no PWM";
+    case FOC_MODE_OFFCAL_PWM50: return "OFFCAL, PWM 50%";
     default:                return "UNKNOWN";
     }
 }
@@ -92,6 +95,53 @@ void Foc_Mode_Init(void)
 foc_mode_t Foc_Mode_GetMode(void)
 {
     return s_mode;
+}
+
+/*=============================================================================
+ * 电流零偏校准（参考 FOC 工程 Motor_Sampling_DoOffsetCalBlocking）
+ *   - 阻塞采集，20kHz ISR 被动累加，直到 2048 样本或超时
+ *   - 结果只写 RAM（foc_adc_apply_offset_raw），不写 Flash
+ *   - 打印三路原始码值，便于对照
+ *=============================================================================*/
+static uint8_t foc_offset_cal_apply(uint32_t timeout_ms)
+{
+    uint16_t z[3];
+    uint32_t t0;
+    uint32_t n;
+
+    foc_adc_cal_begin();
+    t0 = rt_tick_get();
+
+    while (foc_adc_cal_get_sample_count() < 2048U) {
+        if ((rt_tick_get() - t0) >= rt_tick_from_millisecond(timeout_ms)) {
+            break;
+        }
+        rt_thread_mdelay(1);
+    }
+
+    n = foc_adc_cal_get_sample_count();
+    foc_adc_cal_stop();
+
+    if (foc_adc_cal_get_result(z) == 0U) {
+        rt_kprintf("[CAL] FAIL: too few samples (n=%lu, timeout=%lums)\r\n",
+                   (unsigned long)n, (unsigned long)timeout_ms);
+        return 0U;
+    }
+
+    foc_adc_apply_offset_raw(z);
+
+    rt_kprintf("[CAL] OK: N=%lu bus=%u w=%u v=%u (iu=-iv-iw)\r\n",
+               (unsigned long)n,
+               (unsigned)z[0], (unsigned)z[1], (unsigned)z[2]);
+    return 1U;
+}
+
+void Foc_Mode_PowerOnCal(void)
+{
+    rt_kprintf("[CAL] power-on zero offset cal (no PWM)...\r\n");
+
+    /* 上电阶段本来就是 IDLE 全低；这里只做采样与零点更新 */
+    (void)foc_offset_cal_apply(300U);
 }
 
 /*=============================================================================
@@ -193,6 +243,34 @@ void Foc_Mode_SetMode(foc_mode_t mode)
         Foc_Speed_Start();
         Foc_Position_Reset();
         break;
+
+    case FOC_MODE_OFFCAL_NOPWM:
+        /* 无 PWM 零偏校准：先切 IDLE 全低，再阻塞采样零点。
+         * 模式保持 IDLE，不参与后续 s_mode = mode 的赋值。 */
+        s_mode    = FOC_MODE_IDLE;
+        g_fm_mode = FOC_MODE_IDLE;
+        (void)hw_tmr4_pwm_set_all_low();
+        bsp_pwm_emergency_brake();
+        rt_kprintf("[CAL12] no-PWM offset calibration\r\n");
+        rt_thread_mdelay(5);          /* 等 ISR 完成 IDLE 收尾 */
+        (void)foc_offset_cal_apply(300U);
+        return;
+
+    case FOC_MODE_OFFCAL_PWM50:
+        /* PWM 50% 零矢量：桥臂状态与电流环实际运行点一致。
+         * 模式保持 IDLE，20kHz ISR 不会周期改写占空比。 */
+        s_mode    = FOC_MODE_IDLE;
+        g_fm_mode = FOC_MODE_IDLE;
+        (void)hw_tmr4_pwm_set_all_low();
+        bsp_pwm_emergency_release();
+        (void)hw_tmr4_pwm_resume_output();
+        rt_thread_mdelay(2);          /* 等 ISR 处理完 IDLE 的一次性全低写入 */
+        (void)hw_tmr4_pwm_set_duty3(50.0f, 50.0f, 50.0f);
+        rt_kprintf("[CAL13] PWM 50%% zero-vector offset calibration\r\n");
+        rt_thread_mdelay(5);          /* 输出稳定后再采集 */
+        (void)foc_offset_cal_apply(300U);
+        (void)hw_tmr4_pwm_set_all_low();
+        return;
 
     default:
         rt_kprintf("[FOC-MODE] unsupported mode %d\r\n", (int)mode);
@@ -801,6 +879,8 @@ MSH_CMD_EXPORT_ALIAS(cmd_foc_zero, zero, set current position as 0);
  *   focmode 7          斜坡对齐
  *   focmode 9 [rpm]    速度闭环
  *   focmode 10 [rev]   位置闭环
+ *   focmode 12         无 PWM 电流零偏校准
+ *   focmode 13         PWM 50% 零矢量电流零偏校准
  *   focmode stat       关键观测量
  *   focmode set <name> <value>   运行中修改当前模式的参数
  *=============================================================================*/
@@ -811,9 +891,10 @@ static int foc_mode_msh(int argc, char **argv)
 
     if (argc == 1) {
         foc_mode_print_status();
-        rt_kprintf("usage: focmode <0..10> [args]\r\n"
+        rt_kprintf("usage: focmode <0..13> [args]\r\n"
                    "  0=IDLE 1=LOCK[duty%%] 2=IF[freq,volt] 3=CALIB 4=CURRENT[id,iq]\r\n"
                    "  5=SWEEP 6=REV 7=ALIGN7 9=SPEED[rpm] 10=POSITION[rev]\r\n"
+                   "  12=OFFCAL_NO_PWM 13=OFFCAL_PWM50\r\n"
                    "  focmode stat          print key observations\r\n"
                    "  focmode set <name> <value>   live tune (list on entry)\r\n");
         return 0;
@@ -878,13 +959,18 @@ static int foc_mode_msh(int argc, char **argv)
         return foc_mode_set_param(argv[2], v1);
     }
 
-    m = (int)(argv[1][0] - '0');
-    if ((argv[1][1] != '\0') && !((m == 1) && (argv[1][1] == '0'))) {
-        rt_kprintf("invalid mode: %s\r\n", argv[1]);
-        return -1;
-    }
-    if (argv[1][1] == '0') {
-        m = 10;
+    {
+        const char *p = argv[1];
+
+        m = 0;
+        while ((*p >= '0') && (*p <= '9')) {
+            m = m * 10 + (int)(*p - '0');
+            p++;
+        }
+        if ((*p != '\0') || (p == argv[1])) {
+            rt_kprintf("invalid mode: %s\r\n", argv[1]);
+            return -1;
+        }
     }
 
     switch (m) {
@@ -978,6 +1064,14 @@ static int foc_mode_msh(int argc, char **argv)
 
     case 7:
         Foc_Mode_SetMode(FOC_MODE_ALIGN7);
+        return 0;
+
+    case 12:
+        Foc_Mode_SetMode(FOC_MODE_OFFCAL_NOPWM);
+        return 0;
+
+    case 13:
+        Foc_Mode_SetMode(FOC_MODE_OFFCAL_PWM50);
         return 0;
 
     default:

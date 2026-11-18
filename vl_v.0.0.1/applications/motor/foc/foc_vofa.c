@@ -17,6 +17,7 @@
 #if FOC_VOFA_ENABLE
 
 #include "foc_control.h"
+#include "foc_current_loop.h"
 #include "hw_encoder.h"
 #include "cfg_motor.h"
 #include "foc_mode.h"
