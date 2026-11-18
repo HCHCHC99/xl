@@ -337,3 +337,4 @@ static void cmd_pwmtime(int argc, char **argv)
 }
 
 MSH_CMD_EXPORT_ALIAS(cmd_pwmtime, t_pwmtime, FOC pwm timebase check);
+MSH_CMD_EXPORT_ALIAS(cmd_pwmtime, pwmtime,   FOC pwm timebase check);

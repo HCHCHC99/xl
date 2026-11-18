@@ -498,3 +498,7 @@ MSH_CMD_EXPORT_ALIAS(cmd_iadc,       t_iadc,       read 3-phase current snapshot
 MSH_CMD_EXPORT_ALIAS(cmd_iadc_watch, t_iadc_watch, watch current continuously);
 MSH_CMD_EXPORT_ALIAS(cmd_iadc_stat,  t_iadc_stat,  dma sampling statistics);
 MSH_CMD_EXPORT_ALIAS(cmd_iadc_cal,   t_iadc_cal,   calibration helper);
+MSH_CMD_EXPORT_ALIAS(cmd_iadc,       iadc,         read 3-phase current snapshot);
+MSH_CMD_EXPORT_ALIAS(cmd_iadc_watch, iadc_watch,   watch current continuously);
+MSH_CMD_EXPORT_ALIAS(cmd_iadc_stat,  iadc_stat,    dma sampling statistics);
+MSH_CMD_EXPORT_ALIAS(cmd_iadc_cal,   iadc_cal,     calibration helper);

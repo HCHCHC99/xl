@@ -283,7 +283,7 @@ void Foc_Mode_SetMode(foc_mode_t mode)
 
     if ((mode != FOC_MODE_IDLE) && (mode != FOC_MODE_LOCK) &&
         (mode != FOC_MODE_IF) && (mode != FOC_MODE_CALIB)) {
-        rt_kprintf("[FOC-MODE] hint: run 'focmode 3' first if not aligned\r\n");
+        rt_kprintf("[FOC-MODE] hint: run 'falign' (or 'focmode 3') first if not aligned\r\n");
     }
 }
 
@@ -610,7 +610,7 @@ static void foc_mode_print_duties(void)
 /*=============================================================================
  * 运行中可调参数
  *   进入 mode 4/9/10 时打印参数表；
- *   之后发 "focmode set <name> <value>" 可实时修改其中一个参数
+ *   之后发 "rpm 500"（或 "focmode set rpm 500"）可实时修改其中一个参数
  *=============================================================================*/
 static void fm_print_num(int v, int dec)
 {
@@ -667,7 +667,8 @@ static void foc_mode_print_params(foc_mode_t m)
         fm_param_line("id",    "target d-axis current",  "A",  0.00f, s_cl_id_cmd, 3);
         fm_param_line("imax",  "current ref limit",      "A",  CL_IREF_MAX_INIT, g_cl_iref_max, 2);
         fm_param_line("vmax",  "output voltage limit",   "V",  CL_VMAX_INIT, g_cl_vmax_watch, 2);
-        rt_kprintf("[FOC-MODE] e.g. focmode set iq -1.5  ('-' = reverse torque)\r\n");
+        rt_kprintf("[FOC-MODE] e.g. iq -1.5          ('-' = reverse torque)\r\n");
+        rt_kprintf("[FOC-MODE] e.g. current 0 1.5      (enter mode 4 with id/iq)\r\n");
     } else if (m == FOC_MODE_SPEED) {
         rt_kprintf("[FOC-MODE] mode 9 SPEED adjustable params:\r\n");
         fm_param_line("rpm",   "target speed",           "rpm",   0.0f, g_spd_target_rpm, 1);
@@ -678,8 +679,9 @@ static void foc_mode_print_params(foc_mode_t m)
         fm_param_line("kd",    "speed PI kd",            "-",     SPD_KD_INIT, g_spd_kd, 2);
         fm_param_line("iterm", "speed integral limit",   "mA",    SPD_ITERM_MAX_MA_INIT, g_spd_iterm_max_ma, 0);
         fm_param_line("ff",    "speed feedforward",      "mA",    SPD_FF_MA_INIT, g_spd_ff_ma, 0);
-        rt_kprintf("[FOC-MODE] e.g. focmode set rpm -500   ('-' = reverse)\r\n");
-        rt_kprintf("[FOC-MODE] e.g. focmode set iqlim 1500  (0=no torque limit change)\r\n");
+        rt_kprintf("[FOC-MODE] e.g. rpm -500          ('-' = reverse)\r\n");
+        rt_kprintf("[FOC-MODE] e.g. iqlim 1500        (0=no torque limit change)\r\n");
+        rt_kprintf("[FOC-MODE] e.g. speed -500        (enter mode 9 with target)\r\n");
     } else if (m == FOC_MODE_POSITION) {
         rt_kprintf("[FOC-MODE] mode 10 POSITION adjustable params:\r\n");
         fm_param_line("rev",   "target position",        "rev",   0.0f, g_pos_target_rev, 2);
@@ -690,8 +692,9 @@ static void foc_mode_print_params(foc_mode_t m)
         fm_param_line("kd",    "speed damping",          "rpm/rpm", POS_KD_RPM_PER_RPM_INIT, g_pos_kd_rpm_per_rpm, 2);
         fm_param_line("limit", "soft travel limit",      "rev",   POS_LIMIT_REV_INIT, g_pos_limit_rev, 0);
         rt_kprintf("  %-6s %-24s [-]\r\n", "zero", "set current position as 0");
-        rt_kprintf("[FOC-MODE] e.g. focmode set rev 2.5    ('-' = reverse)\r\n");
-        rt_kprintf("[FOC-MODE] e.g. focmode set zero 1\r\n");
+        rt_kprintf("[FOC-MODE] e.g. rev 2.5            ('-' = reverse)\r\n");
+        rt_kprintf("[FOC-MODE] e.g. zero                (set current position as 0)\r\n");
+        rt_kprintf("[FOC-MODE] e.g. position 2.5        (enter mode 10 with target)\r\n");
     } else {
         rt_kprintf("[FOC-MODE] mode %d has no live params (use 4/9/10)\r\n", (int)m);
     }
@@ -883,6 +886,8 @@ MSH_CMD_EXPORT_ALIAS(cmd_foc_zero, zero, set current position as 0);
  *   focmode 13         PWM 50% 零矢量电流零偏校准
  *   focmode stat       关键观测量
  *   focmode set <name> <value>   运行中修改当前模式的参数
+ *   短命令：idle/lock/ifrun/current/speed/position/falign/zcal/zcal50/fstat
+ *   参数短命令：<name> <value>，如 rpm 500
  *=============================================================================*/
 static int foc_mode_msh(int argc, char **argv)
 {
@@ -891,12 +896,13 @@ static int foc_mode_msh(int argc, char **argv)
 
     if (argc == 1) {
         foc_mode_print_status();
-        rt_kprintf("usage: focmode <0..13> [args]\r\n"
-                   "  0=IDLE 1=LOCK[duty%%] 2=IF[freq,volt] 3=CALIB 4=CURRENT[id,iq]\r\n"
-                   "  5=SWEEP 6=REV 7=ALIGN7 9=SPEED[rpm] 10=POSITION[rev]\r\n"
-                   "  12=OFFCAL_NO_PWM 13=OFFCAL_PWM50\r\n"
-                   "  focmode stat          print key observations\r\n"
-                   "  focmode set <name> <value>   live tune (list on entry)\r\n");
+        rt_kprintf("usage: focmode <0..13> [args]\r\n");
+        rt_kprintf("  0=IDLE 1=LOCK[duty%%] 2=IF[f,v] 3=CALIB 4=CURRENT[id,iq]\r\n");
+        rt_kprintf("  5=SWEEP 6=REV 7=ALIGN7 9=SPEED[rpm] 10=POSITION[rev]\r\n");
+        rt_kprintf("  12=OFFCAL_NO_PWM 13=OFFCAL_PWM50\r\n");
+        rt_kprintf("  focmode stat | focmode set <name> <value>\r\n");
+        rt_kprintf("short: idle lock ifrun current speed position falign zcal zcal50 fstat\r\n");
+        rt_kprintf("params: iq id imax vmax rpm accel iqlim kp ki kd iterm ff rev dec db limit zero\r\n");
         return 0;
     }
 
@@ -949,6 +955,7 @@ static int foc_mode_msh(int argc, char **argv)
         }
         if (argc < 4) {
             rt_kprintf("usage: focmode set <name> <value>\r\n");
+            rt_kprintf("   or short: <name> <value>  e.g. rpm 500\r\n");
             foc_mode_print_params(Foc_Mode_GetMode());
             return -1;
         }
@@ -1000,7 +1007,7 @@ static int foc_mode_msh(int argc, char **argv)
 
             swing = swing / (CFG_SAMPLING_SIM_VBUS_V * 0.57735027f) * 100.0f;
             rt_kprintf("[FOC-MODE] IF running: f=%d.%d Hz vq=%d.%d V, "
-                       "duty swing +/-%d%% around 50%%, use 'focmode stat' to watch\r\n",
+                       "duty swing +/-%d%% around 50%%, use 'fstat' to watch\r\n",
                        (int)v1, (int)((v1 - (float)(int)v1) * 10.0f),
                        (int)v2, (int)((v2 - (float)(int)v2) * 10.0f),
                        (int)(swing + 0.5f));
@@ -1080,4 +1087,133 @@ static int foc_mode_msh(int argc, char **argv)
     }
 }
 
-MSH_CMD_EXPORT_ALIAS(foc_mode_msh, focmode, set FOC mode 0..10);
+MSH_CMD_EXPORT_ALIAS(foc_mode_msh, focmode, FOC mode/status/config);
+
+/*=============================================================================
+ * 顶层短命令：模式入口
+ * ------------------------------------------------------------
+ * 只做参数重排，最终仍走 foc_mode_msh()，不复制第二套解析逻辑。
+ * 原有 focmode 命令完整保留，两者等价。
+ *   旧写法                          新写法
+ *   focmode 0                       idle
+ *   focmode 1 [duty]                lock [duty]
+ *   focmode 2 [freq] [volt]         ifrun [freq] [volt]
+ *   focmode 4 [id] [iq]             current [id] [iq]
+ *   focmode 9 [rpm]                 speed [rpm]
+ *   focmode 10 [rev]                position [rev]
+ *   focmode 3                       falign
+ *   focmode 12                      zcal
+ *   focmode 13                      zcal50
+ *   focmode stat                    fstat
+ * 参数短命令（iq/id/imax/vmax/rpm/...）已在上面 FOC_PARAM_CMD 单独导出。
+ *=============================================================================*/
+static void cmd_foc_idle(int argc, char **argv)
+{
+    char *a[2] = { "focmode", "0" };
+
+    (void)argc;
+    (void)argv;
+    (void)foc_mode_msh(2, a);
+}
+MSH_CMD_EXPORT_ALIAS(cmd_foc_idle, idle, FOC idle (focmode 0));
+
+static void cmd_foc_lock(int argc, char **argv)
+{
+    char *a[3] = { "focmode", "1", RT_NULL };
+    int   n = 2;
+
+    if (argc >= 2) {
+        a[2] = argv[1];
+        n = 3;
+    }
+    (void)foc_mode_msh(n, a);
+}
+MSH_CMD_EXPORT_ALIAS(cmd_foc_lock, lock, FOC lock [duty%] (focmode 1));
+
+static void cmd_foc_ifrun(int argc, char **argv)
+{
+    char *a[4] = { "focmode", "2", RT_NULL, RT_NULL };
+    int   n = 2;
+
+    if (argc >= 2) { a[2] = argv[1]; n = 3; }
+    if (argc >= 3) { a[3] = argv[2]; n = 4; }
+    (void)foc_mode_msh(n, a);
+}
+MSH_CMD_EXPORT_ALIAS(cmd_foc_ifrun, ifrun, FOC openloop [freq] [volt] (focmode 2));
+
+static void cmd_foc_current(int argc, char **argv)
+{
+    char *a[4] = { "focmode", "4", RT_NULL, RT_NULL };
+    int   n = 2;
+
+    if (argc >= 2) { a[2] = argv[1]; n = 3; }
+    if (argc >= 3) { a[3] = argv[2]; n = 4; }
+    (void)foc_mode_msh(n, a);
+}
+MSH_CMD_EXPORT_ALIAS(cmd_foc_current, current, FOC current loop [id] [iq] (focmode 4));
+
+static void cmd_foc_speed(int argc, char **argv)
+{
+    char *a[3] = { "focmode", "9", RT_NULL };
+    int   n = 2;
+
+    if (argc >= 2) {
+        a[2] = argv[1];
+        n = 3;
+    }
+    (void)foc_mode_msh(n, a);
+}
+MSH_CMD_EXPORT_ALIAS(cmd_foc_speed, speed, FOC speed loop [rpm] (focmode 9));
+
+static void cmd_foc_position(int argc, char **argv)
+{
+    char *a[3] = { "focmode", "10", RT_NULL };
+    int   n = 2;
+
+    if (argc >= 2) {
+        a[2] = argv[1];
+        n = 3;
+    }
+    (void)foc_mode_msh(n, a);
+}
+MSH_CMD_EXPORT_ALIAS(cmd_foc_position, position, FOC position loop [rev] (focmode 10));
+
+static void cmd_foc_falign(int argc, char **argv)
+{
+    char *a[2] = { "focmode", "3" };
+
+    (void)argc;
+    (void)argv;
+    (void)foc_mode_msh(2, a);
+}
+MSH_CMD_EXPORT_ALIAS(cmd_foc_falign, falign, FOC encoder align (focmode 3));
+
+static void cmd_foc_zcal(int argc, char **argv)
+{
+    char *a[2] = { "focmode", "12" };
+
+    (void)argc;
+    (void)argv;
+    (void)foc_mode_msh(2, a);
+}
+MSH_CMD_EXPORT_ALIAS(cmd_foc_zcal, zcal, FOC zero offset cal no PWM (focmode 12));
+
+static void cmd_foc_zcal50(int argc, char **argv)
+{
+    char *a[2] = { "focmode", "13" };
+
+    (void)argc;
+    (void)argv;
+    (void)foc_mode_msh(2, a);
+}
+MSH_CMD_EXPORT_ALIAS(cmd_foc_zcal50, zcal50, FOC zero offset cal PWM50 (focmode 13));
+
+static void cmd_foc_fstat(int argc, char **argv)
+{
+    char *a[2] = { "focmode", "stat" };
+
+    (void)argc;
+    (void)argv;
+    (void)foc_mode_msh(2, a);
+}
+MSH_CMD_EXPORT_ALIAS(cmd_foc_fstat, fstat, FOC key observations (focmode stat));

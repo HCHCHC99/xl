@@ -339,5 +339,6 @@ static void cmd_t_abz(int argc, char **argv)
                (int)hw_encoder_get_direction());
 }
 MSH_CMD_EXPORT_ALIAS(cmd_t_abz, t_abz, ABZ encoder status);
+MSH_CMD_EXPORT_ALIAS(cmd_t_abz, abz,   ABZ encoder status);
 
 #endif /* BSP_USING_ABS_ENCODER */

@@ -449,6 +449,7 @@ static void cmd_t_vofa(int argc, char **argv)
                (unsigned long)(*(volatile uint32_t *)FOC_VOFA_DMA_AOS));
 }
 MSH_CMD_EXPORT_ALIAS(cmd_t_vofa, t_vofa, VOFA status / on / off / test);
+MSH_CMD_EXPORT_ALIAS(cmd_t_vofa, vofa,   VOFA status / on / off / test);
 
 #else  /* FOC_VOFA_ENABLE */
 
