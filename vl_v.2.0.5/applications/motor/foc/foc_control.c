@@ -238,9 +238,10 @@ void Foc_Control_Step(void)
 
             ctx.valpha = valpha;
             ctx.vbeta  = vbeta;
-            /* 与 FOC 工程一致：SVPWM 归一化用固定 12V，
-             * 真实母线电压仅作观测（标定系数待实测） */
-            ctx.vbus   = CFG_SAMPLING_SIM_VBUS_V;
+            /* 用真实母线电压做调制比（sys_voltage 的 1ms 平均值）。
+             * 低于 12V 时按 12V 处理：上电瞬间或欠压时避免异常占空比，
+             * 欠压保护后续在业务层增加。 */
+            ctx.vbus = (g_fc_vbus < 12.0f) ? 12.0f : g_fc_vbus;
             SVPWM_Calc(&ctx);
 
             hw_tmr4_pwm_set_duty3(ctx.duty_u * 100.0f,

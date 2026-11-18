@@ -22,11 +22,11 @@
  *   PA3  ADC1_IN3   CURRENT_TOTAL   母线总电流
  *   PA4  ADC12_IN4  CURRENT_W       W 相（上桥臂 MOS 的 D 端）
  *   PA5  ADC12_IN5  CURRENT_V       V 相（上桥臂 MOS 的 D 端）
- *   PA6  ADC12_IN6  AD_VM           电源电压（sys_voltage 占用，同引脚不同 ADC）
- *   PA7  ADC12_IN7  举升角传感器（lift_adc 占用）
+ *   PA6  ADC12_IN6  AD_VM           母线电压（FOC 同步采样，sys_voltage 负责平均值与换算）
  *
  * 三路电流全在 ADC1 ⇒ 单个扫描序列 + 单路 DMA 一次搬完，
  * 不需要 ADC1/ADC2 同步模式。这是引脚分布的天然优势。
+ * PA6 与电流同拍进入 SEQ_A，原始值每帧送入 sys_voltage 的 1ms 环形缓冲区。
  *
  * ============================================================
  * 【采样点拓扑：上桥臂 MOS 的 D 端 = 高边采样】
@@ -180,7 +180,7 @@ typedef struct
     float iu;       /* A，U 相（板型 1 用 CH3；板型 0/2 由 -iv-iw 重构） */
     float iv;       /* A，V 相（CH5） */
     float iw;       /* A，W 相（CH4） */
-    float vbus;     /* V，母线电压（真实模式 CH6，模拟模式固定 12V） */
+    float vbus;     /* V，母线电压（sys_voltage 1ms 平均值换算） */
     uint32_t seq;   /* 采样序号，每帧 +1 */
 } foc_sample_t;
 

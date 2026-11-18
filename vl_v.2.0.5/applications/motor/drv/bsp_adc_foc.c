@@ -119,6 +119,7 @@
 
 /* 【2026-11-17】采样板型/标定配置（FOC 工程 cfg_sampling.h） */
 #include "../foc/cfg_sampling.h"
+#include "../../service/sys_voltage.h"   /* 母线电压缓存（PA6 统一采样） */
 
 #include <string.h>
 
@@ -135,21 +136,16 @@ static uint8_t s_inited;
 
 /* 【2026-11-17】FOC 浮点采样标定（板型/零点由 cfg_sampling.h 决定）
  *   current = (raw - offset) × scale
- *   vbus    = raw × vbus_scale（真实模式）
- * 零点初值为 CFG_SAMPLING_CURRENT_OFFSET（板型 1/2 = 1551，板型 0 = 2048），
- * mode 3 的 ZERO 阶段会采样并覆盖。 */
+ * 母线电压由 sys_voltage 统一采集（PA6，板型决定 25×/31× 分压），
+ * FOC 只读取其缓存值，不再占用 ADC1 CH6。 */
 static struct {
     float    current_scale;
     float    current_offset[3];
-    float    vbus_scale;
-    uint16_t vbus_ch;
 } s_scale = {
     CFG_SAMPLING_CURRENT_SCALE,
     { CFG_SAMPLING_CURRENT_OFFSET,
       CFG_SAMPLING_CURRENT_OFFSET,
-      CFG_SAMPLING_CURRENT_OFFSET },
-    CFG_SAMPLING_VBUS_SCALE,
-    FOC_ADC_CH_VBUS
+      CFG_SAMPLING_CURRENT_OFFSET }
 };
 
 /* 采样帧完成回调（FOC 控制层注册） */
@@ -541,6 +537,10 @@ static void foc_adc_dma_isr(void)
         s_stat.conv_cnt++;
         s_seq++;
 
+        /* 母线电压原始值送入 sys_voltage 的 1ms 环形缓冲区。
+         * 20kHz 下每 20 帧（1ms）由该函数求平均并按板型系数换算。 */
+        sys_voltage_vbus_sample_isr(s_dma_buf.raw[3]);
+
         /* 零偏校准累加（mode 3 ZERO 阶段使能；三路 uint32 加法，ISR 安全） */
         if (s_cal_running != 0U)
         {
@@ -675,20 +675,16 @@ int foc_adc_init(void)
     ADC_SetSampleTime(FOC_ADC_UNIT, FOC_ADC_CH_IBUS, FOC_ADC_SAMPLE_TIME_CLK);
     ADC_SetSampleTime(FOC_ADC_UNIT, FOC_ADC_CH_IW,   FOC_ADC_SAMPLE_TIME_CLK);
     ADC_SetSampleTime(FOC_ADC_UNIT, FOC_ADC_CH_IV,   FOC_ADC_SAMPLE_TIME_CLK);
+    ADC_SetSampleTime(FOC_ADC_UNIT, FOC_ADC_CH_VBUS, FOC_ADC_SAMPLE_TIME_CLK);
 
     /* 使能四个通道进 SEQ_A。转换顺序由 CHSELRA 的位序决定
      * （通道号从小到大），即 CH3 → CH4 → CH5 → CH6，
-     * 与 s_dma_buf.raw[] 的下标一致。 */
+     * 与 s_dma_buf.raw[] 的下标一致。
+     * CH6 的原始值每帧送入 sys_voltage 的 1ms 环形缓冲区。 */
     ADC_ChCmd(FOC_ADC_UNIT, ADC_SEQ_A, FOC_ADC_CH_IBUS, ENABLE);
     ADC_ChCmd(FOC_ADC_UNIT, ADC_SEQ_A, FOC_ADC_CH_IW,   ENABLE);
     ADC_ChCmd(FOC_ADC_UNIT, ADC_SEQ_A, FOC_ADC_CH_IV,   ENABLE);
-
-    /* CH6 必须始终参与扫描：DMA 每帧固定搬 4 个半字，
-     * 模拟 vbus 模式下也要采（只是换算时不使用），否则帧长度不匹配。 */
-    if (s_scale.vbus_ch != 0U) {
-        ADC_SetSampleTime(FOC_ADC_UNIT, s_scale.vbus_ch, FOC_ADC_SAMPLE_TIME_CLK);
-        ADC_ChCmd(FOC_ADC_UNIT, ADC_SEQ_A, s_scale.vbus_ch, ENABLE);
-    }
+    ADC_ChCmd(FOC_ADC_UNIT, ADC_SEQ_A, FOC_ADC_CH_VBUS, ENABLE);
 
     /* ============================================================
      * 【2026-11-17】改为 TMR4 EVT0 硬件触发（与参考工程一致）
@@ -1092,8 +1088,8 @@ int foc_adc_read(foc_iabc_t *out)
  *   1：CH3 = iu 直接使用
  *   2：CH3 只采样观测；iu = -iv - iw
  * vbus：
- *   CFG_SAMPLING_USE_REAL_ADC=1 -> CH6 × vbus_scale
- *   0 -> CFG_SAMPLING_SIM_VBUS_V
+ *   原始值每帧送入 sys_voltage 的 1ms 环形缓冲区（20 点平均），
+ *   本函数读取其 1ms 平均值并换算成伏特。
  * ============================================================ */
 int foc_adc_get_sample(foc_sample_t *s)
 {
@@ -1123,11 +1119,7 @@ int foc_adc_get_sample(foc_sample_t *s)
   #endif
 #endif
 
-#if (CFG_SAMPLING_USE_REAL_ADC != 0)
-    s->vbus = (float)s_dma_buf.raw[3] * s_scale.vbus_scale;
-#else
-    s->vbus = CFG_SAMPLING_SIM_VBUS_V;
-#endif
+    s->vbus = (float)sys_voltage_get_bus_mv_1ms() * 0.001f;
 
     s->seq = s_seq;
     return 0;

@@ -1,92 +1,168 @@
 /**
  * @file    sys_voltage.c
  * @brief   系统（母线）电压采集实现
+ *
+ *          数据源：FOC 的 ADC1 CH6（PA6）20kHz 同步采样。
+ *          FOC 的 DMA 中断每帧调用 sys_voltage_vbus_sample_isr(raw)，
+ *          本模块维护 20 点环形缓冲区，每满 1ms 求平均并按板型分压换算。
  */
 
 #include "sys_voltage.h"
 
-#include <rtdevice.h>
 #include <rtthread.h>
 
-#include "hc32_ll.h"
-#include "hc32_ll_adc.h"
+/* 分压系数随板型选择：
+ *   板型 0：31 倍（100k/3.3k，1033/33）
+ *   板型 1/2：25 倍
+ * 板型宏来自 FOC 采样配置，保持"一块板一份配置"的唯一来源。 */
+#include "../motor/foc/cfg_sampling.h"
+
+#if (CFG_SAMPLING_BOARD_IU_SENSOR == 0)
+#define SYS_VOLT_DIV_NUM        (1033U)   /* ≈ 31.03 倍 */
+#define SYS_VOLT_DIV_DEN        (33U)
+#else
+#define SYS_VOLT_DIV_NUM        (25U)
+#define SYS_VOLT_DIV_DEN        (1U)
+#endif
+
+#define SYS_VOLT_DIV_X100       ((SYS_VOLT_DIV_NUM * 100U) / SYS_VOLT_DIV_DEN)
 
 /* ============================================================
- * 模块状态
+ * 1ms 环形缓冲区
+ * ------------------------------------------------------------
+ * 20kHz 下 20 点正好 1ms。写入与平均都在 ADC 中断上下文，
+ * 无需临界区；对外只暴露一个 32 位 mV 值。
  * ============================================================ */
-static rt_adc_device_t s_dev = RT_NULL;
+#define SYS_VOLT_VBUS_RING_LEN      20U
+
+static uint16_t s_vbus_ring[SYS_VOLT_VBUS_RING_LEN];
+static uint8_t  s_vbus_ring_idx = 0U;
+static uint8_t  s_vbus_ring_cnt = 0U;
+
+static volatile uint16_t s_vbus_avg_raw = 0U;   /* 1ms 平均原始码（诊断用） */
+static volatile uint32_t s_vbus_meas_mv = 0U;   /* 标定前的母线电压 mV（诊断用） */
+static volatile uint32_t s_bus_mv_1ms   = 0U;   /* 1ms 平均母线电压 mV（标定后） */
+static volatile uint32_t s_bus_mv_cached = 0U;  /* 最近一次读取值 mV */
+
+/* 临时调试：每 5s 打印一次 PA6 的原始码与换算电压。
+ * 由 sys_voltage_read_bus_mv() 的调用节拍触发（vehicle_poll，50ms）。
+ * 调试完成后把 SYS_VOLT_DEBUG_5S 改为 0 即可关闭。 */
+#ifndef SYS_VOLT_DEBUG_5S
+#define SYS_VOLT_DEBUG_5S           1
+#endif
+
+#if SYS_VOLT_DEBUG_5S
+static rt_tick_t s_dbg_tick = 0U;
+#endif
 
 int sys_voltage_init(void)
 {
-    rt_err_t ret;
+    s_vbus_ring_idx = 0U;
+    s_vbus_ring_cnt = 0U;
+    s_vbus_avg_raw  = 0U;
+    s_bus_mv_1ms    = 0U;
+    s_bus_mv_cached = 0U;
 
-    s_dev = (rt_adc_device_t)rt_device_find(SYS_VOLT_ADC_DEV_NAME);
-    if (s_dev == RT_NULL) {
-        /* 电压只是启车条件之一，采集不可用不应阻断启动，
-         * 由 vehicle_poll 通过 sys_voltage_is_ready() 跳过该条件。 */
-        rt_kprintf("[SYS-VOLT] WARN: device '%s' not found, voltage unavailable\n",
-                   SYS_VOLT_ADC_DEV_NAME);
-        return 0;
-    }
-
-    /* 采样时间：复位默认约 4 ADCLK，对 100k/3.3k 高阻分压源偏短 */
-    LL_PERIPH_WE(LL_PERIPH_ALL);
-    ADC_SetSampleTime(CM_ADC2, SYS_VOLT_ADC_CHANNEL, SYS_VOLT_ADC_SAMPLE_CLK);
-    LL_PERIPH_WP(LL_PERIPH_ALL);
-
-    ret = rt_adc_enable(s_dev, SYS_VOLT_ADC_CHANNEL);
-    if (ret != RT_EOK) {
-        rt_kprintf("[SYS-VOLT] WARN: enable ch%u failed (%d), voltage unavailable\n",
-                   (unsigned)SYS_VOLT_ADC_CHANNEL, ret);
-        s_dev = RT_NULL;
-        return 0;
-    }
-
-    rt_kprintf("[SYS-VOLT] %s ch%u enabled (PA6/ADC12_IN6), div=100k/3.3k\n",
-               SYS_VOLT_ADC_DEV_NAME, (unsigned)SYS_VOLT_ADC_CHANNEL);
+    rt_kprintf("[SYS-VOLT] PA6 via FOC ADC1 CH6, 1ms avg, div=%u.%02ux (board=%d)\n",
+               (unsigned)(SYS_VOLT_DIV_X100 / 100U),
+               (unsigned)(SYS_VOLT_DIV_X100 % 100U),
+               (int)CFG_SAMPLING_BOARD_IU_SENSOR);
     return 0;
 }
 
 uint8_t sys_voltage_is_ready(void)
 {
-    return (s_dev != RT_NULL) ? 1U : 0U;
+    return (s_bus_mv_1ms != 0U) ? 1U : 0U;
 }
 
-uint16_t sys_voltage_read_pin_mv(void)
+/* ============================================================
+ * 1ms 平均（20kHz 中断喂数据）
+ * ------------------------------------------------------------
+ * 每帧写入环形缓冲区；每满 20 点（20kHz → 1ms）求一次平均。
+ * 平均值先还原成引脚 mV，再按板型分压系数还原成母线 mV。
+ * ============================================================ */
+void sys_voltage_vbus_sample_isr(uint16_t raw)
 {
     uint32_t sum = 0U;
-    uint32_t raw;
-    uint32_t n;
-    uint32_t mv;
+    uint32_t pin_mv;
+    uint8_t  i;
 
-    if (s_dev == RT_NULL) {
-        return 0U;
+    s_vbus_ring[s_vbus_ring_idx] = raw;
+    s_vbus_ring_idx++;
+    if (s_vbus_ring_idx >= SYS_VOLT_VBUS_RING_LEN) {
+        s_vbus_ring_idx = 0U;
     }
 
-    /* 过采样求平均：抑制单次异常值与随机噪声 */
-    n = (SYS_VOLT_ADC_OVERSAMPLE > 0U) ? SYS_VOLT_ADC_OVERSAMPLE : 1U;
-    for (uint32_t i = 0U; i < n; i++) {
-        uint32_t v = rt_adc_read(s_dev, SYS_VOLT_ADC_CHANNEL);
-        if (v > SYS_VOLT_ADC_RAW_MAX) {
-            v = SYS_VOLT_ADC_RAW_MAX;       /* 12bit 上限保护 */
+    if (s_vbus_ring_cnt < SYS_VOLT_VBUS_RING_LEN) {
+        s_vbus_ring_cnt++;
+        if (s_vbus_ring_cnt < SYS_VOLT_VBUS_RING_LEN) {
+            return;                 /* 未满 1ms，本拍不更新 */
         }
-        sum += v;
     }
-    raw = sum / n;
 
-    mv = (raw * (uint32_t)SYS_VOLT_ADC_VREF_MV) / (uint32_t)SYS_VOLT_ADC_FULL_SCALE;
-    if (mv > 65535U) {
-        mv = 65535U;
+    for (i = 0U; i < SYS_VOLT_VBUS_RING_LEN; i++) {
+        sum += s_vbus_ring[i];
     }
-    return (uint16_t)mv;
+
+    s_vbus_avg_raw = (uint16_t)((sum + (SYS_VOLT_VBUS_RING_LEN / 2U)) /
+                                SYS_VOLT_VBUS_RING_LEN);
+
+    /* 先算引脚 mV（12bit / 3.3V），再乘分压比，避免乘法溢出 */
+    pin_mv = ((uint32_t)s_vbus_avg_raw * SYS_VOLT_ADC_VREF_MV) /
+             SYS_VOLT_ADC_FULL_SCALE;
+    s_vbus_meas_mv = (pin_mv * SYS_VOLT_DIV_NUM) / SYS_VOLT_DIV_DEN;
+
+    /* 板型 1/2 两点标定：bus_true = (bus_measured + offset) / gain。
+     * 板型 0 的宏为恒等（gain=1、offset=0）。 */
+    {
+        int32_t mv = (int32_t)s_vbus_meas_mv + CFG_SAMPLING_VBUS_CAL_OFFSET_MV;
+
+        if (mv < 0) {
+            mv = 0;
+        }
+        s_bus_mv_1ms = (uint32_t)((mv * 10000) / CFG_SAMPLING_VBUS_CAL_GAIN_X10000);
+    }
+}
+
+uint32_t sys_voltage_get_bus_mv_1ms(void)
+{
+    return s_bus_mv_1ms;
 }
 
 uint32_t sys_voltage_read_bus_mv(void)
 {
-    uint32_t pin_mv = (uint32_t)sys_voltage_read_pin_mv();
+    uint32_t bus_mv = s_bus_mv_1ms;
 
-    /* 还原分压：mv_bus = mv_pin × 1033 / 33 */
-    return (pin_mv * (uint32_t)SYS_VOLT_DIV_NUM) / (uint32_t)SYS_VOLT_DIV_DEN;
+    s_bus_mv_cached = bus_mv;
+
+#if SYS_VOLT_DEBUG_5S
+    {
+        rt_tick_t now = rt_tick_get();
+
+        if ((now - s_dbg_tick) >= rt_tick_from_millisecond(5000)) {
+            uint32_t meas_mv = s_vbus_meas_mv;
+
+            s_dbg_tick = now;
+
+            rt_kprintf("[VOLT5S] PA6 raw=%u meas=%u.%02uV bus=%u.%02uV div=%u.%02ux board=%d\r\n",
+                       (unsigned)s_vbus_avg_raw,
+                       (unsigned)(meas_mv / 1000U),
+                       (unsigned)((meas_mv % 1000U) / 10U),
+                       (unsigned)(bus_mv / 1000U),
+                       (unsigned)((bus_mv % 1000U) / 10U),
+                       (unsigned)(SYS_VOLT_DIV_X100 / 100U),
+                       (unsigned)(SYS_VOLT_DIV_X100 % 100U),
+                       (int)CFG_SAMPLING_BOARD_IU_SENSOR);
+        }
+    }
+#endif
+
+    return bus_mv;
+}
+
+uint32_t sys_voltage_get_bus_mv_cached(void)
+{
+    return s_bus_mv_cached;
 }
 
 uint16_t sys_voltage_get_dv(void)

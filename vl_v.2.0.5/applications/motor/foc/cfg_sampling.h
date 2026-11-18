@@ -21,12 +21,30 @@
 
 /*---------------------------------------------------------------------------
  * 母线电压
- *   1 = 真实模式：从 ADC PA6/CH6 读取
- *   0 = 模拟模式：固定 CFG_SAMPLING_SIM_VBUS_V
+ *   FOC 的 ADC1 CH6 每帧采样 PA6，原始值送入 sys_voltage 的 1ms 环形缓冲区，
+ *   由 sys_voltage 求平均并按板型分压系数换算：
+ *     板型 0 → 31 倍，板型 1/2 → 25 倍
+ *   SVPWM 使用换算后的真实 vbus；低于 12V 按 12V 处理。
+ *   下面的常量仅作为 vbus 未就绪时的兜底值。
  *---------------------------------------------------------------------------*/
-#define CFG_SAMPLING_USE_REAL_ADC    1
-
 #define CFG_SAMPLING_SIM_VBUS_V      12.0f
+
+/*---------------------------------------------------------------------------
+ * 母线电压两点标定（仅板型 1/2；板型 0 为恒等，不做修正）
+ *   实测三点（供电 12.33/13.85/15.06V，读数 13.87/15.70/17.60V）拟合：
+ *     bus_measured = 1.3595 × bus_true - 2.965V
+ *   反解：
+ *     bus_true = (bus_measured + 2965mV) / 1.3595
+ *   该增益相当于真实分压约 34 倍（25 × 1.3595），另叠加约 87mV 的引脚偏置。
+ *   若只想用纯偏置：GAIN_X10000 设为 10000，OFFSET_MV 设为 1977。
+ *---------------------------------------------------------------------------*/
+#if (CFG_SAMPLING_BOARD_IU_SENSOR != 0)
+#define CFG_SAMPLING_VBUS_CAL_GAIN_X10000   13595
+#define CFG_SAMPLING_VBUS_CAL_OFFSET_MV     2965
+#else
+#define CFG_SAMPLING_VBUS_CAL_GAIN_X10000   10000
+#define CFG_SAMPLING_VBUS_CAL_OFFSET_MV     0
+#endif
 
 /*---------------------------------------------------------------------------
  * ADC 采样时间与零偏校准
@@ -55,11 +73,5 @@
 #define CFG_SAMPLING_CURRENT_SCALE    (3.3f / 4096.0f / 0.0264f)
 #define CFG_SAMPLING_CURRENT_OFFSET   2048.0f
 #endif
-
-/*---------------------------------------------------------------------------
- * 母线电压标定：vbus = adc_raw × scale
- *   待实机标定，先填 1.0f 看原始值
- *---------------------------------------------------------------------------*/
-#define CFG_SAMPLING_VBUS_SCALE      1.0f
 
 #endif /* CFG_SAMPLING_H */

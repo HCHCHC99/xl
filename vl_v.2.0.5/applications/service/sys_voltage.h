@@ -2,18 +2,18 @@
  * @file    sys_voltage.h
  * @brief   系统（母线）电压采集
  *
- * 【硬件】
- *   AD_VM → PA6 → ADC12_IN6 → ADC2 的 ADC_CH2
- *   分压电阻：上臂 100kΩ / 下臂 3.3kΩ
- *   Vbus = Vpin × (100 + 3.3) / 3.3 = Vpin × 31.03
- *   3.3V 参考下最大可测 ≈ 102.3V，覆盖 12V/24V 系统
+ * 【硬件与数据源】
+ *   AD_VM → PA6 → ADC12_IN6
+ *   FOC 的 ADC1 SEQ_A 每 50us 与三相电流同步采样 CH6，
+ *   DMA 中断每帧调用 sys_voltage_vbus_sample_isr(raw)。
+ *   本模块维护 20 点（20kHz → 1ms）环形缓冲区，求平均后按板型分压换算。
  *
- * 【注意】ADC12_IN6 对应的 ADC2 通道号是 2，不是 6！
- *   hc32_ll_adc.h:398  ADC2_PIN_PA6 = (2U)
- *   board_config.h 中的宏名 ADC2_CH6_* 沿用 IN 编号，切勿当作通道号
+ * 【分压系数】（定义在 sys_voltage.c）
+ *   板型 0：100k/3.3k ≈ 31.03 倍
+ *   板型 1/2：25 倍
  *
- * 【与 lift_adc 的关系】
- *   同用 "adc2" 设备、不同通道（2 vs 3），rt_adc_enable 可共存。
+ * 【不再使用 ADC2】
+ *   PA6 只有 FOC ADC1 CH6 一个采样源；ADC2 设备仍保留给 lift_adc(CH3)。
  */
 
 #ifndef __SYS_VOLTAGE_H
@@ -26,44 +26,45 @@ extern "C" {
 #endif
 
 /* ============================================================
- * 硬件参数
+ * 标定常量
  * ============================================================ */
-#define SYS_VOLT_ADC_DEV_NAME       "adc2"
-#define SYS_VOLT_ADC_CHANNEL        2U      /* ADC12_IN6(PA6) = ADC2 CH2 */
-#define SYS_VOLT_ADC_RAW_MAX        4095U   /* 12bit 满量程 */
 #define SYS_VOLT_ADC_FULL_SCALE     4096U   /* 12bit 分频基数 */
 #define SYS_VOLT_ADC_VREF_MV        3300U   /* VDDA = 3.3V */
-#define SYS_VOLT_ADC_SAMPLE_CLK     40U     /* 采样时间（ADCLK 个数），适配高阻分压源 */
-#define SYS_VOLT_ADC_OVERSAMPLE     8U      /* 过采样次数（算术平均） */
-
-/**
- * @brief 分压还原系数
- * @note  R_high = 100kΩ，R_low = 3.3kΩ
- *        mv_bus = mv_pin × SYS_VOLT_DIV_NUM / SYS_VOLT_DIV_DEN
- *               = mv_pin × 1033 / 33  ≈ mv_pin × 31.30
- */
-#define SYS_VOLT_DIV_NUM            1033U
-#define SYS_VOLT_DIV_DEN            33U
 
 /* ============================================================
  * API
  * ============================================================ */
 
 /**
- * @brief 初始化：查找 adc2 设备、设置采样时间、使能通道 [单线程]
- * @return 0 成功；-1 失败（设备缺失或使能失败）
+ * @brief 初始化（清空环形缓冲区） [单线程]
+ * @return 0
  */
 int sys_voltage_init(void);
 
 /**
- * @brief 读取引脚电压（mV，含过采样，未还原分压） [线程安全]
+ * @brief 送入一个母线电压原始码（必须在 20kHz ADC 中断内调用） [ISR]
+ * @param raw  PA6/CH6 的 12bit 原始值
+ * @note  每满 20 点（1ms）求一次平均，并按板型分压系数换算成 mV。
+ *        写入与平均都在同一中断上下文，无需临界区。
  */
-uint16_t sys_voltage_read_pin_mv(void);
+void sys_voltage_vbus_sample_isr(uint16_t raw);
 
 /**
- * @brief 读取母线电压（mV，已还原分压） [线程安全]
+ * @brief 取 1ms 平均后的母线电压（mV） [ISR/线程安全]
+ * @return 0 = 尚未采满 1ms（FOC 未启动）
+ */
+uint32_t sys_voltage_get_bus_mv_1ms(void);
+
+/**
+ * @brief 读取母线电压（mV，1ms 平均值） [线程安全]
+ * @return 未就绪时返回 0
  */
 uint32_t sys_voltage_read_bus_mv(void);
+
+/**
+ * @brief 取最近一次母线电压缓存（mV） [ISR 安全]
+ */
+uint32_t sys_voltage_get_bus_mv_cached(void);
 
 /**
  * @brief 读取母线电压（0.1V 单位，例如 13.0V → 130） [线程安全]
@@ -72,8 +73,8 @@ uint32_t sys_voltage_read_bus_mv(void);
 uint16_t sys_voltage_get_dv(void);
 
 /**
- * @brief 采集通道是否就绪
- * @return 1 = 可用；0 = 不可用（设备缺失或初始化失败）
+ * @brief 采集是否就绪（已采满 1ms 并得到有效值）
+ * @return 1 = 可用；0 = 不可用
  */
 uint8_t sys_voltage_is_ready(void);
 
