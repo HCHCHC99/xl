@@ -320,15 +320,26 @@ int mech_apply_cfg_selection(void)
 
     (void)mech_cand_split_id(want, &enc_sel, &iin_sel, &iout_sel);
 
-    /* ---------- 已经是目标组合：什么都不做（保护现场标定）---------- */
-    if ((g_mech.tbl.count == 1U) &&
-        (mech_row_equals_cand(&g_mech.tbl.row[0], want) != 0U)) {
-        LOG_OK("[MECH] cfg sel unchanged: cand %u (%s / %s / %s)\n",
-                   (unsigned)want,
-                   mech_enc_sel_name(enc_sel),
-                   mech_iin_sel_name(iin_sel),
-                   mech_iout_sel_name(iout_sel));
-        return MECH_OK;
+    /* ---------- 选择子未变化：信任已落盘 active 行 ----------
+     * 【不能用 row == 候选行判断】
+     * t_mech_set 允许修改 active 行的 13 个字段；改完后整行自然不等于
+     * 候选表，若按行比较，下次上电会被候选表覆盖，t_mech_set 的持久化
+     * 就失效了。记录里的 enc/iin/iout 选择子才是"是否需要重选"的依据：
+     *   - 选择子与 cfg 相同 -> 保留已落盘行（含手工修改）
+     *   - 选择子不同       -> 按 cfg 重选候选行并褪零
+     */
+    {
+        uint8_t s_enc = 0U, s_iin = 0U, s_iout = 0U;
+
+        if ((param_store_am_get_sel(&s_enc, &s_iin, &s_iout) == 0) &&
+            (s_enc == enc_sel) && (s_iin == iin_sel) && (s_iout == iout_sel)) {
+            LOG_OK("[MECH] cfg sel unchanged: cand %u (%s / %s / %s)\n",
+                       (unsigned)want,
+                       mech_enc_sel_name(enc_sel),
+                       mech_iin_sel_name(iin_sel),
+                       mech_iout_sel_name(iout_sel));
+            return MECH_OK;
+        }
     }
 
     /* ---------- 需要切换 ---------- */

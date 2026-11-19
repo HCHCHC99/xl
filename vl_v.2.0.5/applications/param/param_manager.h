@@ -7,7 +7,8 @@
  *   [head(4)][seq(4)][erase_count(4)][payload ...][checksum(4)][tail(4)]
  *
  * 上电扫描：逐扇区逐记录读 head/tail，校验 CRC32，取 sequence_id 最大者。
- * 写入：追加到当前扇区末尾；写满或擦除次数到限时换下一个扇区。
+ * 写入：追加到当前扇区末尾；写满后原地擦除重用。多扇区组在当前扇区
+ *       擦除次数达到 max_erase_life 后，下一次写满才换到下一个扇区。
  */
 
 #ifndef __PARAM_MANAGER_H

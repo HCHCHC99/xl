@@ -247,7 +247,7 @@ static int rotate_sector(const param_config_t *cfg, param_runtime_t *rt)
     return PARAM_OK;
 }
 
-/** 保证当前扇区还有一条记录的空间；不够则换扇区/擦除 */
+/** 保证当前扇区还有一条记录的空间；不够时按擦除寿命决定原地擦除还是换扇 */
 static int ensure_space(const param_config_t *cfg, param_runtime_t *rt)
 {
     uint32_t end = sector_end_addr(rt->curr_sec);
@@ -256,10 +256,17 @@ static int ensure_space(const param_config_t *cfg, param_runtime_t *rt)
         return PARAM_OK;
     }
 
-    /* 快区：擦除次数到限或写满都换扇区；慢区：原地擦除重写 */
-    if (cfg->sec_start != cfg->sec_end) {
+    /* 写满之后：
+     * - 慢区（单扇区）：原地擦除重写
+     * - 快区（多扇区）：当前扇区擦除次数未到上限时仍原地擦除重用；
+     *   达到上限后，下一次写满才换到下一个扇区。
+     * 注意不能“写满就换扇”，否则单个扇区永远用不到 10000 次寿命。 */
+    if ((cfg->sec_start != cfg->sec_end) &&
+        (cfg->max_erase_life != 0U) &&
+        (rt->erase_count >= cfg->max_erase_life)) {
         return rotate_sector(cfg, rt);
     }
+
     return erase_current(cfg, rt);
 }
 
@@ -273,16 +280,8 @@ int Param_Save(const param_config_t *cfg, param_runtime_t *rt, uint8_t *buf)
         return PARAM_ERR_PARAM;
     }
 
-    /* 快区擦除次数到限时，即使还有空间也换扇区 */
-    if ((cfg->max_erase_life != 0U) &&
-        (rt->erase_count >= cfg->max_erase_life) &&
-        (cfg->sec_start != cfg->sec_end)) {
-        rc = rotate_sector(cfg, rt);
-        if (rc != PARAM_OK) {
-            return rc;
-        }
-    }
-
+    /* 是否换扇只在“当前扇区写满”时由 ensure_space() 判断：
+     * 擦除次数到上限但扇区还有空间时，继续把剩余槽位用完。 */
     rc = ensure_space(cfg, rt);
     if (rc != PARAM_OK) {
         return rc;

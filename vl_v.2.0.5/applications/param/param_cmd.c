@@ -21,46 +21,14 @@
 #include "param_store.h"
 #include "../config/sys_config.h"
 #include "../mode/sys_caps.h"
-#include "../motor/foc/foc_mode.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <rtthread.h>
 
-/* ============================================================
- * 【临时调试旁路，2026-11-19】
- * WORK 模式默认没有 PARAM_WRITE，现场验证存储时无法写 Flash。
- * 约定：FOC 处于 IDLE(0) 或 LOCK(1) 时临时放行 t_param 的写操作；
- *       其余 FOC 模式仍按能力位拒绝。正式版请把宏改为 0 或删除。
- * ============================================================ */
-#ifndef PARAM_CMD_WRITE_IN_FOC_IDLE_LOCK
-#define PARAM_CMD_WRITE_IN_FOC_IDLE_LOCK  1
-#endif
-
+/** 写权限判定：统一走 sys_cap_require（含 FOC IDLE/LOCK 临时旁路） */
 static uint8_t param_write_allowed(const char *who)
 {
-    static uint8_t s_bypass_warned = 0U;
-
-    if (sys_cap_has(SYS_CAP_PARAM_WRITE) != 0U) {
-        return 1U;
-    }
-
-#if PARAM_CMD_WRITE_IN_FOC_IDLE_LOCK
-    {
-        foc_mode_t m = Foc_Mode_GetMode();
-
-        if ((m == FOC_MODE_IDLE) || (m == FOC_MODE_LOCK)) {
-            if (s_bypass_warned == 0U) {
-                s_bypass_warned = 1U;
-                rt_kprintf("[PARAM] temporary bypass: focmode %d allows write"
-                           " (caps=0x%04X)\n",
-                           (int)m, (unsigned)sys_caps_get());
-            }
-            return 1U;
-        }
-    }
-#endif
-
     return sys_cap_require(SYS_CAP_PARAM_WRITE, who);
 }
 

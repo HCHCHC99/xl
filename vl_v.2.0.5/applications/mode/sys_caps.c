@@ -10,6 +10,18 @@
  */
 
 #include "sys_caps.h"
+#include "../motor/foc/foc_mode.h"
+
+/* ============================================================
+ * 【临时调试旁路，2026-11-19】
+ * WORK 模式默认没有 PARAM_WRITE。现场验证期间约定：
+ * FOC 处于 IDLE(0) 或 LOCK(1) 时，对 PARAM_WRITE 放行；
+ * 其余 FOC 模式（2/3/4/5/6/7）仍按能力位拒绝。
+ * 正式版请把宏改为 0 或删除这段。
+ * ============================================================ */
+#ifndef SYS_CAP_TEMP_ALLOW_PARAM_WRITE
+#define SYS_CAP_TEMP_ALLOW_PARAM_WRITE   1
+#endif
 #include "sys_mode.h"
 #include "mode_config.h"
 #include "mode_control.h"
@@ -163,6 +175,26 @@ uint8_t sys_cap_require(uint16_t cap, const char *caller)
     if (sys_cap_has(cap) != 0U) {
         return 1U;
     }
+
+#if SYS_CAP_TEMP_ALLOW_PARAM_WRITE
+    /* 【临时】WORK 下无 PARAM_WRITE，但 FOC 处于 IDLE/LOCK 时放行 */
+    if (cap == SYS_CAP_PARAM_WRITE) {
+        foc_mode_t m = Foc_Mode_GetMode();
+
+        if ((m == FOC_MODE_IDLE) || (m == FOC_MODE_LOCK)) {
+            static uint8_t s_warned = 0U;
+
+            if (s_warned == 0U) {
+                s_warned = 1U;
+                rt_kprintf("[CAP] temporary bypass: PARAM_WRITE allowed in focmode %d"
+                           " (mode=%s, caps=0x%04X)\n",
+                           (int)m, sys_mode_name(sys_get_mode()),
+                           (unsigned)s_sys_caps);
+            }
+            return 1U;
+        }
+    }
+#endif
 
     /* 统一拒绝日志。格式固定，便于后续运行日志功能直接抓这一行。 */
     rt_kprintf("[CAP] deny %s by %s (mode=%s, caps=0x%04X)\n",

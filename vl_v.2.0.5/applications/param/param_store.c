@@ -439,6 +439,21 @@ int param_store_am_set_row(const mech_cfg_t *row, uint8_t active, uint8_t count)
     return 0;
 }
 
+int param_store_am_get_sel(uint8_t *enc_sel, uint8_t *iin_sel, uint8_t *iout_sel)
+{
+    if (s_inited == 0U) {
+        (void)param_store_init();
+    }
+    if (s_am.payload.rec_magic != PARAM_AM_REC_MAGIC) {
+        return -1;
+    }
+
+    if (enc_sel  != RT_NULL) { *enc_sel  = s_am.payload.enc_sel;  }
+    if (iin_sel  != RT_NULL) { *iin_sel  = s_am.payload.iin_sel;  }
+    if (iout_sel != RT_NULL) { *iout_sel = s_am.payload.iout_sel; }
+    return 0;
+}
+
 int param_store_am_was_default(void)
 {
     return (s_rt_am.defaults_written != 0U) ? 1 : 0;
@@ -1101,7 +1116,7 @@ int param_store_set_erase_cmd(const char *group, uint32_t count)
                    g->name);
     } else if ((g->cfg->max_erase_life != 0U) &&
                (count >= g->cfg->max_erase_life)) {
-        rt_kprintf("[PARAM] next write on '%s' will rotate sector %u -> %u\n",
+        rt_kprintf("[PARAM] '%s' will rotate sector %u -> %u after CURRENT sector is full\n",
                    g->name, (unsigned)g->rt->curr_sec,
                    (g->rt->curr_sec == g->cfg->sec_end)
                        ? (unsigned)g->cfg->sec_start

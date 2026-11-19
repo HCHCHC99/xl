@@ -93,6 +93,9 @@ int  param_store_am_was_default(void);
 int  param_store_am_get_row(mech_cfg_t *row, uint8_t *active, uint8_t *count);
 int  param_store_am_set_row(const mech_cfg_t *row, uint8_t active, uint8_t count);
 
+/* 读取记录里保存的三个机械选择子（用于开机判断是否需要按 cfg 重选行） */
+int  param_store_am_get_sel(uint8_t *enc_sel, uint8_t *iin_sel, uint8_t *iout_sel);
+
 /* ============================================================
  * SYSTEM / MOTION：sys_config 关键项
  * ============================================================ */

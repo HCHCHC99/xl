@@ -15,9 +15,9 @@
 | motion | 56 | `0x00070000` | 116 B | 70 | 不限 | 单扇区，满了原地擦除 |
 | angle_mech | 57 | `0x00072000` | 76 B | 107 | 不限 | 单扇区，满了原地擦除 |
 | system | 58 | `0x00074000` | 128 B | 64 | 不限 | 单扇区，满了原地擦除 |
-| fast | 59 | `0x00076000` | 44 B | 186 | 10000/扇区 | 61→60→59→61 轮转 |
+| fast | 59 | `0x00076000` | 44 B | 186 | 10000/扇区 | 先用满并原地擦除，擦除次数到 10000 后下一次写满才换扇 |
 | fast | 60 | `0x00078000` | 44 B | 186 | 10000/扇区 | 同上 |
-| fast | 61 | `0x0007A000` | 44 B | 186 | 10000/扇区 | 同上 |
+| fast | 61 | `0x0007A000` | 44 B | 186 | 10000/扇区 | 同上，顺序 61→60→59→61 |
 | 预留 | 62 | `0x0007C000` | - | - | - | 不由本模块使用 |
 | device | 63 | `0x0007E000` | 108 B | 75 | 不限 | 单扇区，满了原地擦除 |
 
@@ -73,13 +73,13 @@ CRC32：多项式 `0xEDB88320`，初值 `0xFFFFFFFF`，结果异或 `0xFFFFFFFF`
 
 前提：**电机必须停机**（IDLE/FAULT）。RUNNING / RAMPING / BRAKING 时所有写/擦指令都会拒绝。
 
-【临时调试旁路】WORK 模式默认没有 `PARAM_WRITE`。为便于现场验证，`t_param` 的写命令在 FOC 处于 `focmode 0`（IDLE）或 `focmode 1`（LOCK）时临时放行：
+【临时调试旁路】WORK 模式默认没有 `PARAM_WRITE`。为便于现场验证，只要 FOC 处于 `focmode 0`（IDLE）或 `focmode 1`（LOCK），所有申请 `PARAM_WRITE` 的命令都临时放行（`t_param`、`t_mech_set`、`t_cfg set/save` 等）：
 
 ```
-[PARAM] temporary bypass: focmode 0 allows write (caps=0x0193)
+[CAP] temporary bypass: PARAM_WRITE allowed in focmode 0 (mode=WORK, caps=0x0193)
 ```
 
-其余 FOC 模式（2/3/4/5/6/7）仍按能力位拒绝。该行为由 `param_cmd.c` 的 `PARAM_CMD_WRITE_IN_FOC_IDLE_LOCK` 控制，正式版应改为 0。`t_cfg` 等其它命令不受此旁路影响。
+其余 FOC 模式（2/3/4/5/6/7）仍按能力位拒绝。该行为由 `sys_caps.c` 的 `SYS_CAP_TEMP_ALLOW_PARAM_WRITE` 控制，正式版应改为 0。
 
 ---
 
@@ -126,25 +126,24 @@ t_param fill fast 2
 # [PARAM] fill fast done: writes=184 left=2/186 cur=61 seq=184 rc=0
 ```
 
-`leave` 默认 2；写满后再写 1~2 次即可观察换扇/擦除。
+`leave` 默认 2；写满后再写 1~2 次即可观察原地擦除（默认寿命未到）。
 
-### 3.4 写满换扇（快区）
+### 3.4 写满后的原地擦除（快区）
 
 ```
 t_param erase fast confirm
-t_param fill fast 2          # left=2/186, cur=61
-t_param write fast 1         # left=1/186
-t_param write fast 1         # left=0/186
-t_param write fast 1         # cur=60, erase=1, left=185/186  ← 轮转
+t_param fill fast 0          # 把当前扇区写满，left=0/186
+t_param write fast 1         # 寿命未到：cur 不变，erase 加 1，left=185/186
 ```
 
-### 3.5 按擦除寿命换扇（不写满）
+### 3.5 按擦除寿命换扇（写满后才换）
 
 ```
 t_param erasecnt fast 10000
 # [PARAM] fast erase_count: 1 -> 10000
-# [PARAM] next write on 'fast' will rotate sector 61 -> 60
-t_param write fast 1         # 先换扇再写：cur=60, erase=1, left=185/186
+# [PARAM] 'fast' will rotate sector 61 -> 60 after CURRENT sector is full
+t_param fill fast 0          # 写满当前扇区，此时还不换扇
+t_param write fast 1         # 写满 + 寿命到限：cur=60, erase=1, left=185/186
 ```
 
 `erasecnt` 只改 RAM，不写 Flash；重启后擦除次数从记录里的 `erase_count` 恢复。
@@ -237,8 +236,8 @@ latest    = curr_addr - s_cfg_xxx.record_size
 
 1. **写完立即读**：`seq` 加 1、`left` 减 1；Memory 里 `curr_addr` 指针同步后移。
 2. **有效记录**：head/tail 正确 + CRC 通过；任何一项不符，上电会被跳过。
-3. **换扇**：`s_rt_fast.curr_sec` 改变，新扇区基址出现 `seq` 更大的记录；旧扇区数据仍在，直到下次被擦。
-4. **慢区写满**：整扇区被擦除，只剩基址一条新记录，`erase_count` 加 1。
+3. **换扇**：只有当前扇区**写满**且 `erase_count >= 10000` 时，`s_rt_fast.curr_sec` 才改变；新扇区基址出现 `seq` 更大的记录。
+4. **写满原地擦除**：擦除次数未到 10000 时，整扇区被擦除后仍在原扇区，只剩基址一条新记录，`erase_count` 加 1。
 5. **掉电恢复**：重启后 `t_param info` 的 `seq` 与掉电前最后一条一致，`src=FLASH`。
 
 ---
@@ -252,7 +251,7 @@ latest    = curr_addr - s_cfg_xxx.record_size
 | `app code_end` 大于 0x70000 | 固件已压到参数区，必须裁剪代码或重新划分参数区，不能继续擦写 |
 | 重启后 `src=DEFAULT` | 没找到有效记录：检查 head/tail/CRC；首次烧录属正常 |
 | `left` 不减少 | 电机在运行（被拒绝）；或写 Flash 失败，看 `[PARAM] program FAILED` |
-| 一直不换扇 | 确认 `t_param info` 的 `erase>=10000`（fast）；慢区本来就不换扇 |
+| 一直不换扇 | 快区只有“写满 + `erase>=10000`”才换扇；寿命未到时写满只原地擦除。慢区本来就不换扇 |
 | `t_param: command not found` | `param_cmd.c` 没加入编译（Keil 工程需手动添加） |
 | 值改了但重启丢失 | `t_param set` 未带 `save`；或保存被延后，用 `t_param save` 手动落盘 |
 | 换扇方向不对 | 快区顺序固定 61→60→59→61，冷启动扫描按 `seq` 最大取记录，与扇区号无关 |
