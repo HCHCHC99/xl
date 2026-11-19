@@ -255,3 +255,40 @@ latest    = curr_addr - s_cfg_xxx.record_size
 | `t_param: command not found` | `param_cmd.c` 没加入编译（Keil 工程需手动添加） |
 | 值改了但重启丢失 | `t_param set` 未带 `save`；或保存被延后，用 `t_param save` 手动落盘 |
 | 换扇方向不对 | 快区顺序固定 61→60→59→61，冷启动扫描按 `seq` 最大取记录，与扇区号无关 |
+
+---
+
+## 6. 实机验证记录（2026-11-19）
+
+以下为 2026-11-19 实机 RTT 日志核对结果，均已通过。
+
+| # | 验证项 | 操作 | 实测结果 |
+| ---: | --- | --- | --- |
+| 1 | 上电自检自动打印 | 上电 | `param_dump` 正常输出 `storage status` + `current values`；`app code_end=0x0005C258` < `0x00070000` |
+| 2 | 慢区一键擦除 | `t_param erase slow confirm` | `mask=0x7 OK`，各组 `seq=1`、`erase=1`、`left` 复位，无 HardFault |
+| 3 | 快区一键擦除 | `t_param erase fast confirm` | `cur=61`、`seq=1`、`erase=1`、`left=185/186`，无 HardFault |
+| 4 | 慢区正常写入 | `t_param write motion 1` | `seq`/`wr` 加 1，`left` 减 1 |
+| 5 | 慢区写满原地擦除 | `t_param fill motion 0` → `t_param write motion 1` | `cur=56` 不变，`erase 1→2`，`left=69/70` |
+| 6 | 快区写满原地擦除 | `t_param fill fast 0` → `t_param write fast 1` | `cur=61` 不变，`erase 1→2`，`left=185/186` |
+| 7 | 寿命到限后换扇 | `t_param erasecnt fast 10000` → `fill fast 0` → `write fast 1` | 写满前不换扇；写入时 `cur 61→60`，`erase=1`，`left=185/186` |
+| 8 | 改值并落盘 | `t_param set pwm_deadtime_ns 1500 save` | `values` 显示 1500，随后改回 1000 正常 |
+| 9 | `t_mech_set` 持久化 | `t_mech_set out_max_x10 2100` → 重启 | 重启后 `out=[-1000,2100]x10`，未被候选表覆盖 |
+| 10 | 掉电/复位恢复 | 重启 | `seq`/`cur`/`erase` 全部保持，`src=FLASH` |
+| 11 | WORK 模式写权限旁路 | `focmode 0/1` 下执行写命令 | `[CAP] temporary bypass` 后放行，`t_param` / `t_mech_set` 均可写 |
+
+已知行为：`t_param set <id> <val> save` 实际按 `CFG|AM|DEV`（mask=0x7）保存，因此 `system`、`angle_mech`、`device` 的 `seq` 会一起递增；如需只写 CFG 可后续调整。
+
+---
+
+## 7. 待验证项
+
+尚未在实机执行的用例，按优先级排列：
+
+1. **快区回绕 59→61**：已验 61→60，还差 `erasecnt fast 10000` + 写满两次，确认 `cur` 走 60→59→61，且回绕后 `seq` 仍单调递增。
+2. **全擦**：`t_param erase confirm`（慢区 56/57/58/63 + 快区 59/60/61 一次完成）。
+3. **坏记录跳过**：调试器手工改坏某条记录的 `head`/`tail`/CRC，上电应跳过该条、取次大 `seq` 的有效记录。
+4. **电机运行中拒绝写**：RUNNING/RAMPING/BRAKING 下 `t_param write` / `t_param erase` 应打印拒绝，异步保存应延后到停机。
+5. **非默认 CFG 值跨重启**：改一个非默认值（如 `pwm_freq_hz`）后正常断电重启，确认 `src=FLASH` 且值保持（现有日志里的 1500 未做重启验证，已改回 1000）。
+6. **真实掉电**（非复位）：写入瞬间直接断电，重启后应回退到上一条完整记录，不出现半条记录被采纳。
+7. **真寿命**：`erasecnt` 只是模拟计数，未做 10000 次真实擦写的老化验证。
+8. **SPI 绝对编码器联动**：快区字段与接口已预留，驱动未实现，无法验证上电直接用绝对编码器算电角度。
