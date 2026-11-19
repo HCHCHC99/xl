@@ -275,8 +275,12 @@ latest    = curr_addr - s_cfg_xxx.record_size
 | 9 | `t_mech_set` 持久化 | `t_mech_set out_max_x10 2100` → 重启 | 重启后 `out=[-1000,2100]x10`，未被候选表覆盖 |
 | 10 | 掉电/复位恢复 | 重启 | `seq`/`cur`/`erase` 全部保持，`src=FLASH` |
 | 11 | WORK 模式写权限旁路 | `focmode 0/1` 下执行写命令 | `[CAP] temporary bypass` 后放行，`t_param` / `t_mech_set` 均可写 |
+| 12 | 快区完整回绕 | `erasecnt fast 10000` + `fill fast 0` + `write fast 1`，重复两次 | `cur` 走 60→59→61，`seq` 373→558→559→744→745 单调递增，新扇区 `erase=1` |
+| 13 | 全擦 | `t_param erase confirm` | `mask=0xF OK`；5 组均 `seq=1 erase=1`，`left` 复位（motion 69/70、AM 106/107、system 63/64、fast 185/186、device 74/75）；`values` 中 `out=[-1000,2150]x10`、SN、设备信息均保留 |
 
-已知行为：`t_param set <id> <val> save` 实际按 `CFG|AM|DEV`（mask=0x7）保存，因此 `system`、`angle_mech`、`device` 的 `seq` 会一起递增；如需只写 CFG 可后续调整。
+已知行为：`t_param set <id> <val> save` 实际按 `CFG|AM|DEV`（mask=0x7）保存，因此 `system`、`angle_mech`、`device` 的 `seq` 会一起递增；如需只写 CFG 可后续调整。擦除后 `wr` 是运行期累计写次数，不随擦除清零。
+
+**未通过项（测试方法无效，不算失败）**：在 WORK + `focmode 2` 下执行写命令，三条都被 `[CAP] deny PARAM_WRITE` 拦在能力位，未进入 `motor_is_busy()` 检查，因此“电机运行中拒绝写”仍未验证。正确做法见第 7 节第 2 条。
 
 ---
 
@@ -284,11 +288,26 @@ latest    = curr_addr - s_cfg_xxx.record_size
 
 尚未在实机执行的用例，按优先级排列：
 
-1. **快区回绕 59→61**：已验 61→60，还差 `erasecnt fast 10000` + 写满两次，确认 `cur` 走 60→59→61，且回绕后 `seq` 仍单调递增。
-2. **全擦**：`t_param erase confirm`（慢区 56/57/58/63 + 快区 59/60/61 一次完成）。
-3. **坏记录跳过**：调试器手工改坏某条记录的 `head`/`tail`/CRC，上电应跳过该条、取次大 `seq` 的有效记录。
-4. **电机运行中拒绝写**：RUNNING/RAMPING/BRAKING 下 `t_param write` / `t_param erase` 应打印拒绝，异步保存应延后到停机。
-5. **非默认 CFG 值跨重启**：改一个非默认值（如 `pwm_freq_hz`）后正常断电重启，确认 `src=FLASH` 且值保持（现有日志里的 1500 未做重启验证，已改回 1000）。
-6. **真实掉电**（非复位）：写入瞬间直接断电，重启后应回退到上一条完整记录，不出现半条记录被采纳。
-7. **真寿命**：`erasecnt` 只是模拟计数，未做 10000 次真实擦写的老化验证。
-8. **SPI 绝对编码器联动**：快区字段与接口已预留，驱动未实现，无法验证上电直接用绝对编码器算电角度。
+1. **坏记录跳过**：`t_param write system 3` 后，用调试器把最新一条的 `head`（`0x5502A002`）改成 0 或改坏 CRC，重启后 `system seq` 应回退 1、`src=FLASH`、`values` 正常。最新记录地址 = `0x00074000 + (64 - left - 1) * 128`。
+2. **电机运行中拒绝写**：必须先在 MAINT 下测（WORK + `focmode 2` 只会被能力位拦截）：
+   ```
+   t_param info
+   t_wmode maint
+   focmode 2
+   t_param write motion 1
+   t_param erase fast confirm
+   t_param fill motion 0
+   t_param erasecnt fast 10000
+   t_param set pwm_deadtime_ns 1500 save
+   focmode 0
+   t_param values
+   t_param info
+   t_wmode work
+   ```
+   期望：前五条打印 `motor is running, ... refused, stop first`；`set ... save` 先改 RAM 再拒绝保存；停机后 `seq`/`left` 与测试前一致；`values` 中 `pwm_deadtime_ns=1500` 只在 RAM（未落盘），最后 `t_param set pwm_deadtime_ns 1000 save` 恢复。
+3. **非默认 CFG 值跨重启**：`t_param set pwm_deadtime_ns 1500 save` → 断电重启 → `t_param values` 应为 1500 且 `src=FLASH`，再改回 1000。
+4. **真实掉电**（非复位）：`t_param write system 100` 期间直接断电，重启后 `seq` 等于最后一条完整写入，`src=FLASH`，无坏记录被采纳。
+5. **10000 次真实擦写老化**：`erasecnt` 只是模拟计数，未做真实寿命验证。
+6. **SPI 绝对编码器联动**：快区字段与接口已预留，驱动未实现，无法验证上电直接用绝对编码器算电角度。
+
+已通过：快区回绕 60→59→61、`t_param erase confirm` 全擦（见第 6 节第 12、13 项）。
