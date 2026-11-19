@@ -21,10 +21,48 @@
 #include "param_store.h"
 #include "../config/sys_config.h"
 #include "../mode/sys_caps.h"
+#include "../motor/foc/foc_mode.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <rtthread.h>
+
+/* ============================================================
+ * 【临时调试旁路，2026-11-19】
+ * WORK 模式默认没有 PARAM_WRITE，现场验证存储时无法写 Flash。
+ * 约定：FOC 处于 IDLE(0) 或 LOCK(1) 时临时放行 t_param 的写操作；
+ *       其余 FOC 模式仍按能力位拒绝。正式版请把宏改为 0 或删除。
+ * ============================================================ */
+#ifndef PARAM_CMD_WRITE_IN_FOC_IDLE_LOCK
+#define PARAM_CMD_WRITE_IN_FOC_IDLE_LOCK  1
+#endif
+
+static uint8_t param_write_allowed(const char *who)
+{
+    static uint8_t s_bypass_warned = 0U;
+
+    if (sys_cap_has(SYS_CAP_PARAM_WRITE) != 0U) {
+        return 1U;
+    }
+
+#if PARAM_CMD_WRITE_IN_FOC_IDLE_LOCK
+    {
+        foc_mode_t m = Foc_Mode_GetMode();
+
+        if ((m == FOC_MODE_IDLE) || (m == FOC_MODE_LOCK)) {
+            if (s_bypass_warned == 0U) {
+                s_bypass_warned = 1U;
+                rt_kprintf("[PARAM] temporary bypass: focmode %d allows write"
+                           " (caps=0x%04X)\n",
+                           (int)m, (unsigned)sys_caps_get());
+            }
+            return 1U;
+        }
+    }
+#endif
+
+    return sys_cap_require(SYS_CAP_PARAM_WRITE, who);
+}
 
 /** 解析 ID：支持 0x0101 / 257 / 名称 */
 static int32_t parse_id(const char *s)
@@ -90,7 +128,7 @@ static void t_param(int argc, char **argv)
             rt_kprintf("[PARAM] usage: t_param set <id|name> <value> [save]\n");
             return;
         }
-        if (sys_cap_require(SYS_CAP_PARAM_WRITE, "t_param set") == 0U) { return; }
+        if (param_write_allowed("t_param set") == 0U) { return; }
 
         id = parse_id(argv[2]);
         if (id < 0) {
@@ -112,7 +150,7 @@ static void t_param(int argc, char **argv)
     if (strcmp(sub, "save") == 0) {
         uint32_t mask;
 
-        if (sys_cap_require(SYS_CAP_PARAM_WRITE, "t_param save") == 0U) { return; }
+        if (param_write_allowed("t_param save") == 0U) { return; }
 
         if (argc >= 3) {
             /* 不带 scope 时默认 all，但 all 不含 fast（避免无意义擦写） */
@@ -135,7 +173,7 @@ static void t_param(int argc, char **argv)
         int      confirm = 0;
         int      i;
 
-        if (sys_cap_require(SYS_CAP_PARAM_WRITE, "t_param erase") == 0U) { return; }
+        if (param_write_allowed("t_param erase") == 0U) { return; }
 
         for (i = 2; i < argc; i++) {
             if (strcmp(argv[i], "confirm") == 0) {
@@ -167,7 +205,7 @@ static void t_param(int argc, char **argv)
             rt_kprintf("[PARAM] usage: t_param fill <motion|system|angle_mech|device|fast> [leave]\n");
             return;
         }
-        if (sys_cap_require(SYS_CAP_PARAM_WRITE, "t_param fill") == 0U) { return; }
+        if (param_write_allowed("t_param fill") == 0U) { return; }
 
         if (argc >= 4) {
             leave = (uint16_t)strtoul(argv[3], RT_NULL, 0);
@@ -183,7 +221,7 @@ static void t_param(int argc, char **argv)
             rt_kprintf("[PARAM] usage: t_param write <motion|system|angle_mech|device|fast> [count]\n");
             return;
         }
-        if (sys_cap_require(SYS_CAP_PARAM_WRITE, "t_param write") == 0U) { return; }
+        if (param_write_allowed("t_param write") == 0U) { return; }
 
         if (argc >= 4) {
             count = (uint16_t)strtoul(argv[3], RT_NULL, 0);
@@ -199,7 +237,7 @@ static void t_param(int argc, char **argv)
             rt_kprintf("[PARAM] usage: t_param erasecnt <motion|system|angle_mech|device|fast> <count>\n");
             return;
         }
-        if (sys_cap_require(SYS_CAP_PARAM_WRITE, "t_param erasecnt") == 0U) { return; }
+        if (param_write_allowed("t_param erasecnt") == 0U) { return; }
 
         count = (uint32_t)strtoul(argv[3], RT_NULL, 0);
         (void)param_store_set_erase_cmd(argv[2], count);

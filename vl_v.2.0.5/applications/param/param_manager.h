@@ -32,12 +32,13 @@ extern "C" {
 /* ============================================================
  * EFM 擦写临界区是否关中断
  * ------------------------------------------------------------
- * 0（默认）：不关中断，擦写期间 tick/CAN 可响应；
- * 1        ：擦写临界区 rt_hw_interrupt_disable()。
- * 用户在方案中裁定：暂时默认关闭。
+ * 0：不关中断，擦写期间 tick/CAN 可响应；
+ * 1（默认）：擦写临界区 rt_hw_interrupt_disable()。
+ * FA04A 参考工程在 param_manager 里对每次擦/写都关中断，
+ * 本工程默认对齐该行为，避免运行期中断取指干扰 EFM。
  * ============================================================ */
 #ifndef PARAM_EFM_CRITICAL_DISABLE_IRQ
-#define PARAM_EFM_CRITICAL_DISABLE_IRQ   0
+#define PARAM_EFM_CRITICAL_DISABLE_IRQ   1
 #endif
 
 /* ============================================================
@@ -133,6 +134,12 @@ void     Param_EfmRead(uint32_t addr, uint8_t *buf, uint32_t len);
 int      Param_EfmEraseSector(uint32_t sector_addr);
 int      Param_EfmWrite(uint32_t addr, const uint8_t *buf, uint32_t len);
 uint32_t Param_Crc32(const uint8_t *data, uint32_t len);
+
+/**
+ * @brief 应用镜像在 Flash 中的结束地址（用于防止擦写覆盖代码）
+ * @return 0 = 当前工具链无法获取（不做重叠检查）
+ */
+uint32_t Param_GetCodeEnd(void);
 
 #ifdef __cplusplus
 }

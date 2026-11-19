@@ -812,7 +812,14 @@ void param_store_dump(uint32_t flags)
     }
 
     if ((flags & PARAM_DUMP_INFO) != 0U) {
+        uint32_t code_end = Param_GetCodeEnd();
+
         rt_kprintf("[PARAM] ===== storage status =====\n");
+        if (code_end != 0U) {
+            rt_kprintf("[PARAM] app code_end=0x%08lX, param area starts 0x%08lX\n",
+                       (unsigned long)code_end,
+                       (unsigned long)PARAM_SEC_ADDR(PARAM_SEC_MOTION));
+        }
         for (i = 0U; i < PARAM_GROUP_COUNT; i++) {
             dump_info_one(&s_groups[i]);
         }

@@ -71,7 +71,15 @@ CRC32：多项式 `0xEDB88320`，初值 `0xFFFFFFFF`，结果异或 `0xFFFFFFFF`
 
 `group` 取值：`motion`、`system`、`angle_mech`（`am`）、`device`（`dev`）、`fast`。
 
-前提：**电机必须停机**（IDLE/FAULT）。RUNNING / RAMPING / BRAKING 时所有写/擦指令都会拒绝。若提示权限不足，先切到维护/工厂模式（`t_wmode` / `t_cfg` 权限由 `SYS_CAP_PARAM_WRITE` 控制）。
+前提：**电机必须停机**（IDLE/FAULT）。RUNNING / RAMPING / BRAKING 时所有写/擦指令都会拒绝。
+
+【临时调试旁路】WORK 模式默认没有 `PARAM_WRITE`。为便于现场验证，`t_param` 的写命令在 FOC 处于 `focmode 0`（IDLE）或 `focmode 1`（LOCK）时临时放行：
+
+```
+[PARAM] temporary bypass: focmode 0 allows write (caps=0x0193)
+```
+
+其余 FOC 模式（2/3/4/5/6/7）仍按能力位拒绝。该行为由 `param_cmd.c` 的 `PARAM_CMD_WRITE_IN_FOC_IDLE_LOCK` 控制，正式版应改为 0。`t_cfg` 等其它命令不受此旁路影响。
 
 ---
 
@@ -239,6 +247,9 @@ latest    = curr_addr - s_cfg_xxx.record_size
 
 | 现象 | 排查 |
 | --- | --- |
+| `program FAILED ... (ret=-1)` | EFM 擦写缺 `EFM_SetBusStatus(EFM_BUS_HOLD)`，中断取指与 Flash 操作冲突（PGMISMTCH）；已在 `param_port_efm.c` 修复 |
+| 擦除时 HardFault（pc=0xfffffffe） | 首先确认固件镜像没有占用参数扇区：上电 `storage status` 会打印 `app code_end=0x...`，必须小于 `0x00070000`；擦/写低于 code_end 的地址会被拒绝并打印 `refuse erase/write ... overlaps code` |
+| `app code_end` 大于 0x70000 | 固件已压到参数区，必须裁剪代码或重新划分参数区，不能继续擦写 |
 | 重启后 `src=DEFAULT` | 没找到有效记录：检查 head/tail/CRC；首次烧录属正常 |
 | `left` 不减少 | 电机在运行（被拒绝）；或写 Flash 失败，看 `[PARAM] program FAILED` |
 | 一直不换扇 | 确认 `t_param info` 的 `erase>=10000`（fast）；慢区本来就不换扇 |
