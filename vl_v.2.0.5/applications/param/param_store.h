@@ -80,6 +80,10 @@ int  param_store_fill_cmd(const char *group, uint16_t leave);
 /* MSH 精确写入：对 group 只写 count 次（默认 1），用于"某区只存一次"或手动触发轮转。 */
 int  param_store_write_cmd(const char *group, uint16_t count);
 
+/* MSH 设置某组当前扇区的擦除次数（只改 RAM，不写 Flash）。
+ * fast 组设为 >= PARAM_FAST_MAX_ERASE_LIFE(10000) 后，下一次写入会换扇区。 */
+int  param_store_set_erase_cmd(const char *group, uint32_t count);
+
 /* ============================================================
  * ANGLE_MECH：sys_param + mech active 行
  * ============================================================ */

@@ -1055,3 +1055,54 @@ int param_store_write_cmd(const char *group, uint16_t count)
 
     return rc;
 }
+
+/* ============================================================
+ * 设置当前扇区擦除次数（测试寿命轮转用）
+ * ============================================================ */
+int param_store_set_erase_cmd(const char *group, uint32_t count)
+{
+    param_group_t *g;
+    param_stat_t   st;
+    uint32_t       old;
+
+    if (s_inited == 0U) {
+        (void)param_store_init();
+    }
+
+    g = group_find(group);
+    if (g == RT_NULL) {
+        rt_kprintf("[PARAM] erasecnt: unknown group '%s'\n",
+                   (group != RT_NULL) ? group : "?");
+        rt_kprintf("  usage: t_param erasecnt <motion|system|angle_mech|device|fast> <count>\n");
+        return -1;
+    }
+    if (motor_is_busy() != 0) {
+        rt_kprintf("[PARAM] motor is running, erasecnt refused, stop first\n");
+        return -2;
+    }
+
+    rt_mutex_take(&s_lock, RT_WAITING_FOREVER);
+    old = g->rt->erase_count;
+    g->rt->erase_count = count;
+    rt_mutex_release(&s_lock);
+
+    rt_kprintf("[PARAM] %s erase_count: %lu -> %lu\n",
+               g->name, (unsigned long)old, (unsigned long)count);
+
+    if (g->cfg->sec_start == g->cfg->sec_end) {
+        rt_kprintf("[PARAM] '%s' is single-sector, erasecnt only affects diagnostics\n",
+                   g->name);
+    } else if ((g->cfg->max_erase_life != 0U) &&
+               (count >= g->cfg->max_erase_life)) {
+        rt_kprintf("[PARAM] next write on '%s' will rotate sector %u -> %u\n",
+                   g->name, (unsigned)g->rt->curr_sec,
+                   (g->rt->curr_sec == g->cfg->sec_end)
+                       ? (unsigned)g->cfg->sec_start
+                       : (unsigned)(g->rt->curr_sec - 1U));
+    }
+
+    Param_GetStat(g->cfg, g->rt, &st);
+    dump_info_one(g);
+
+    return 0;
+}

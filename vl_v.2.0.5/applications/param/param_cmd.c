@@ -10,6 +10,8 @@
  *   t_param set <id|name> <val> [save]   改 RAM；带 save 立即落盘
  *   t_param save [scope]         立即落盘，scope=all|cfg|am|dev|fast
  *   t_param erase [scope] confirm        擦除后把当前 RAM 值重新写入
+ *   t_param write <group> [count]        对某区精确写入 count 次（默认 1）
+ *   t_param erasecnt <group> <n>         设置当前扇区擦除次数（触发寿命轮转）
  *   t_param fill <group> [leave] 重复写入，直到当前扇区只剩 leave 个槽位
  *
  * 所有打印均为整型/ASCII，不使用中文与浮点（RTT 控制台限制）。
@@ -190,6 +192,20 @@ static void t_param(int argc, char **argv)
         return;
     }
 
+    if (strcmp(sub, "erasecnt") == 0) {
+        uint32_t count;
+
+        if (argc < 4) {
+            rt_kprintf("[PARAM] usage: t_param erasecnt <motion|system|angle_mech|device|fast> <count>\n");
+            return;
+        }
+        if (sys_cap_require(SYS_CAP_PARAM_WRITE, "t_param erasecnt") == 0U) { return; }
+
+        count = (uint32_t)strtoul(argv[3], RT_NULL, 0);
+        (void)param_store_set_erase_cmd(argv[2], count);
+        return;
+    }
+
     if (sys_cap_require(SYS_CAP_DIAG_READ, "t_param") == 0U) { return; }
 
     if ((strcmp(sub, "dump") == 0) || (strcmp(sub, "all") == 0)) {
@@ -210,7 +226,9 @@ static void t_param(int argc, char **argv)
     rt_kprintf("  set <id|name> <val> [save]\n");
     rt_kprintf("  save [all|cfg|am|dev|fast]\n");
     rt_kprintf("  erase [all|slow|fast] confirm\n");
+    rt_kprintf("  write <motion|system|angle_mech|device|fast> [count]\n");
+    rt_kprintf("  erasecnt <motion|system|angle_mech|device|fast> <n>\n");
     rt_kprintf("  fill <motion|system|angle_mech|device|fast> [leave]\n");
 }
 
-MSH_CMD_EXPORT_ALIAS(t_param, t_param, param storage dump/set/save/erase/fill);
+MSH_CMD_EXPORT_ALIAS(t_param, t_param, param storage dump/set/save/erase/write/erasecnt/fill);
