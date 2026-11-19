@@ -49,6 +49,7 @@ extern int  eeprom_init(void);
 extern int  kb_init(void);
 extern int  wdt_monitor_init(void);
 extern int  log_color_init(void);        /* 彩色日志（2026-11-10）*/
+extern void param_store_boot_dump(void); /* 参数存储自检打印 */
 
 extern void app_main_thread_entry(void *param);
 extern void bg_scheduler_thread_entry(void *param);
@@ -121,6 +122,21 @@ static int boot_foc_ctrl_init(void)
 static int boot_vofa_init(void)
 {
     return foc_vofa_init();
+}
+
+/* ===================== 参数存储自检 ===================== */
+/**
+ * @brief 上电打印一次各组存储状态与当前配置值
+ *
+ * 为什么放在启动表末尾附近：
+ *   - storage / sys_config / mech_cfg / mode 都已初始化，读到的才是最终值；
+ *   - 线程尚未创建，打印不会与其他模块输出交错。
+ * 只读诊断，失败不阻断启动（BOOT_OPTIONAL）。
+ */
+static int boot_param_dump(void)
+{
+    param_store_boot_dump();
+    return 0;
 }
 
 /* ===================== 线程创建 ===================== */
@@ -269,6 +285,12 @@ const boot_step_t g_boot_steps[] = {
      * 为什么在 threads 之前：
      *   线程启动后才会有并发日志，锁要先就绪。 */
     {"log_color",        log_color_init,       BOOT_LV_SERVICE,    BOOT_OPTIONAL, 0, {NULL}},
+    /* 参数存储自检打印（2026-11-19）
+     * 所有配置模块就绪后自动打印一次：
+     *   各记录所在扇区、单条大小、当前扇区剩余槽位、擦除次数、seq，
+     *   以及 motion/system/angle_mech/device/fast 的当前值（含 sys_config ID）。
+     * 只读，不写 Flash；失败/被跳过不影响启动。 */
+    {"param_dump",       boot_param_dump,      BOOT_LV_SERVICE,    BOOT_OPTIONAL, 0, {"storage", "sys_config", "mech_cfg"}},
     {"threads",          boot_create_threads,  BOOT_LV_THREAD,     BOOT_FATAL,    0, {"ipc_center"}},
     {"tick_50ms",        tick_50ms_init,       BOOT_LV_THREAD,     BOOT_FATAL,    0, {"threads"}},
     {"wdt",              wdt_monitor_init,     BOOT_LV_WDT,        BOOT_FATAL,    0, {"threads"}},

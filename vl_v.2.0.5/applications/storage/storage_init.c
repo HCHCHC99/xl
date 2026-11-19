@@ -24,7 +24,7 @@
 
 #include "../sys_param/sys_param.h"
 #include "../device_info/device_info.h"
-#include "../ota_shared/ota_shared.h"
+#include "../param/param_store.h"
 #include "framework/state_engine/sm_assert.h"
 #include <rtthread.h>
 
@@ -38,14 +38,19 @@ int storage_all_init(void)
 {
     rt_err_t ret;
 
+    /* 新存储方案：param 引擎 + 各业务模块的关键量记录。
+     * 旧 storage/flash_drv 仅保留给未迁移模块，不再参与启动。 */
+
+    ret = param_store_init();
+    SM_ASSERT_MSG(ret == 0, "param_store init failed");
+
     ret = sys_param_init();
     SM_ASSERT_MSG(ret == RT_EOK, "sys_param init failed");
 
     ret = device_info_init();
     SM_ASSERT_MSG(ret == RT_EOK, "device_info init failed");
 
-    ret = ota_shared_init();
-    SM_ASSERT_MSG(ret == RT_EOK, "ota_shared init failed");
+    /* ota_shared 暂不初始化：OTA 不参与本次方案，且其扇区 62 已另有用途。 */
 
     rt_kprintf("[Storage] All modules initialized.\n\n");
     return RT_EOK;

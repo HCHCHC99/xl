@@ -7,9 +7,7 @@
 
 /* 【2026-11-10 彩标 P3】系统参数：保存失败=ERR，降级=WARN，成功=OK */
 #include "../log/log_color.h"
-#include "../storage/storage.h"
-#include "../storage/storage_config.h"
-#include "framework/state_engine/sm_assert.h"
+#include "../param/param_store.h"
 #include <string.h>
 #include <rtthread.h>
 
@@ -30,85 +28,23 @@ sys_param_t g_sys_params = {
     .reserved = 0,
 };
 
-/* 内部存储服务实例 */
-static storage_t g_sys_storage;
-
-/* 本模块独立的 Flash 实例（禁止与其他模块共用，否则扇区地址互相覆盖） */
-static flash_t   s_flash;
+/* 诊断计数（新存储层不再做值去重，skip 恒为 0） */
+static uint32_t s_write_count = 0U;
 
 /* ============================================================
  * 初始化
+ *
+ * 新存储方案：sys_param 关键量与 mech active 行共用 ANGLE_MECH 记录，
+ * 由 param_store 统一打包。默认值已在 param_store_init() 里写入。
  * ============================================================ */
 int sys_param_init(void)
 {
-    const storage_config_t *cfg = storage_find_config("sys_param");
-    rt_err_t ret;
-    uint32_t blk_size;
+    (void)param_store_init();
 
-    SM_ASSERT_PTR(cfg);
+    if (param_store_am_load() != 0) {
+        /* 记录 payload 魔数不符：回静态默认值并落盘 */
+        LOG_WARN("[sys_param] bad record, reset to default\n");
 
-    blk_size = sizeof(sys_param_t) + 8;  /* 数据 + Magic(4) + CRC(4) */
-
-    ret = flash_init(&s_flash,
-                     cfg->sector_addr,
-                     cfg->sector_size,
-                     blk_size,
-                     cfg->magic);
-    if (ret != RT_EOK) return ret;
-
-    ret = storage_init(&g_sys_storage,
-                       &s_flash,
-                       cfg->name,
-                       &g_sys_params,
-                       sizeof(sys_param_t),
-                       cfg->magic,
-                       cfg->cooldown_ms);
-    if (ret != RT_EOK) return ret;
-
-    ret = storage_load(&g_sys_storage);
-    if (ret != RT_EOK) {
-        /* Flash 内容无效（magic/CRC 不符）不阻断启动：
-         * 保留 g_sys_params 的静态默认值，并清除基线使下次 save 必然写入。
-         * 注意 last_data_buf 必须是"与内存值不同"的内容，否则会被值去重跳过。
-         * rec_magic 非零保证了这个"不同" —— 见 sys_param.h 说明。 */
-        LOG_WARN("[sys_param] WARN: flash invalid (%d), using defaults\n", ret);
-        g_sys_storage.is_loaded = 1U;
-        memset(g_sys_storage.last_data_buf, 0x00, sizeof(sys_param_t));
-    }
-    else if (storage_is_empty(&g_sys_storage) != 0U) {
-        /* ============================================================
-         * 【甲-1 / DES-STORAGE-FIX-V1.0】空分区：写入静态默认值
-         * ------------------------------------------------------------
-         * storage_load() 空 Flash 时返回 RT_EOK 且不填充 data_ptr，
-         * 上面的 ret!=RT_EOK 分支抓不到这种情况，必须单独判断。
-         *
-         * 必须先清 last_data_buf：storage_load 空分区分支已执行
-         *   memcpy(last_data_buf, data_ptr, size)      (storage.c:121)
-         * 而 storage_save 第一步是值去重
-         *   if (memcmp(data_ptr, last_data_buf, size) == 0) return;  (storage.c:185)
-         * 不清则 save 被静默跳过，默认值永远写不进去。
-         * 清成 0 后能"不同"，靠的是 rec_magic 非零（2026-11-03 新增）。
-         *
-         * 写入内容 = g_sys_params 的静态初值，
-         * 它在 storage_load 之前就已就位，正是我们要的"默认配置"。 */
-        rt_kprintf("[sys_param] empty partition, writing defaults...\n");
-        memset(g_sys_storage.last_data_buf, 0x00, sizeof(sys_param_t));
-
-        if (sys_param_save() == RT_EOK) {
-            LOG_OK("[sys_param] defaults written to flash\n");
-        } else {
-            LOG_ERR("[sys_param] WARN: default save FAILED\n");
-        }
-    }
-    else if (g_sys_params.rec_magic != SYS_PARAM_REC_MAGIC) {
-        /* ---- 记录损坏：CRC 过了但内容不是本版本写的（旧格式/位翻转）----
-         * 回默认值并落盘，避免把脏数据当成有效零点/标定标志使用。
-         * 这一点对本模块尤其重要：错误的 enc_zero_raw 会让游标解算偏移。 */
-        LOG_WARN("[sys_param] bad rec_magic 0x%08X (expect 0x%08X), reset to default\n",
-                   (unsigned)g_sys_params.rec_magic,
-                   (unsigned)SYS_PARAM_REC_MAGIC);
-
-        /* 恢复静态默认值：逐个字段复位，保持与 g_sys_params 初值一致 */
         g_sys_params.rec_magic              = SYS_PARAM_REC_MAGIC;
         g_sys_params.lift_zero_voltage_mv  = 2203U;
         g_sys_params.lift_encoder_zero_raw = 0;
@@ -122,12 +58,7 @@ int sys_param_init(void)
         g_sys_params.teeth_clear_action     = TEETH_CLEAR_KEEP;
         g_sys_params.reserved               = 0U;
 
-        memset(g_sys_storage.last_data_buf, 0x00, sizeof(sys_param_t));
-        if (sys_param_save() == RT_EOK) {
-            LOG_OK("[sys_param] reset written to flash\n");
-        } else {
-            LOG_ERR("[sys_param] WARN: reset save FAILED\n");
-        }
+        (void)param_store_am_save();
     }
 
     rt_kprintf("[sys_param] Loaded: zero=%dmV, teeth=%d, calib=%d\n\n",
@@ -140,12 +71,13 @@ int sys_param_init(void)
 
 int sys_param_save(void)
 {
-    return storage_save(&g_sys_storage);
+    s_write_count++;
+    return param_store_am_save();
 }
 
 int sys_param_load(void)
 {
-    return storage_load(&g_sys_storage);
+    return param_store_am_load();
 }
 
 sys_param_t* sys_param_get(void)
@@ -155,7 +87,8 @@ sys_param_t* sys_param_get(void)
 
 void sys_param_get_stats(uint32_t *write_count, uint32_t *skip_count)
 {
-    storage_get_stats(&g_sys_storage, write_count, skip_count);
+    if (write_count != RT_NULL) { *write_count = s_write_count; }
+    if (skip_count  != RT_NULL) { *skip_count  = 0U; }
 }
 
 /* ============================================================

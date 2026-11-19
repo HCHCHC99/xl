@@ -6,9 +6,7 @@
 
 #include "sys_config.h"
 
-#include "../storage/storage.h"
-#include "../storage/storage_config.h"
-#include "../storage/flash_drv.h"     /* FLASH_BLK_SIZE_MAX（2026-11-10） */
+#include "../param/param_store.h"
 #include "../sys_param/sys_param.h"
 #include "../angle/mech_cfg_store.h"
 
@@ -393,14 +391,12 @@ static const cfg_def_t s_cfg_def[] = {
 /* ============================================================
  * 2. 运行时状态
  * ============================================================ */
-static storage_t        s_storage;
-static flash_t          s_flash;
-static sys_config_blob_t s_blob;            /* 落盘镜像（load/save 中转） */
 static cfg_item_t        s_rt[CFG_MAX_ITEMS]; /* RAM 当前生效值 */
 static cfg_src_t         s_src[CFG_MAX_ITEMS];/* 每项来源 */
 static uint8_t           s_dirty[CFG_MAX_ITEMS];
 static uint8_t           s_inited = 0U;
 static uint16_t          s_rt_count = 0U;     /* s_rt 实际项数 */
+static uint32_t          s_write_count = 0U;  /* 诊断：落盘次数 */
 
 /* ============================================================
  * 3. 工具
@@ -474,10 +470,6 @@ static uint8_t value_in_range(const cfg_item_t *it, const cfg_def_t *d)
 /**
  * @brief 加载全部默认值到 RAM
  */
-/* 前向声明：sys_config_init() 的"空分区写默认值"分支要用到它，
- * 而它的定义在文件后半部分（打包逻辑与 save 放在一起便于对照）。 */
-static int32_t sys_config_pack_blob(void);
-
 static void load_all_defaults(void)
 {
     uint16_t i;
@@ -500,167 +492,33 @@ static void load_all_defaults(void)
  * ============================================================ */
 int sys_config_init(void)
 {
-    const storage_config_t *sc;
-    rt_err_t ret;
-    uint32_t blk_size;
     uint16_t i;
-    uint16_t n_ok = 0U, n_bad = 0U, n_unknown = 0U;
 
-    /* ---------- ① 先无条件加载默认值 ----------
-     * 这一步是"默认值永远是兜底"的落点。
-     * 无论后续 Flash 读取成败，此刻 RAM 里已有一套完整可用参数。 */
+    /* ① 先无条件加载默认值：默认值永远是兜底 */
     load_all_defaults();
 
-    sc = storage_find_config("sys_config");
-    if (sc == RT_NULL) {
-        rt_kprintf("[CFG] ERROR: 'sys_config' not in storage config table\n");
-        rt_kprintf("[CFG] running on ALL DEFAULTS\n");
-        s_inited = 1U;
-        return -1;
-    }
-
-    blk_size = (uint32_t)sizeof(sys_config_blob_t) + 8U;   /* + magic4 + crc4 */
-
-    /* 【2026-11-10 已修复 / F-3 关闭登记】
-     * 历史上此处硬编码 1024，CFG_MAX_ITEMS 扩到 128 后 blk_size=1040B 会被误拒，
-     * 表现为 [CFG] ERROR: blk_size=1040 > 1024, refuse → sys_config FAIL → 依赖模块 SKIP。
-     * 现统一引用 flash_drv.h 的 FLASH_BLK_SIZE_MAX(2048)，1040 < 2048 ⇒ 不拒绝。
-     * flash_drv.h 注释实测：sys_config 1040、其余分区 ≤244，扇区 8192B 单块可容纳。
-     *
-     * ⚠️ 真实容量边界（2026-11-14 核实）：2048 上限对应约 CFG_MAX_ITEMS ≤ 250。
-     *    若将来扩到 256，需重新核算 blk_size 与扇区布局（本批不动）。 */
-    if (blk_size > FLASH_BLK_SIZE_MAX) {
-        rt_kprintf("[CFG] ERROR: blk_size=%u > %u, refuse\n",
-                   (unsigned)blk_size, (unsigned)FLASH_BLK_SIZE_MAX);
-        s_inited = 1U;
-        return -1;
-    }
-
-    ret = flash_init(&s_flash, sc->sector_addr, sc->sector_size,
-                     blk_size, sc->magic);
-    if (ret != RT_EOK) {
-        rt_kprintf("[CFG] flash_init failed (%d) -> ALL DEFAULTS\n", (int)ret);
-        s_inited = 1U;
-        return -1;
-    }
-
-    memset(&s_blob, 0, sizeof(s_blob));
-
-    ret = storage_init(&s_storage, &s_flash, sc->name,
-                       &s_blob, sizeof(sys_config_blob_t),
-                       sc->magic, sc->cooldown_ms);
-    if (ret != RT_EOK) {
-        rt_kprintf("[CFG] storage_init failed (%d) -> ALL DEFAULTS\n", (int)ret);
-        s_inited = 1U;
-        return -1;
-    }
-
-    /* ---------- ② 尝试读 Flash ----------
-     * 读失败时 storage 内部会保留调用方当前值，
-     * 也就是我们刚填好的默认值 —— 这里不需要额外处理。 */
-    ret = storage_load(&s_storage);
-    if (ret != RT_EOK) {
-        rt_kprintf("[CFG] flash empty/invalid (%d) -> ALL DEFAULTS\n", (int)ret);
-        s_inited = 1U;
-        return 0;
-    }
-
-    /* ---------- ②' 【甲-1】空分区：把默认值写入配置区 ----------
-     * 【2026-11-03 DES-STORAGE-FIX-V1.0】
-     *
-     * 为什么必须单独判断：
-     *   storage_load() 在空 Flash 时返回 RT_EOK 且不填充 data_ptr，
-     *   光看返回值无法区分"加载成功"和"分区为空"。
-     *   新增 storage_is_empty() 提供显式判据。
-     *
-     * 为什么必须清 last_data_buf：
-     *   storage_load() 空分区分支执行了
-     *       memcpy(last_data_buf, data_ptr, size)      (storage.c:121)
-     *   而 storage_save() 第一步就是值去重
-     *       if (memcmp(data_ptr, last_data_buf, size) == 0) return;   (storage.c:185)
-     *   ⇒ 直接 save 会被静默跳过，默认值永远写不进去。
-     *   把 last_data_buf 清成与默认值不同的内容即可绕过。
-     *
-     * 为什么在这里写而不是在物理层写：
-     *   物理层不知道业务默认值是什么（甲-1 方案）。 */
-    if (storage_is_empty(&s_storage) != 0U) {
-        rt_kprintf("[CFG] empty partition, writing defaults...\n");
-
-        /* 让值去重失效，保证真的落盘。
-         * storage_load 空分区分支已执行 memcpy(last_data_buf, data_ptr),
-         * 不清则 storage_save 会被 memcmp 去重静默跳过。 */
-        memset(s_storage.last_data_buf, 0x00, sizeof(sys_config_blob_t));
-
-        /* save 内部会检查 s_inited，故先置位 */
-        s_inited = 1U;
-
-        if (sys_config_save() == 0) {
-            rt_kprintf("[CFG] defaults written to flash\n");
-        } else {
-            rt_kprintf("[CFG] WARN: default save FAILED, will retry on 't_cfg save'\n");
-        }
-        return 0;
-    }
-
-    /* ---------- ③ 表头合理性 ---------- */
-    if (s_blob.count > CFG_MAX_ITEMS) {
-        rt_kprintf("[CFG] bad count=%u > %u -> ALL DEFAULTS\n",
-                   (unsigned)s_blob.count, (unsigned)CFG_MAX_ITEMS);
-        s_inited = 1U;
-        return 0;
-    }
-
-    /* ---------- ④ 逐项合并：有效项覆盖默认，无效项保留默认 ----------
-     * 关键：判定粒度是"项"，不是"块"。
-     * 块级 CRC 由 storage 层保证（它已校验过 magic+crc），
-     * 这里再做业务级校验：ID 存在性 + 类型一致性 + 值范围。 */
-    for (i = 0U; i < s_blob.count; i++) {
-        const cfg_item_t *fi = &s_blob.item[i];
-        int32_t idx;
-        const cfg_def_t *d;
-
-        idx = find_def_index(fi->id);
-        if (idx < 0) {
-            /* 陌生 ID：可能是降级固件读到了新参数，直接忽略 */
-            n_unknown++;
-            continue;
-        }
-
-        d = &s_cfg_def[idx];
-
-        /* 只读镜像项不从 Flash 恢复 —— 它们的真值在别处 */
-        if ((d->flags & CFG_F_READONLY) != 0U) {
-            continue;
-        }
-
-        if (fi->type != d->type) {
-            rt_kprintf("[CFG] id=0x%04X type mismatch (blob=%u def=%u) -> default\n",
-                       (unsigned)fi->id, (unsigned)fi->type, (unsigned)d->type);
-            n_bad++;
-            continue;
-        }
-
-        if (value_in_range(fi, d) == 0U) {
-            rt_kprintf("[CFG] id=0x%04X out of range -> default\n",
-                       (unsigned)fi->id);
-            n_bad++;
-            continue;
-        }
-
-        /* 采用 Flash 值 */
-        s_rt[idx]   = *fi;
-        s_src[idx]  = CFG_SRC_FLASH;
-        s_dirty[idx] = 0U;
-        n_ok++;
-    }
-
-    /* ---------- ⑤ 不自动回写 ----------
-     * 缺失项与无效项只在 RAM 用默认值，不写 Flash。
-     * 避免"读一次写一次"消耗擦写寿命，也避免把临时判定固化。 */
-    rt_kprintf("[CFG] loaded: %u ok, %u fallback-default, %u unknown-id\n",
-               (unsigned)n_ok, (unsigned)n_bad, (unsigned)n_unknown);
-
+    /* ② 新存储：从 MOTION/SYSTEM 记录恢复关键项，逐项做范围校验。
+     * s_inited 必须先置位，set_raw 才有生效路径。 */
     s_inited = 1U;
+
+    if (param_store_cfg_load() == 0) {
+        rt_kprintf("[CFG] key params loaded from flash\n");
+    } else {
+        rt_kprintf("[CFG] no valid key record, using defaults\n");
+        if (param_store_cfg_was_default() != 0) {
+            (void)param_store_save_now(PARAM_REQ_CFG);
+            rt_kprintf("[CFG] defaults written to flash\n");
+        }
+    }
+
+    /* 只读镜像项始终以真值为准 */
+    sys_config_refresh_mirrors();
+
+    for (i = 0U; i < s_rt_count; i++) {
+        s_dirty[i] = 0U;
+    }
+
+    rt_kprintf("[CFG] loaded: %u runtime items\n", (unsigned)s_rt_count);
     return 0;
 }
 
@@ -668,53 +526,28 @@ int sys_config_init(void)
  * 5. 保存 / 加载
  * ============================================================ */
 
-/**
- * @brief 把 RAM 表 s_rt[] 打包进 s_blob（落盘镜像）
- * @note  抽出成独立函数，供 save() 与"空分区写默认值"两条路径共用，
- *        避免两处重复打包逻辑（C-05 两处定义漂移）。
- */
-static int32_t sys_config_pack_blob(void)
-{
-    uint16_t i;
-    uint16_t n = 0U;
-
-    if (s_rt_count == 0U) { return -1; }
-
-    /* 同步只读镜像项的当前真值，让落盘内容与实物一致（便于诊断） */
-    sys_config_refresh_mirrors();
-
-    memset(&s_blob, 0, sizeof(s_blob));
-    s_blob.version = 1U;
-
-    for (i = 0U; i < s_rt_count; i++) {
-        s_blob.item[n++] = s_rt[i];
-    }
-    s_blob.count = n;
-
-    return 0;
-}
-
 int sys_config_save(void)
 {
     uint16_t i;
 
     if (s_inited == 0U) { return -1; }
 
-    if (sys_config_pack_blob() != 0) { return -1; }
+    /* 同步只读镜像项的当前真值 */
+    sys_config_refresh_mirrors();
 
-    /* CRC 由 storage 层统一计算（它覆盖整个 data 区），此处不重复 */
-    if (storage_save(&s_storage) != RT_EOK) {
-        rt_kprintf("[CFG] SAVE FAILED, dirty kept (data still in RAM)\n");
+    /* 交给存储层异步落盘：运行中会延后到停机窗口 */
+    if (param_store_cfg_save() != 0) {
+        rt_kprintf("[CFG] SAVE request failed, data still in RAM\n");
         return -1;
     }
 
+    s_write_count++;
     for (i = 0U; i < s_rt_count; i++) {
         s_dirty[i] = 0U;
         if (s_src[i] == CFG_SRC_RAM) { s_src[i] = CFG_SRC_FLASH; }
     }
 
-    rt_kprintf("[CFG] SAVED %u items (%u B)\n",
-               (unsigned)s_blob.count, (unsigned)sizeof(sys_config_blob_t));
+    rt_kprintf("[CFG] SAVED %u key items (queued)\n", (unsigned)s_rt_count);
     return 0;
 }
 
@@ -773,10 +606,10 @@ int sys_config_erase(void)
 {
     if (s_inited == 0U) { return -1; }
 
-    rt_kprintf("[CFG] erasing whole blob...\n");
+    rt_kprintf("[CFG] erasing storage...\n");
     load_all_defaults();
 
-    if (storage_save(&s_storage) != RT_EOK) {
+    if (param_store_save_now(PARAM_REQ_CFG) != 0) {
         rt_kprintf("[CFG] erase failed, defaults are in RAM only\n");
         return -1;
     }
@@ -975,22 +808,16 @@ const char *sys_config_src_name(cfg_src_t s)
 
 void sys_config_dump_stats(void)
 {
-    uint32_t wc = 0U, sk = 0U;
-
     if (s_inited == 0U) {
         rt_kprintf("[CFG] not initialized\n");
         return;
     }
 
-    storage_get_stats(&s_storage, &wc, &sk);
-
     rt_kprintf("[CFG] items=%u (def table=%u)  dirty=%u\n",
                (unsigned)s_rt_count, (unsigned)CFG_DEF_COUNT,
                (unsigned)sys_config_dirty_count());
-    rt_kprintf("[CFG] writes=%u  skipped=%u  blob=%u B  blk=%u B\n",
-               (unsigned)wc, (unsigned)sk,
-               (unsigned)sizeof(sys_config_blob_t),
-               (unsigned)(sizeof(sys_config_blob_t) + 8U));
+    rt_kprintf("[CFG] writes=%u  persist=motion+system records\n",
+               (unsigned)s_write_count);
 }
 
 /* ============================================================

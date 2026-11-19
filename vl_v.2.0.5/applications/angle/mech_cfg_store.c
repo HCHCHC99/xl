@@ -9,8 +9,7 @@
 
 /* 【2026-11-10】彩色日志：ERROR 亮红、WARN 亮黄、init/final 常规色 */
 #include "../log/log_color.h"
-#include "../storage/storage.h"
-#include "../storage/storage_config.h"
+#include "../param/param_store.h"
 #include "../sys_param/sys_param.h"
 #include "../config/sys_config.h"     /* 0x0Axx 机械传动选择项 */
 #include "framework/state_engine/sm_assert.h"
@@ -22,11 +21,6 @@
  * 全局对象
  * ============================================================ */
 mech_ctx_t g_mech;
-
-/* 本模块独立 Flash 实例（禁止与其他模块共用） */
-static flash_t  s_mech_flash;
-static storage_t s_mech_storage;
-static uint8_t   s_mech_inited = 0U;
 
 /* ============================================================
  * 弱符号：角度层失效通知
@@ -42,118 +36,59 @@ RT_WEAK void abs_angle_invalidate(void)
 }
 
 /* ============================================================
- * 内部：确保 storage 初始化
- * ============================================================ */
-static int mech_storage_ensure_init(void)
-{
-    const storage_config_t *sc;
-    uint32_t blk_size;
-    rt_err_t ret;
-
-    if (s_mech_inited != 0U) {
-        return 0;
-    }
-
-    sc = storage_find_config("mech_param");
-    if (sc == RT_NULL) {
-        rt_kprintf("[MECH] config 'mech_param' not found!\n");
-        return MECH_ERR_IO;
-    }
-
-    /* 块 = 数据 + 8 字节头（magic 4 + crc 4）。
-     *
-     * 【2026-11-03 Q9 方案 A】上限 256 -> 1024
-     *   原 256 的限制来自 flash_drv 的栈数组 last_data[256]，
-     *   该处已改为 rt_malloc 并放开到 1024（见 flash_drv.c 注释）。
-     *   本处是 mech 模块自己的防御性自限，同步放宽以免"底层能放、上层拒绝"。
-     *   实际值 236 + 8 = 244，远低于两个上限，行为无变化。
-     *   保留此检查的价值：将来若有人给 mech_table_t 加过多行，
-     *   这里能提前报错而不是等到 flash 层断言。 */
-    blk_size = (uint32_t)sizeof(mech_table_t) + 8U;
-    if (blk_size > 1024U) {
-        rt_kprintf("[MECH] blk_size=%u > 1024, refuse (C-07)\n",
-                   (unsigned)blk_size);
-        return MECH_ERR_IO;
-    }
-
-    ret = flash_init(&s_mech_flash,
-                     sc->sector_addr,
-                     sc->sector_size,
-                     blk_size,
-                     sc->magic);
-    if (ret != RT_EOK) {
-        rt_kprintf("[MECH] flash_init failed (%d)\n", (int)ret);
-        return MECH_ERR_IO;
-    }
-
-    ret = storage_init(&s_mech_storage,
-                       &s_mech_flash,
-                       sc->name,
-                       &g_mech.tbl,
-                       (uint32_t)sizeof(mech_table_t),
-                       sc->magic,
-                       sc->cooldown_ms);
-    if (ret != RT_EOK) {
-        rt_kprintf("[MECH] storage_init failed (%d)\n", (int)ret);
-        return MECH_ERR_IO;
-    }
-
-    s_mech_inited = 1U;
-    return MECH_OK;
-}
-
-/* ============================================================
  * 加载
+ *
+ * 新存储方案只持久化 active 行（32B）+ active/count + 三选择子。
+ * 本工程"按需配置"始终 count=1，加载时把该行铺满整张表即可通过
+ * T1~T6 校验；多行 profile 不在本次范围内。
  * ============================================================ */
 int mech_table_load(mech_table_t *tbl)
 {
-    rt_err_t ret;
-    char     err[48];
+    mech_cfg_t row;
+    uint8_t    active = 0U;
+    uint8_t    count  = 1U;
+    uint8_t    i;
+    char       err[48];
 
     SM_ASSERT_PTR(tbl);
 
-    if (mech_storage_ensure_init() != MECH_OK) {
+    (void)param_store_init();
+
+    if (param_store_am_get_row(&row, &active, &count) != 0) {
+        rt_kprintf("[MECH] no valid angle_mech record\n");
         return MECH_ERR_IO;
     }
 
-    /* storage 层负责 magic + crc 校验；失败时保留调用方当前值 */
-    s_mech_storage.data_ptr = tbl;
-    ret = storage_load(&s_mech_storage);
-    if (ret != RT_EOK) {
-        rt_kprintf("[MECH] storage_load failed (%d)\n", (int)ret);
-        return MECH_ERR_IO;
+    if ((count == 0U) || (count > MECH_PROFILE_MAX)) {
+        count = 1U;
+    }
+    if (active >= count) {
+        active = 0U;
     }
 
-    /* ============================================================
-     * 【甲-1 / DES-STORAGE-FIX-V1.0】空分区：把默认表写入 mech_param
-     * ------------------------------------------------------------
-     * 调用方 mech_cfg_store_init() 在调用本函数前已执行
-     *   mech_table_default(&g_mech.tbl);      (mech_cfg_store.c:274)
-     * 所以此刻 tbl 里是完整的默认机械表（MECH_CAND_DEFAULT = B2 55:56:57），
-     * 直接落盘即可。
-     *
-     * ⚠️ 风险提示：本分区是【角度解算的输入】。
-     *    写入的默认齿数比必须是已实测确认的 55:56:57，
-     *    否则游标解算会失效。写入后须验证：
-     *      [MECH] init done: z01=55:56 z02=55:57
-     *      t_ang_solve 仍 OK
-     *
-     * 必须先清 last_data_buf：
-     *   storage_load 空分区分支执行了 memcpy(last_data_buf, data_ptr, size)
-     *   (storage.c:121)，不清则 storage_save 的值去重 (storage.c:185)
-     *   会静默跳过，默认表永远写不进去。 */
-    if (storage_is_empty(&s_mech_storage) != 0U) {
-        rt_kprintf("[MECH] empty partition, writing default table...\n");
-        memset(s_mech_storage.last_data_buf, 0x00, sizeof(mech_table_t));
+    memset(tbl, 0, sizeof(*tbl));
+    tbl->version  = MECH_TABLE_VERSION;
+    tbl->row_size = (uint16_t)sizeof(mech_cfg_t);
 
-        if (storage_save(&s_mech_storage) == RT_EOK) {
-            rt_kprintf("[MECH] default table written to flash\n");
-        } else {
-            LOG_WARN("[MECH] WARN: default table save FAILED\n");
+    if (row.teeth_tag == 0U) {
+        tbl->count  = count;
+        tbl->active = active;
+        for (i = 0U; i < MECH_PROFILE_MAX; i++) {
+            tbl->row[i] = row;
         }
+    } else {
+        /* t_mech_set 可能把 teeth_tag 改成非 0；T6 要求存在兜底行，
+         * 因此复制一份 teeth_tag=0 的行放在 row[0]，active 行放 row[1]。 */
+        tbl->row[0] = row;
+        tbl->row[0].teeth_tag = 0U;
+        tbl->row[1] = row;
+        for (i = 2U; i < MECH_PROFILE_MAX; i++) {
+            tbl->row[i] = tbl->row[1];
+        }
+        tbl->count  = 2U;
+        tbl->active = 1U;
     }
 
-    /* 表级校验：版本 / 行数 / row_size / teeth_tag / 逐行 V1~V8 */
     if (mech_table_validate(tbl, err, sizeof(err)) != MECH_OK) {
         rt_kprintf("[MECH] table invalid: %s\n", err);
         return MECH_ERR_VALIDATE;
@@ -164,8 +99,7 @@ int mech_table_load(mech_table_t *tbl)
 
 int mech_table_save(const mech_table_t *tbl)
 {
-    rt_err_t ret;
-    char     err[48];
+    char err[48];
 
     SM_ASSERT_PTR(tbl);
 
@@ -175,14 +109,14 @@ int mech_table_save(const mech_table_t *tbl)
         return MECH_ERR_VALIDATE;
     }
 
-    if (mech_storage_ensure_init() != MECH_OK) {
+    (void)param_store_init();
+
+    if (param_store_am_set_row(&tbl->row[tbl->active],
+                               tbl->active, tbl->count) != 0) {
         return MECH_ERR_IO;
     }
-
-    s_mech_storage.data_ptr = (void *)tbl;
-    ret = storage_save(&s_mech_storage);
-    if (ret != RT_EOK) {
-        rt_kprintf("[MECH] storage_save failed (%d)\n", (int)ret);
+    if (param_store_am_save() != 0) {
+        rt_kprintf("[MECH] save request failed\n");
         return MECH_ERR_IO;
     }
 

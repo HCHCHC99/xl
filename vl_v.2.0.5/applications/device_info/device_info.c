@@ -4,8 +4,7 @@
  */
 
 #include "../device_info/device_info.h"
-#include "../storage/storage.h"
-#include "../storage/storage_config.h"
+#include "../param/param_store.h"
 #include "framework/state_engine/sm_assert.h"
 
 /* 【2026-11-10 彩标 P3】设备信息：失败=ERR，降级=WARN，成功=OK。
@@ -47,86 +46,20 @@ const device_field_t g_device_info_fields[] = {
 
 const uint32_t g_device_info_field_count = sizeof(g_device_info_fields) / sizeof(g_device_info_fields[0]);
 
-/* 内部存储服务实例 */
-static storage_t g_dev_storage;
-/* 本模块独立的 Flash 实例（禁止与其他模块共用） */
-static flash_t   s_flash;
-
 /* ============================================================
  * 初始化
+ *
+ * 新存储方案：只持久化 SN/型号/版本/生产日期等关键字段。
  * ============================================================ */
 int device_info_init(void)
 {
-    const storage_config_t *cfg = storage_find_config("device_info");
-    rt_err_t ret;
-    uint32_t blk_size;
+    (void)param_store_init();
 
-    SM_ASSERT_PTR(cfg);
+    /* 上电默认记录只有 rec_magic，SN 为空；SN 空视为未初始化 */
+    if ((param_store_dev_load(&g_device_info) != 0) ||
+        (g_device_info.sn[0] == 0U)) {
+        LOG_WARN("[device_info] no valid record, using defaults\n");
 
-    blk_size = sizeof(device_info_t) + 8;
-
-    ret = flash_init(&s_flash,
-                     cfg->sector_addr,
-                     cfg->sector_size,
-                     blk_size,
-                     cfg->magic);
-    if (ret != RT_EOK) return ret;
-
-    ret = storage_init(&g_dev_storage,
-                       &s_flash,
-                       cfg->name,
-                       &g_device_info,
-                       sizeof(device_info_t),
-                       cfg->magic,
-                       cfg->cooldown_ms);
-    if (ret != RT_EOK) return ret;
-
-    ret = storage_load(&g_dev_storage);
-
-    /* ============================================================
-     * 【甲-1 / DES-STORAGE-FIX-V1.0】异常 / 空分区处理
-     * ------------------------------------------------------------
-     * device_info 是【只读资产】（SN/型号/厂商日期），默认值来自
-     * g_device_info 的静态初值（device_info.c:16-25），在 storage_load
-     * 之前就已就位。
-     *
-     * 两种需要处理的情况：
-     *   ① magic/CRC 异常（ret != RT_EOK）：回默认并重写
-     *   ② 空分区（ret == RT_EOK 但无有效块）：写默认值
-     *   storage_load 对空分区返回 RT_EOK 且不填 data_ptr，
-     *   所以必须用 storage_is_empty() 显式判断，不能只看返回值。
-     *
-     * 两种都要清 last_data_buf：
-     *   storage_load 空分区分支已执行
-     *     memcpy(last_data_buf, data_ptr, size)      (storage.c:121)
-     *   不清则 storage_save 的值去重会静默跳过（storage.c:185）。
-     * ============================================================ */
-    if (ret != RT_EOK) {
-        LOG_WARN("[device_info] flash invalid (%d), using defaults\n", (int)ret);
-        memset(g_dev_storage.last_data_buf, 0x00, sizeof(device_info_t));
-        if (storage_save(&g_dev_storage) != RT_EOK) {
-            rt_kprintf("[device_info] WARN: default save FAILED\n");
-        }
-    }
-    else if (storage_is_empty(&g_dev_storage) != 0U) {
-        LOG_INFO("[device_info] empty partition, writing defaults...\n");
-        memset(g_dev_storage.last_data_buf, 0x00, sizeof(device_info_t));
-        if (storage_save(&g_dev_storage) == RT_EOK) {
-            rt_kprintf("[device_info] defaults written to flash\n");
-        } else {
-            rt_kprintf("[device_info] WARN: default save FAILED\n");
-        }
-    }
-    else if (g_device_info.rec_magic != DEVICE_INFO_REC_MAGIC) {
-        /* ---- 记录损坏：CRC 过了但内容不是本版本写的（旧格式/位翻转）----
-         * device_info 是产品身份资产（SN/型号/厂商日期），
-         * 若 rec_magic 不符说明整块不可信，必须回默认并重写，
-         * 绝不能把乱码当成 SN 上报。 */
-        LOG_WARN("[device_info] bad rec_magic 0x%08X (expect 0x%08X), reset to default\n",
-                   (unsigned)g_device_info.rec_magic,
-                   (unsigned)DEVICE_INFO_REC_MAGIC);
-
-        /* 恢复静态默认值（与 g_device_info 初值一致） */
         memset(g_device_info.sn, 0, sizeof(g_device_info.sn));
         memset(g_device_info.name, 0, sizeof(g_device_info.name));
         rt_strncpy((char *)g_device_info.sn, "JC_202610080001",
@@ -144,12 +77,7 @@ int device_info_init(void)
         memset(g_device_info.reserved, 0, sizeof(g_device_info.reserved));
         g_device_info.rec_magic             = DEVICE_INFO_REC_MAGIC;
 
-        memset(g_dev_storage.last_data_buf, 0x00, sizeof(device_info_t));
-        if (storage_save(&g_dev_storage) == RT_EOK) {
-            rt_kprintf("[device_info] reset written to flash\n");
-        } else {
-            rt_kprintf("[device_info] WARN: reset save FAILED\n");
-        }
+        (void)param_store_dev_save(&g_device_info);
     }
 
     device_info_dump();
@@ -158,12 +86,12 @@ int device_info_init(void)
 
 int device_info_save(void)
 {
-    return storage_save(&g_dev_storage);
+    return param_store_dev_save(&g_device_info);
 }
 
 int device_info_load(void)
 {
-    return storage_load(&g_dev_storage);
+    return param_store_dev_load(&g_device_info);
 }
 
 device_info_t* device_info_get(void)
