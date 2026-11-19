@@ -996,3 +996,62 @@ int param_store_fill_cmd(const char *group, uint16_t leave)
 
     return rc;
 }
+
+/* ============================================================
+ * 精确写入 count 次（某区只存一次 / 手动触发轮转）
+ * ============================================================ */
+int param_store_write_cmd(const char *group, uint16_t count)
+{
+    param_group_t *g;
+    param_stat_t   st;
+    uint32_t       writes = 0U;
+    int            rc = 0;
+
+    if (s_inited == 0U) {
+        (void)param_store_init();
+    }
+
+    g = group_find(group);
+    if (g == RT_NULL) {
+        rt_kprintf("[PARAM] write: unknown group '%s'\n",
+                   (group != RT_NULL) ? group : "?");
+        rt_kprintf("  usage: t_param write <motion|system|angle_mech|device|fast> [count]\n");
+        return -1;
+    }
+    if (motor_is_busy() != 0) {
+        rt_kprintf("[PARAM] motor is running, write refused, stop first\n");
+        return -2;
+    }
+    if (count == 0U) {
+        count = 1U;
+    }
+    if (count > 4096U) {
+        count = 4096U;
+    }
+
+    rt_mutex_take(&s_lock, RT_WAITING_FOREVER);
+
+    if (g->pack != RT_NULL) {
+        g->pack();
+    }
+    Param_GetStat(g->cfg, g->rt, &st);
+
+    while (writes < count) {
+        if (Param_Save(g->cfg, g->rt, g->buf) != PARAM_OK) {
+            rc = -1;
+            break;
+        }
+        writes++;
+    }
+
+    Param_GetStat(g->cfg, g->rt, &st);
+    rt_mutex_release(&s_lock);
+
+    rt_kprintf("[PARAM] write %s x%u done: left=%u/%u cur=%u erase=%lu seq=%lu rc=%d\n",
+               g->name, (unsigned)writes, (unsigned)st.slots_left,
+               (unsigned)st.slots_per_sec, (unsigned)st.curr_sec,
+               (unsigned long)st.erase_count, (unsigned long)st.last_seq, rc);
+    dump_info_one(g);
+
+    return rc;
+}

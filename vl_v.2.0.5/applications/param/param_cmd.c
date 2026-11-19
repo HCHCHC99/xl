@@ -174,6 +174,22 @@ static void t_param(int argc, char **argv)
         return;
     }
 
+    if (strcmp(sub, "write") == 0) {
+        uint16_t count = 1U;
+
+        if (argc < 3) {
+            rt_kprintf("[PARAM] usage: t_param write <motion|system|angle_mech|device|fast> [count]\n");
+            return;
+        }
+        if (sys_cap_require(SYS_CAP_PARAM_WRITE, "t_param write") == 0U) { return; }
+
+        if (argc >= 4) {
+            count = (uint16_t)strtoul(argv[3], RT_NULL, 0);
+        }
+        (void)param_store_write_cmd(argv[2], count);
+        return;
+    }
+
     if (sys_cap_require(SYS_CAP_DIAG_READ, "t_param") == 0U) { return; }
 
     if ((strcmp(sub, "dump") == 0) || (strcmp(sub, "all") == 0)) {

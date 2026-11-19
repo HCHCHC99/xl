@@ -77,6 +77,9 @@ int  param_store_erase_cmd(uint32_t mask);
  * 直到当前扇区只剩 leave 个槽位。leave 默认 2。 */
 int  param_store_fill_cmd(const char *group, uint16_t leave);
 
+/* MSH 精确写入：对 group 只写 count 次（默认 1），用于"某区只存一次"或手动触发轮转。 */
+int  param_store_write_cmd(const char *group, uint16_t count);
+
 /* ============================================================
  * ANGLE_MECH：sys_param + mech active 行
  * ============================================================ */
