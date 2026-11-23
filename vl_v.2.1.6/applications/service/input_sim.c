@@ -535,10 +535,12 @@ MSH_CMD_EXPORT_ALIAS(t_bench, t_pre,   alias of t_bench);
  * 把每个模块的用例固化成脚本，免去手打。
  *   t_seq            → 列出可用脚本
  *   t_seq m4         → 跑 m4，步间隔 1 s
- *   t_seq m4 500     → 步间隔 500 ms
+ *   t_seq m4 500     → 单脚本步间隔 500 ms
  *   t_seq m18 3 4    → 依次跑 m18、m3、m4，步间隔 1 s
- *   t_seq m18 3 4 500→ 依次跑，步间隔 500 ms
  * 纯数字参数按 m<数字> 解析；最后一个 ≥100 的数字视为步间隔。
+ * 【批量注意】批量模式建议 ≥1000 ms：m18 的 PREP 5 s、m9 的 500 ms 恢复、
+ * m10 的 2 s 整车 FAULT、m6/m14 的 500 ms 去抖都依赖 1 s 步长；
+ * 批量用 500 ms 会压缩时间轴，造成"脚本跑了但关键步骤没覆盖"。
  * 每步先打印 `[seq] (i/n) <命令>`，再执行，再等待。
  * 用 msh_exec() 执行原文，等于把命令逐条敲一遍（打印/行为完全一致）。
  * ============================================================ */
@@ -1048,7 +1050,12 @@ static const char *const s_seq_m19[] = {
  * 前置：t_bench（STARTED）。sim long 会真跑 FOC_PROC_ENC_ALIGN，转子会动一下。
  * 次数口径：进 EXEC 计 1 次，每上电周期 2 次；PREP 超时 / <2s 松开不消耗。
  * 用例覆盖：PREP 超时 / <2s 松开失败 / 成功路径（灯+落盘）/ 次数上限 /
- *           一键运行中拒绝（TC-CAL-011）。 */
+ *           一键运行中拒绝（TC-CAL-011）。
+ * 【批量顺序】m18 会把 swing zero 改成校准时的 sim 值（例如 t_sim swing 500
+ *   会留下 zero=500）。m4 等用绝对 t_sim swing 角度的脚本必须在 m18 之前跑，
+ *   否则角度整体偏移（zero=500 时 t_sim swing 0 显示 -50°）。
+ * 【整车前置】m9/m10 会把整车留在 UV/FAULT/OFF；m18 要求 STARTED，
+ *   所以批量里先跑过 m9/m10 后，必须重新 t_bench 再跑 m18。 */
 static const char *const s_seq_m18[] = {
     "t_calib status",        /* 1  基线：IDLE count 0/2 calibrated=0 */
     "t_calib sim dbl",       /* 2  → PREP（黄） */
@@ -1224,6 +1231,10 @@ static void t_seq(int argc, char **argv)
     if (count > 1U) {
         rt_kprintf("[seq] batch: %lu scripts, %lums apart\n",
                    (unsigned long)count, (unsigned long)interval);
+        if (interval < 1000U) {
+            rt_kprintf("[seq] WARN: batch <1000ms may break timing-sensitive scripts"
+                       " (m6/m9/m10/m14/m18)\n");
+        }
     }
 
     for (i = 0; i < (int)count; i++) {
