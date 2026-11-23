@@ -119,7 +119,7 @@ extern "C" {
  * 13 齿数值一位不差，14/11 齿从此正确。 */
 #define MECH_DEF_I_OUT          65
 #define MECH_DEF_I_OUT_DEN      13
-#define MECH_DEF_POLE_PAIRS     4        /* board_motor_cfg.h:104：12槽4对极 */
+#define MECH_DEF_POLE_PAIRS     10       /* 2026-11-23 用户确认测试电机为 10 对极（原 4） */
 #define MECH_DEF_OUT_MIN_X10    (-1000)  /* -100.0 deg */
 #define MECH_DEF_OUT_MAX_X10    (2150)   /* +215.0 deg */
 #define MECH_DEV_MARGIN_X10     20       /* ±2.0 deg 物理容差（Q-34） */

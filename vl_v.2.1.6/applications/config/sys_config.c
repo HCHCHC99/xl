@@ -88,7 +88,7 @@ static const cfg_def_t s_cfg_def[] = {
       1000, 200, 5000, "ns" },
     { CFG_ID_MOTOR_POLE_PAIRS, "motor_pole_pairs", CFG_T_U8,
       CFG_F_REQ_RESTART,
-      4, 1, 16, "pairs" },
+      10, 1, 16, "pairs" },   /* 【2026-11-23】测试电机确认 10 对极；原默认 4 */
     { CFG_ID_MOTOR_OC_L1_MA,   "motor_oc_l1_ma",   CFG_T_U16,
       CFG_F_ADVANCED,
       0, 0, 60000, "mA" },

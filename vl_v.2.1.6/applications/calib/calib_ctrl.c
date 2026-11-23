@@ -75,6 +75,13 @@ static const char *calib_check_precondition(void)
 {
     const seq_ctrl_context_t *sctx = seq_control_get_context();
 
+    /* 【2026-11-23】一键运行中必须最先判。
+     * 原顺序把 count limit 放在最前：m18 第 26–27 步在消耗完 2 次后启动一键，
+     * 再调 t_calib start 时会被 "count limit" 抢先，TC-CAL-011 的
+     * "onekey running" 永远观测不到。拒绝行为不变，只调整原因优先级。 */
+    if ((sctx != RT_NULL) && (seq_engine_is_active(&sctx->engine) != 0U)) {
+        return "onekey running";        /* TC-CAL-011：不打断一键 */
+    }
     if (s_count >= CALIB_MAX_PER_BOOT) {
         return "count limit (2/boot)";
     }
@@ -96,9 +103,6 @@ static const char *calib_check_precondition(void)
         (g_lift_obj.ctx.up_sw_pressed != 0U) ||
         (g_lift_obj.ctx.down_sw_pressed != 0U)) {
         return "manual keys";
-    }
-    if ((sctx != RT_NULL) && (seq_engine_is_active(&sctx->engine) != 0U)) {
-        return "onekey running";        /* TC-CAL-011：不打断一键 */
     }
     if (Foc_Proc_IsBusy()) {
         return "foc busy";
