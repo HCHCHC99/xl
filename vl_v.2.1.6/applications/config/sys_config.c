@@ -422,6 +422,13 @@ static const cfg_def_t s_cfg_def[] = {
      * 0 = 手动可直接过零（旧行为），1 = 到 0° 停并锁刹车，需松开重按。 */
     { CFG_ID_SWING_ZERO_STOP, "swing_zero_stop", CFG_T_U8,
       0, CFG_DEF_SWING_ZERO_STOP, 0, 1, "" },
+
+    /* ---- CAN 通信故障门限（P10 / B-11 剩余，2026-11-23）----
+     * 任意帧静默超过本值 ⇒ 状态帧 comm_sta=1 + 控制器灯红闪；
+     * 与整车静默 veh_can_silent_ms(500) / veh_fault_ms(2000) 相互独立。
+     * 追加在表尾，不改既有 ID；改后重启生效。 */
+    { CFG_ID_CAN_FAULT_MS, "can_fault_ms", CFG_T_U16,
+      CFG_F_REQ_RESTART, CFG_DEF_CAN_FAULT_MS, 50, 2000, "ms" },
 };
 
 #define CFG_DEF_COUNT   (sizeof(s_cfg_def) / sizeof(s_cfg_def[0]))

@@ -377,6 +377,10 @@ typedef enum {
 #define CFG_ID_UV_BLANK_MS         0x0B06U
 /* 手动过零停车（P6 / B-8，2026-11-23）：1=到 0° 停并要求松开重按 */
 #define CFG_ID_SWING_ZERO_STOP     0x0B07U
+/* CAN 通信故障门限（P10 / B-11 剩余，2026-11-23）：只驱动状态帧 comm_sta
+ * 与控制器灯；整车静默仍用 0x010B veh_can_silent_ms + veh_fault_ms。 */
+#define CFG_ID_CAN_FAULT_MS        0x0B08U
+#define CFG_DEF_CAN_FAULT_MS       300
 
 /* ============================================================
  * 8. API

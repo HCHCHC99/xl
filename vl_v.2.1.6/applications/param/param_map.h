@@ -108,9 +108,9 @@ typedef struct {
 } param_motion_rec_t;
 
 /* ============================================================
- * 5. SYSTEM：整车 / ACC / CAN / 看门狗 / 机械 / 欠压 / 举升传感器阈值 / 限位保持 / 过零停车（33 项）
+ * 5. SYSTEM：整车 / ACC / CAN / 看门狗 / 机械 / 欠压 / 举升传感器阈值 / 限位保持 / 过零停车 / CAN 故障门限（34 项）
  * ============================================================ */
-#define PARAM_SYSTEM_CFG_COUNT      33U
+#define PARAM_SYSTEM_CFG_COUNT      34U
 #define PARAM_MODE_REC_MAGIC        0x4D4F4445U   /* "MODE" */
 
 typedef struct {

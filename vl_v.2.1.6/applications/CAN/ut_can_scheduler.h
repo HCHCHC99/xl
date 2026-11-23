@@ -32,7 +32,8 @@ void can_scheduler_start(void);
 
 /**
  * @brief CAN 总线是否静默（未收到任何可通过筛选过滤的报文）[线程安全]
- * @param timeout_ms 静默判定时限，由配置项 CFG_ID_VEH_CAN_SILENT_MS 提供（默认 500）
+ * @param timeout_ms 静默判定时限；comm_sta/控制器灯用 CFG_ID_CAN_FAULT_MS（300），
+ *                   整车 FAULT 用 CFG_ID_VEH_CAN_SILENT_MS（500）
  * @return 1 = 静默；0 = 通信有效
  *
  * 【Q-D1 / 2026-11-14 16:49 裁定】心跳放在**解析线程**、且以「触发查表」为准：
@@ -42,9 +43,24 @@ void can_scheduler_start(void);
  *   放在线程侧而非 ISR，避开 D-58「ISR 内禁止断言/打印/阻塞」约束。
  *
  * 【从未收到任何帧】s_any_frame_tick == 0 时直接返回 1（静默），
- *   这落实用户新定义「未收到任何…报文」，取代上一轮排除 seen==0 的旧口径。
+ *   上电即报通信故障；收到第一帧后按 age 自动恢复。
  */
 uint8_t can_is_bus_silent(uint32_t timeout_ms);
+
+/**
+ * @brief 距最近一帧的时长（ms）[线程安全]
+ * @return 0xFFFFFFFF = 上电至今从未收到任何帧
+ */
+uint32_t can_last_frame_age_ms(void);
+
+#if (INPUT_SIM_ENABLE && CAN_SILENT_SIM_ENABLE)
+/**
+ * @brief 台架专用：把"最近一帧时刻"拨到 age_ms 之前（t_comm test/age 用）
+ * @note  仅 INPUT_SIM_ENABLE && CAN_SILENT_SIM_ENABLE 时编译；
+ *        用于在无真实总线的情况下验证 300 ms 门限边界。
+ */
+void can_scheduler_set_last_frame_age_ms(uint32_t age_ms);
+#endif
 
 #ifdef __cplusplus
 }

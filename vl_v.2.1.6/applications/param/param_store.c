@@ -109,6 +109,8 @@ static const uint16_t s_system_ids[PARAM_SYSTEM_CFG_COUNT] = {
     CFG_ID_LIFT_SENS_CONFIRM_MS, CFG_ID_LIFT_SENS_RECOVER_MS,
     /* 限位保持 / 过零停车（P6 / B-7、B-8，2026-11-23） */
     CFG_ID_LIFT_HOLD_MS, CFG_ID_SWING_ZERO_STOP,
+    /* CAN 通信故障门限（P10 / B-11 剩余，2026-11-23） */
+    CFG_ID_CAN_FAULT_MS,
 };
 
 /* ============================================================

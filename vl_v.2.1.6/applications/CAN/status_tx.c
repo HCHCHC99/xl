@@ -23,7 +23,7 @@
 #include "ut_can_scheduler.h"    /* can_is_bus_silent */
 #include "../sys_param/sys_param.h"
 #include "../service/sys_voltage.h"   /* sys_voltage_is_uv()（§10.5-E）*/
-#include "../config/sys_config.h"     /* CFG_ID_VEH_CAN_SILENT_MS */
+#include "../config/sys_config.h"     /* CFG_ID_CAN_FAULT_MS */
 #include "../swing/swing_control.h"   /* g_swing_obj / swing_control_get_state */
 #include "../swing/swing_angle.h"     /* g_swing_angle / swing_angle_get_value */
 #include "../lift/lift_control.h"     /* g_lift_obj / lift_control_get_state */
@@ -172,20 +172,21 @@ static uint8_t derive_lift_sta(void)
  * ============================================================ */
 void status_tx_refresh(void)
 {
-    int32_t silent_ms = 500;
+    int32_t fault_ms = CFG_DEF_CAN_FAULT_MS;
     int32_t ha, la;
 
     /* ----- Byte0 ----- */
     s_diag.uv = sys_voltage_is_uv();
     s_tx.bits.power_voltage_sta = (s_diag.uv != 0U) ? STA_POWER_UNDER : STA_POWER_NORMAL;
 
-    s_diag.calibrated = (uint8_t)(g_sys_params.is_calibrated != 0U ? 1U : 0U);
+    s_diag.calibrated = (uint8_t)(g_sys_params.is_calibrated != 0U) ? 1U : 0U;
     s_tx.bits.calib_sta = (s_diag.calibrated != 0U) ? STA_CALIB_DONE : STA_CALIB_UNDONE;
 
-    if (sys_config_get_i32(CFG_ID_VEH_CAN_SILENT_MS, &silent_ms) != 0) {
-        silent_ms = 500;
+    /* P10：comm_sta 用独立的 300 ms 门限，不再复用整车静默的 500 ms */
+    if (sys_config_get_i32(CFG_ID_CAN_FAULT_MS, &fault_ms) != 0) {
+        fault_ms = CFG_DEF_CAN_FAULT_MS;
     }
-    s_diag.comm = can_is_bus_silent((uint32_t)silent_ms);
+    s_diag.comm = can_is_bus_silent((uint32_t)fault_ms);
     s_tx.bits.comm_sta = (s_diag.comm != 0U) ? 1U : 0U;
 
     s_tx.bits.work_mode = derive_work_mode();
@@ -394,6 +395,26 @@ void status_tx_dump(void)
                (s_tx.bits.comm_sta != 0U) ? "FAULT" : "ok",
                (unsigned)s_tx.bits.work_mode,
                mode_name(s_tx.bits.work_mode));
+
+    /* P10：把 comm 判定的原始依据也打出来，便于核对 300 ms 门限 */
+    {
+        int32_t  thr = CFG_DEF_CAN_FAULT_MS;
+        uint32_t age = can_last_frame_age_ms();
+        uint8_t  st;
+
+        (void)sys_config_get_i32(CFG_ID_CAN_FAULT_MS, &thr);
+        st = can_is_bus_silent((uint32_t)thr);
+
+        if (age == 0xFFFFFFFFU) {
+            rt_kprintf("comm     : age=never thr=%ldms state=%u(%s)\n",
+                       (long)thr, (unsigned)st,
+                       (st != 0U) ? "FAULT" : "ok");
+        } else {
+            rt_kprintf("comm     : age=%lums thr=%ldms state=%u(%s)\n",
+                       (unsigned long)age, (long)thr, (unsigned)st,
+                       (st != 0U) ? "FAULT" : "ok");
+        }
+    }
 
     rt_kprintf("B1 enc=%u(%s) motor=%u(%s) sensor=%u(%s) lift=%u(%s)\n",
                (unsigned)s_tx.bits.encoder_sta,

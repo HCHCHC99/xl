@@ -536,6 +536,9 @@ MSH_CMD_EXPORT_ALIAS(t_bench, t_pre,   alias of t_bench);
  *   t_seq            → 列出可用脚本
  *   t_seq m4         → 跑 m4，步间隔 1 s
  *   t_seq m4 500     → 步间隔 500 ms
+ *   t_seq m18 3 4    → 依次跑 m18、m3、m4，步间隔 1 s
+ *   t_seq m18 3 4 500→ 依次跑，步间隔 500 ms
+ * 纯数字参数按 m<数字> 解析；最后一个 ≥100 的数字视为步间隔。
  * 每步先打印 `[seq] (i/n) <命令>`，再执行，再等待。
  * 用 msh_exec() 执行原文，等于把命令逐条敲一遍（打印/行为完全一致）。
  * ============================================================ */
@@ -544,6 +547,8 @@ typedef struct {
     const char *desc;
     const char *const *steps;      /* 以 RT_NULL 结尾 */
 } test_seq_t;
+
+#define SEQ_BATCH_MAX   8U
 
 /* M3 举升：角度链 / 手动阀输出 / 上限拦截
  * 【P5 / B-6 起】传感器阈值与 2 s 确认整体移到 m8：
@@ -665,15 +670,24 @@ static const char *const s_seq_m9a[] = {
     RT_NULL
 };
 
-/* M10 通信故障：静默 → FAULT → 恢复 → 清除（不写 Flash） */
+/* M10 通信故障（P10）：300 ms comm_sta/灯 → 500 ms 静默 + 2 s 整车 FAULT → 恢复 */
 static const char *const s_seq_m10[] = {
     "t_veh",
     "t_param info",         /* 基线：证明通信故障不产生 Flash 写 */
-    "t_sim cansilent 1",    /* 500ms 判静默，2s 后 FAULT */
-    "t_veh",                /* 约 +1s：fault_ms 已过半，state 仍非 FAULT */
-    "t_veh",                /* 约 +2s：state=FAULT、started=0、word=0x1 */
+    "t_sim cansilent 0",    /* 强制通信正常 */
+    "t_sta",                /* comm=0(ok) */
+    "t_led",                /* ctrl 绿/黄（按校准状态） */
+    "t_comm test",          /* 250ms→ok / 350ms→FAULT，验证 300ms 门限 */
+    "t_sim cansilent 0",    /* t_comm test 会清掉强制，这里恢复 */
+    "t_sta",                /* comm=0 */
+    "t_sim cansilent 1",    /* 强制静默 */
+    "t_veh",                /* +1s：整车尚未 FAULT（500ms 静默 + 2s 确认） */
+    "t_sta",                /* +2s：comm=1(FAULT)，证明 300ms 通道独立 */
+    "t_led",                /* ctrl 红闪 <- comm fault */
+    "t_veh",                /* +4s：整车 FAULT */
     "t_sim cansilent 0",
-    "t_veh",                /* fault_word 回 0，但 state 仍 FAULT（只能钥匙清） */
+    "t_sta",                /* comm=0，恢复 */
+    "t_led",                /* ctrl 恢复 */
     "t_veh_clr",
     "t_veh",                /* 回 OFF，条件仍满足则自回 ACC_ON/STARTED */
     "t_param info",         /* 与基线一致：未写 Flash */
@@ -1076,7 +1090,7 @@ static const test_seq_t s_seqs[] = {
     { "m7", "teeth: 13/14/11, dedup, clear",            s_seq_m7 },
     { "m9", "undervoltage: enter/gate/recover/save",       s_seq_m9 },
     { "m9a","UV + encoder align (batch 3/4 only)",       s_seq_m9a },
-    { "m10","comm fault: silent -> FAULT -> recover",   s_seq_m10 },
+    { "m10","comm fault: 300ms comm/lamp + 2s veh FAULT", s_seq_m10 },
     { "m11","one-key arbitration (P3)",                 s_seq_m11 },
     { "m14","valve fault 500ms debounce (P4)",          s_seq_m14 },
     { "m8", "lift sensor 2s confirm/recover (P5)",      s_seq_m8 },
@@ -1095,49 +1109,54 @@ static void seq_list(void)
 {
     uint32_t i;
 
-    rt_kprintf("[seq] usage: t_seq <name> [interval_ms]\n");
+    rt_kprintf("[seq] usage: t_seq <name|num> [name|num ...] [interval_ms]\n");
+    rt_kprintf("[seq]   e.g. t_seq m18 3 4 500  (num -> m<num>)\n");
     for (i = 0U; i < SEQ_COUNT; i++) {
         rt_kprintf("[seq]   %-4s %s\n", s_seqs[i].name, s_seqs[i].desc);
     }
 }
 
-static void t_seq(int argc, char **argv)
+static const test_seq_t *seq_find(const char *arg)
 {
-    const test_seq_t *seq = RT_NULL;
-    uint32_t interval = 1000U;
+    uint32_t i;
+    char alt[8];
+
+    for (i = 0U; i < SEQ_COUNT; i++) {
+        if (strcmp(arg, s_seqs[i].name) == 0) {
+            return &s_seqs[i];
+        }
+    }
+
+    /* 纯数字参数按 m<数字> 解析，便于 t_seq m18 3 4 */
+    if ((arg[0] >= '0') && (arg[0] <= '9')) {
+        (void)rt_snprintf(alt, sizeof(alt), "m%s", arg);
+        for (i = 0U; i < SEQ_COUNT; i++) {
+            if (strcmp(alt, s_seqs[i].name) == 0) {
+                return &s_seqs[i];
+            }
+        }
+    }
+
+    return RT_NULL;
+}
+
+static void seq_run_one(const test_seq_t *seq, uint32_t interval,
+                        uint32_t index, uint32_t count)
+{
     uint32_t i;
     uint32_t n = 0U;
     uint32_t total;
     char buf[SEQ_CMD_SZ];
 
-    if (argc < 2) {
-        seq_list();
-        return;
-    }
-
-    for (i = 0U; i < SEQ_COUNT; i++) {
-        if (strcmp(argv[1], s_seqs[i].name) == 0) {
-            seq = &s_seqs[i];
-            break;
-        }
-    }
-    if (seq == RT_NULL) {
-        rt_kprintf("[seq] unknown script: %s\n", argv[1]);
-        seq_list();
-        return;
-    }
-
-    if (argc >= 3) {
-        int32_t v;
-        if ((sim_parse_i32(argv[2], &v) == 0) && (v >= 100) && (v <= 10000)) {
-            interval = (uint32_t)v;
-        }
-    }
-
     while (seq->steps[n] != RT_NULL) {
         n++;
     }
     total = (n * interval) / 1000U;
+
+    if (count > 1U) {
+        rt_kprintf("\n[seq] ===== %lu/%lu %s =====\n",
+                   (unsigned long)index, (unsigned long)count, seq->name);
+    }
 
     rt_kprintf("[seq] %s: %lu steps, %lums apart (~%lus total)\n",
                seq->name, (unsigned long)n, (unsigned long)interval,
@@ -1160,6 +1179,60 @@ static void t_seq(int argc, char **argv)
     }
 
     rt_kprintf("[seq] %s done\n", seq->name);
+}
+
+static void t_seq(int argc, char **argv)
+{
+    const test_seq_t *batch[SEQ_BATCH_MAX];
+    uint32_t count = 0U;
+    uint32_t interval = 1000U;
+    int32_t v;
+    int last = argc - 1;
+    int i;
+
+    if (argc < 2) {
+        seq_list();
+        return;
+    }
+
+    /* 最后一个 ≥100 的数字是步间隔；其余参数都当脚本名/编号 */
+    if ((sim_parse_i32(argv[last], &v) == 0) && (v >= 100) && (v <= 10000)) {
+        interval = (uint32_t)v;
+        last--;
+    }
+    if (last < 1) {
+        seq_list();
+        return;
+    }
+
+    for (i = 1; i <= last; i++) {
+        const test_seq_t *seq = seq_find(argv[i]);
+
+        if (seq == RT_NULL) {
+            rt_kprintf("[seq] unknown script: %s\n", argv[i]);
+            seq_list();
+            return;
+        }
+        if (count >= SEQ_BATCH_MAX) {
+            rt_kprintf("[seq] too many scripts (max %u)\n",
+                       (unsigned)SEQ_BATCH_MAX);
+            return;
+        }
+        batch[count++] = seq;
+    }
+
+    if (count > 1U) {
+        rt_kprintf("[seq] batch: %lu scripts, %lums apart\n",
+                   (unsigned long)count, (unsigned long)interval);
+    }
+
+    for (i = 0; i < (int)count; i++) {
+        seq_run_one(batch[i], interval, (uint32_t)i + 1U, count);
+    }
+
+    if (count > 1U) {
+        rt_kprintf("[seq] batch done: %lu scripts\n", (unsigned long)count);
+    }
 }
 
 MSH_CMD_EXPORT_ALIAS(t_seq, t_seq, run scripted test sequence);

@@ -15,7 +15,7 @@
 #include "../sys_param/sys_param.h"     /* g_sys_params.is_calibrated */
 #include "../service/sys_voltage.h"     /* sys_voltage_is_uv */
 #include "../calib/calib_ctrl.h"        /* calib_ctrl_state（P9 校准流程灯） */
-#include "../config/sys_config.h"       /* CFG_ID_VEH_CAN_SILENT_MS */
+#include "../config/sys_config.h"       /* CFG_ID_CAN_FAULT_MS */
 #include "ut_can_scheduler.h"           /* can_is_bus_silent */
 #include "hw_objects.h"                 /* g_solenoid 阀原始故障码 */
 
@@ -50,7 +50,7 @@ static uint8_t valve_confirmed_code(uint8_t ch)
 static void collect_inputs(led_effect_t *e)
 {
     seq_ctrl_context_t *sctx = seq_control_get_context();
-    int32_t silent_ms = 500;
+    int32_t fault_ms = CFG_DEF_CAN_FAULT_MS;
 
     e->in.swing_state    = (uint8_t)swing_control_get_state();
     e->in.lift_state     = (uint8_t)lift_control_get_state();
@@ -65,11 +65,11 @@ static void collect_inputs(led_effect_t *e)
     e->in.calibrated     = (uint8_t)(g_sys_params.is_calibrated != 0U ? 1U : 0U);
     e->in.calib_state    = calib_ctrl_state();   /* P9 校准流程态 */
 
-    /* 通信故障：与整车 FAULT 同源（任何帧静默），门限复用 veh_can_silent_ms */
-    if (sys_config_get_i32(CFG_ID_VEH_CAN_SILENT_MS, &silent_ms) != 0) {
-        silent_ms = 500;
+    /* P10：通信故障用独立的 300 ms 门限（任意帧静默），与整车 500 ms 分开 */
+    if (sys_config_get_i32(CFG_ID_CAN_FAULT_MS, &fault_ms) != 0) {
+        fault_ms = CFG_DEF_CAN_FAULT_MS;
     }
-    e->in.comm_fault = can_is_bus_silent((uint32_t)silent_ms);
+    e->in.comm_fault = can_is_bus_silent((uint32_t)fault_ms);
 
     /* 一键：只有引擎在跑时才算"该键执行中"（结束后 current_onekey 会清零，
      * 这里再判一次 active 是为了防"刚完成那一拍还在显示闪烁"） */

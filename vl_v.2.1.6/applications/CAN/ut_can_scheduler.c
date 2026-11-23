@@ -155,6 +155,31 @@ uint8_t can_is_bus_silent(uint32_t timeout_ms)
     return 0U;
 }
 
+uint32_t can_last_frame_age_ms(void)
+{
+    uint32_t last = s_any_frame_tick;
+
+    if (last == 0U) {
+        return 0xFFFFFFFFU;         /* 上电至今从未收到任何帧 */
+    }
+    return (uint32_t)(rt_tick_get() - last) * 1000U / RT_TICK_PER_SECOND;
+}
+
+#if (INPUT_SIM_ENABLE && CAN_SILENT_SIM_ENABLE)
+void can_scheduler_set_last_frame_age_ms(uint32_t age_ms)
+{
+    uint32_t now   = (uint32_t)rt_tick_get();
+    uint32_t ticks = (uint32_t)rt_tick_from_millisecond((rt_int32_t)age_ms);
+    uint32_t t     = now - ticks;
+
+    /* 0 是"从未收帧"的哨兵，不能占用 */
+    if (t == 0U) {
+        t = 1U;
+    }
+    s_any_frame_tick = t;
+}
+#endif
+
 /* ============================================================
  * 启动调度器
  * ============================================================ */

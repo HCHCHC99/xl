@@ -26,9 +26,12 @@
 #include <rtthread.h>
 #include <finsh.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "status_tx.h"
 #include "led_tx.h"
+#include "ut_can_scheduler.h"
+#include "../config/sys_config.h"
 
 #define CAN_TX_TEST_MAX_REPEAT   10
 #define CAN_TX_TEST_INTERVAL_MS  500
@@ -88,3 +91,91 @@ static void cmd_t_led(int argc, char **argv)
     }
 }
 MSH_CMD_EXPORT_ALIAS(cmd_t_led, t_led, dump led frame 0x18FFA4F0);
+
+/* ------------------------------------------------------------
+ * t_comm —— CAN 通信静默/门限诊断（P10）
+ * ------------------------------------------------------------
+ * t_comm          打印 age / thr / state
+ * t_comm test     无总线时验证 300 ms 边界：250 ms 不报、350 ms 报
+ * t_comm age <ms> 台架专用：把"最近一帧时刻"拨到 ms 之前
+ * ------------------------------------------------------------ */
+static void comm_print_line(void)
+{
+    int32_t  thr = CFG_DEF_CAN_FAULT_MS;
+    uint32_t age = can_last_frame_age_ms();
+    uint8_t  st;
+
+    (void)sys_config_get_i32(CFG_ID_CAN_FAULT_MS, &thr);
+    st = can_is_bus_silent((uint32_t)thr);
+
+    if (age == 0xFFFFFFFFU) {
+        rt_kprintf("[COMM] age=never thr=%ldms state=%u(%s)\n",
+                   (long)thr, (unsigned)st,
+                   (st != 0U) ? "FAULT" : "ok");
+    } else {
+        rt_kprintf("[COMM] age=%lums thr=%ldms state=%u(%s)\n",
+                   (unsigned long)age, (long)thr, (unsigned)st,
+                   (st != 0U) ? "FAULT" : "ok");
+    }
+}
+
+#if (INPUT_SIM_ENABLE && CAN_SILENT_SIM_ENABLE)
+static void comm_boundary_test(void)
+{
+    int32_t  thr = CFG_DEF_CAN_FAULT_MS;
+    uint32_t age;
+    uint8_t  st;
+
+    (void)sys_config_get_i32(CFG_ID_CAN_FAULT_MS, &thr);
+
+    /* 关掉 cansilent 强制，让判定走真实 age */
+    input_sim_clear(INPUT_SIM_CANSILENT);
+
+    can_scheduler_set_last_frame_age_ms(250U);
+    age = can_last_frame_age_ms();
+    st  = can_is_bus_silent((uint32_t)thr);
+    rt_kprintf("[COMM] test age=%lums thr=%ldms -> %u(%s) expect ok\n",
+               (unsigned long)age, (long)thr, (unsigned)st,
+               (st != 0U) ? "FAULT" : "ok");
+
+    can_scheduler_set_last_frame_age_ms(350U);
+    age = can_last_frame_age_ms();
+    st  = can_is_bus_silent((uint32_t)thr);
+    rt_kprintf("[COMM] test age=%lums thr=%ldms -> %u(%s) expect FAULT\n",
+               (unsigned long)age, (long)thr, (unsigned)st,
+               (st != 0U) ? "FAULT" : "ok");
+
+    can_scheduler_set_last_frame_age_ms(0U);
+    comm_print_line();
+}
+#endif
+
+static void cmd_t_comm(int argc, char **argv)
+{
+    if ((argc >= 2) && (strcmp(argv[1], "test") == 0)) {
+#if (INPUT_SIM_ENABLE && CAN_SILENT_SIM_ENABLE)
+        comm_boundary_test();
+#else
+        rt_kprintf("[COMM] test disabled (INPUT_SIM_ENABLE/CAN_SILENT_SIM_ENABLE=0)\n");
+#endif
+        return;
+    }
+
+    if ((argc >= 3) && (strcmp(argv[1], "age") == 0)) {
+#if (INPUT_SIM_ENABLE && CAN_SILENT_SIM_ENABLE)
+        int32_t age_ms = atoi(argv[2]);
+
+        if (age_ms < 0) {
+            age_ms = 0;
+        }
+        can_scheduler_set_last_frame_age_ms((uint32_t)age_ms);
+        comm_print_line();
+#else
+        rt_kprintf("[COMM] age set disabled (INPUT_SIM_ENABLE/CAN_SILENT_SIM_ENABLE=0)\n");
+#endif
+        return;
+    }
+
+    comm_print_line();
+}
+MSH_CMD_EXPORT_ALIAS(cmd_t_comm, t_comm, dump CAN comm silence age/threshold);
