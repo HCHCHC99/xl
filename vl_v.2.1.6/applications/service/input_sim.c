@@ -1089,6 +1089,22 @@ static const char *const s_seq_m18[] = {
     RT_NULL
 };
 
+/* M12a H1-A：轴适配层手动 jog / zero / 小角度 move */
+static const char *const s_seq_m12a[] = {
+    "t_axis stat",
+    "t_axis zero",
+    "t_axis stat",
+    "t_axis jog left 2500",
+    "t_axis stat",
+    "t_axis jog right 2500",
+    "t_axis stat",
+    "t_axis move 500",
+    "t_axis stat",
+    "t_axis move 0",
+    "t_axis stat",
+    RT_NULL
+};
+
 static const test_seq_t s_seqs[] = {
     { "m3", "lift: angle/valve/limit",                  s_seq_m3 },
     { "m4", "swing: angle/brake/limit",                 s_seq_m4 },
@@ -1107,6 +1123,7 @@ static const test_seq_t s_seqs[] = {
     { "m17","status frame + led effects (P8)",           s_seq_m17 },
     { "m19","encoder solve fault: report/recover",      s_seq_m19 },
     { "m18","calib state machine (P9/B-10, opt A)",      s_seq_m18 },
+    { "m12a","H1-A: axis zero/jog/move",                 s_seq_m12a },
 };
 
 #define SEQ_COUNT  ((uint32_t)(sizeof(s_seqs) / sizeof(s_seqs[0])))

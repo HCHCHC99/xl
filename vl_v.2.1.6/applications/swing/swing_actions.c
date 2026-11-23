@@ -25,10 +25,10 @@
 #include "../log/log_color.h"
 #include "swing_control.h"
 #include "swing_angle.h"
+#include "swing_axis.h"
 #include "../mode/sys_mode.h"
 #include "framework/state_engine/sm_assert.h"
 #include "app_event.h"
-#include "../motor/motor.h"
 #include "../hw/hw_brake.h"
 #include "../bsp/bsp_brake.h"
 #include <rtthread.h>
@@ -38,46 +38,7 @@
  * ============================================================ */
 extern hw_brake_t g_swing_brake;
 
-/* ============================================================
- * 内部辅助：启动电机
- * ============================================================ */
-static void swing_motor_start(swing_context_t *hctx, uint8_t dir)
-{
-    SM_ASSERT_PTR(hctx);
-    SM_ASSERT_PTR(hctx->motor_ptr);
-
-    motor_t *motor;
-    motor = hctx->motor_ptr;
-
-    /* 【2026-11-09 改造：方向极性配置化】
-     *
-     * 原实现：
-     *   if (dir == 1) { motor->direction = MOTOR_DIR_CW;  }   /* 左转 *\/
-     *   else          { motor->direction = MOTOR_DIR_CCW; }   /* 右转 *\/
-     *   —— 这是把"左转=MOTOR_DIR_CW"硬编码死，换电机/换编码器安装方向
-     *      就必须改代码重编译。
-     *
-     * 现改为统一走 swing_dir_to_motor()，由配置项
-     * CFG_ID_SWING_DIR_POLARITY 决定是否取反。
-     *
-     * 调用方传入的 dir 语义不变（1=SWING_DIR_DECREASE 左转，
-     * 2=SWING_DIR_INCREASE 右转），因此
-     * swing_act_enter_left_running/right_running 均无需改动。
-     */
-    motor->direction = swing_dir_to_motor(dir);
-
-    /* 启动（软启动由电机模块内部处理） */
-    motor_start(motor, motor->direction);
-}
-
-static void swing_motor_stop(swing_context_t *hctx)
-{
-    SM_ASSERT_PTR(hctx);
-    SM_ASSERT_PTR(hctx->motor_ptr);
-
-    motor_t *motor = hctx->motor_ptr;
-    motor_stop(motor);
-}
+/* H1-A：电机输出统一走 swing_axis；原 motor_start 是空操作（ops=NULL）。 */
 
 /* ============================================================
  * Enter 回调
@@ -88,8 +49,8 @@ void swing_act_enter_idle(StateContext_t ctx)
 
     SM_ASSERT_PTR(hctx);
 
-    /* 停止电机 */
-    swing_motor_stop(hctx);
+    /* H1-A：停止轴（位置环走完最后增量后由 axis 锁抱闸） */
+    swing_axis_stop();
 
     hctx->from_sequence = 0;
 }
@@ -119,6 +80,13 @@ void swing_act_enter_unlocking(StateContext_t ctx)
         return;
     }
 
+    /* H1-A：记录按键时刻（500ms 门限起点）和方向 */
+    if (hctx->pending_dir == 1U) {
+        swing_axis_prepare(SWING_AXIS_DIR_LEFT);
+    } else if (hctx->pending_dir == 2U) {
+        swing_axis_prepare(SWING_AXIS_DIR_RIGHT);
+    }
+
     LOG_INFO("[Swing] Unlocking (dir=%d)...\n", hctx->pending_dir);
 }
 
@@ -131,11 +99,8 @@ void swing_act_enter_locking(StateContext_t ctx)
 
     SM_ASSERT_PTR(hctx);
 
-    /* 停止电机 */
-    swing_motor_stop(hctx);
-
-    /* 请求锁止 */
-    hw_brake_lock(&g_swing_brake);
+    /* H1-A：axis 负责停止 + 等 in_pos 后再锁抱闸 */
+    swing_axis_stop();
 
     LOG_INFO("[Swing] Locking...\n");
 }
@@ -194,7 +159,10 @@ void swing_act_enter_left_running(StateContext_t ctx)
     }
 
     /* 启动电机左转 */
-    swing_motor_start(hctx, 1);
+    if (swing_axis_start() == 0U) {
+        swing_abort_running(hctx, SWING_EVT_LEFT_UP);
+        return;
+    }
 }
 
 void swing_act_enter_right_running(StateContext_t ctx)
@@ -225,7 +193,10 @@ void swing_act_enter_right_running(StateContext_t ctx)
     }
 
     /* 启动电机右转 */
-    swing_motor_start(hctx, 2);
+    if (swing_axis_start() == 0U) {
+        swing_abort_running(hctx, SWING_EVT_RIGHT_UP);
+        return;
+    }
 }
 
 void swing_act_enter_fault(StateContext_t ctx)
@@ -234,8 +205,8 @@ void swing_act_enter_fault(StateContext_t ctx)
 
     SM_ASSERT_PTR(hctx);
 
-    /* 立即停止电机 */
-    swing_motor_stop(hctx);
+    /* 立即停止电机 + 锁抱闸 */
+    swing_axis_abort();
 
     LOG_FAULT("[Swing] Enter FAULT state\n");
 }
@@ -245,14 +216,14 @@ void swing_act_enter_fault(StateContext_t ctx)
  * ============================================================ */
 void swing_act_exit_left_running(StateContext_t ctx)
 {
-    swing_context_t *hctx = (swing_context_t*)ctx;
-    swing_motor_stop(hctx);
+    (void)ctx;
+    swing_axis_stop();
 }
 
 void swing_act_exit_right_running(StateContext_t ctx)
 {
-    swing_context_t *hctx = (swing_context_t*)ctx;
-    swing_motor_stop(hctx);
+    (void)ctx;
+    swing_axis_stop();
 }
 
 /* ============================================================
@@ -268,6 +239,9 @@ void swing_act_tick_check(StateContext_t ctx)
     SM_ASSERT_PTR(hctx->angle_ptr);
 
     angle = hctx->angle_ptr;
+
+    /* H1-A：轴状态机每 50ms 推进（500ms 门限 / 对齐 / 位置环目标 / 停止锁闸） */
+    swing_axis_tick();
 
     /* ----- 全局：更新超限拦截掩码 ----- */
     hctx->forbidden_dirs = 0;

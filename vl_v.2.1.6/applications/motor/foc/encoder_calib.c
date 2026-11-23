@@ -75,6 +75,7 @@ typedef enum {
     EC_ZERO,
     EC_BETA,
     EC_ALPHA,
+    EC_OP_ALPHA,        /* H1-A：单点 α 对齐（无 ZERO/BETA） */
     EC_REV_ALIGN0,
     EC_REV_DRAG,
     EC_REV_ALIGN1,
@@ -306,6 +307,42 @@ void EncoderCalib_StartAlign(void)
     rt_kprintf("[CAL] drags are time-driven: BETA 90deg -> ALPHA 0deg, "
                "each %u ms; ABZ only records, not required\r\n",
                (unsigned)s_hold_ms_l);
+}
+
+void EncoderCalib_StartOnePoint(void)
+{
+    float align_volt;
+
+    align_volt = g_align_volt;
+    if (align_volt < 0.05f) align_volt = 0.05f;
+    if (align_volt > 5.0f)  align_volt = 5.0f;
+
+    s_sweep_en = 0u;
+    s_rev_en   = 0u;
+    s_a7_en    = 0u;
+
+    /* 只打 0° 电角度矢量；dir 沿用 mode 3 的结果，不在这里重判。 */
+    s_th2 = 0.0f;
+    ec_precompute_duty(align_volt);
+
+    g_align_evt      = EC_EVT_NONE;
+    g_align_beta_hw  = 0;
+    g_align_alpha_hw = 0;
+    g_align_moved    = 0;
+    g_align_offset   = 0;
+    s_align_ok       = 0u;
+
+    /* 200ms 固定保持；不采电流零偏（上电已做） */
+    s_hold_ms_l = 200u;
+    s_hold_cnt  = 0u;
+
+    g_align_active = 1u;
+    Foc_Output_Resume();
+    ec_output_second_segment();
+    s_ec_state = EC_OP_ALPHA;
+
+    rt_kprintf("[CAL] OnePoint: alpha 0deg, volt_x100=%ld hold_ms=%u\r\n",
+               (long)(align_volt * 100.0f), (unsigned)s_hold_ms_l);
 }
 
 void EncoderCalib_StartAlign7(void)
@@ -543,7 +580,7 @@ void EncoderCalib_Task1ms(void)
 
     if (g_fp_state != FP_STATE_NORMAL) {
         if ((s_ec_state == EC_ZERO) || (s_ec_state == EC_BETA) ||
-            (s_ec_state == EC_ALPHA) ||
+            (s_ec_state == EC_ALPHA) || (s_ec_state == EC_OP_ALPHA) ||
             (s_ec_state == EC_REV_ALIGN0) || (s_ec_state == EC_REV_DRAG) ||
             (s_ec_state == EC_REV_ALIGN1) ||
             (s_ec_state == EC_A7_RAMP_UP) || (s_ec_state == EC_A7_HOLD_BETA) ||
@@ -809,6 +846,34 @@ void EncoderCalib_Task1ms(void)
                    (long)(s_th1 * 57.29578f));
         return;
 
+    case EC_OP_ALPHA:
+        s_hold_cnt++;
+        if (s_hold_cnt < s_hold_ms_l) {
+            return;
+        }
+
+        s_alpha_hw_l     = hw_encoder_get_count();
+        g_align_alpha_hw = s_alpha_hw_l;
+        g_align_moved    = 0;
+
+        {
+            int32_t c = s_alpha_hw_l % (int32_t)CFG_ENCODER_CPR;
+            if (c < 0) c += (int32_t)CFG_ENCODER_CPR;
+            g_enc_elec_offset = c;
+            g_align_offset    = c;
+        }
+
+        g_motor_is_aligned = 1u;
+        s_align_ok         = 1u;
+        g_align_evt        = EC_EVT_DONE_OK;
+        ec_finish_zero_vector();
+        s_ec_state         = EC_DONE;
+
+        rt_kprintf("[CAL] OnePoint done: hw=%ld offset=%ld dir=%d\r\n",
+                   (long)s_alpha_hw_l, (long)g_enc_elec_offset,
+                   (int)g_enc_elec_dir);
+        return;
+
     case EC_ALPHA:
         s_hold_cnt++;
         if (s_hold_cnt < s_hold_ms_l) {
@@ -921,6 +986,7 @@ uint8_t EncoderCalib_IsBusy(void)
     case EC_ZERO:
     case EC_BETA:
     case EC_ALPHA:
+    case EC_OP_ALPHA:
     case EC_REV_ALIGN0:
     case EC_REV_DRAG:
     case EC_REV_ALIGN1:

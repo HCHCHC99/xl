@@ -39,6 +39,7 @@ const char *Foc_Proc_Name(foc_proc_t p)
     switch (p) {
     case FOC_PROC_NONE:         return "NONE";
     case FOC_PROC_ENC_ALIGN:    return "CALIB, encoder align";
+    case FOC_PROC_ONE_POINT:    return "ALIGN1P, one-point alpha";
     case FOC_PROC_SWEEP:        return "SWEEP, angle sweep";
     case FOC_PROC_REV:          return "REV, one-rev count";
     case FOC_PROC_ALIGN7:       return "ALIGN7, ramp align";
@@ -53,6 +54,7 @@ int Foc_Proc_LegacyId(foc_proc_t p)
     switch (p) {
     case FOC_PROC_NONE:         return 0;
     case FOC_PROC_ENC_ALIGN:    return 3;
+    case FOC_PROC_ONE_POINT:    return 3;      /* 同属编码器对齐，日志沿用 3 */
     case FOC_PROC_SWEEP:        return 5;
     case FOC_PROC_REV:          return 6;
     case FOC_PROC_ALIGN7:       return 7;
@@ -144,7 +146,8 @@ void Foc_Proc_Start(foc_proc_t proc)
     /* 【§10.5-C 欠压门禁】欠压期间拒绝需要转矩的一次性流程 3/5/6/7
      * （编码器对齐 / 扫角 / 测圈 / 斜坡对齐）；12/13 为零偏校准，行为不变。 */
     if ((sys_voltage_is_uv() != 0U) &&
-        ((proc == FOC_PROC_ENC_ALIGN) || (proc == FOC_PROC_SWEEP) ||
+        ((proc == FOC_PROC_ENC_ALIGN) || (proc == FOC_PROC_ONE_POINT) ||
+         (proc == FOC_PROC_SWEEP) ||
          (proc == FOC_PROC_REV) || (proc == FOC_PROC_ALIGN7))) {
         rt_kprintf("[FOC-PROC] refuse proc %d: undervoltage\n",
                    Foc_Proc_LegacyId(proc));
@@ -167,6 +170,11 @@ void Foc_Proc_Start(foc_proc_t proc)
     case FOC_PROC_ENC_ALIGN:
         Foc_Output_Release();
         EncoderCalib_StartAlign();
+        break;
+
+    case FOC_PROC_ONE_POINT:
+        Foc_Output_Release();
+        EncoderCalib_StartOnePoint();
         break;
 
     case FOC_PROC_SWEEP:

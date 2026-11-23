@@ -28,6 +28,10 @@ extern "C" {
 void    EncoderCalib_StartAlign(void);
 uint8_t EncoderCalib_IsAlignOk(void);
 
+/* H1-A：单点 α 对齐（只施加 0° 矢量 200ms，重建 offset；不改 dir）。
+ * 前置：本上电周期已做过 mode 3，g_enc_elec_dir 已知。 */
+void    EncoderCalib_StartOnePoint(void);
+
 void    EncoderCalib_StartSweep(void);
 uint8_t EncoderCalib_IsSweepDone(void);
 

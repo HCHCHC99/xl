@@ -23,6 +23,7 @@ extern "C" {
 typedef enum {
     FOC_PROC_NONE = 0,      /* 无流程（供 GetActive 使用） */
     FOC_PROC_ENC_ALIGN,     /* 编码器电角度对齐（旧 focmode 3） */
+    FOC_PROC_ONE_POINT,     /* H1-A：单点 α 对齐（200ms，不改 dir） */
     FOC_PROC_SWEEP,         /* 扫角测量（旧 focmode 5） */
     FOC_PROC_REV,           /* 一圈计数测量（旧 focmode 6） */
     FOC_PROC_ALIGN7,        /* 斜坡对齐（旧 focmode 7） */

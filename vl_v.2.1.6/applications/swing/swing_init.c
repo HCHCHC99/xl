@@ -8,8 +8,12 @@
 /* 【2026-11-10 彩标 P2】回转初始化：注册失败=ERR，完成=OK */
 #include "../log/log_color.h"
 #include "swing_angle.h"
+#include "swing_axis.h"
 #include "../motor/motor.h"
 #include "../motor/motor_config.h"
+#include "../motor/drv/hw_encoder.h"      /* H1-A：ABZ 真实计数 */
+#include "../angle/mech_cfg.h"            /* mech_div_round64 */
+#include "../angle/mech_cfg_store.h"      /* mech_get_rt */
 #include "swing_events.h"
 #include "../sys_param/sys_param.h"
 #include "../config/sys_config.h"
@@ -19,38 +23,44 @@
 #include <rtthread.h>
 
 /* ============================================================
- * 编码器读取函数（绑定到 motor_t）
+ * 编码器读取函数（H1-A：改为 ABZ 真实计数）
  * ============================================================
- * 【MARK-13 · 2026-11-09 登记：本函数当前恒返回 0】
- *
- * motor->current_position 的唯一写入点在
- *   motor/fb/motor_fb_abs_encoder.c:85  → 已被整段注释
- * 且 motor_config.c:94 启用的 motor_fb_hall_ops.get_position = NULL。
- * ⇒ 该字段恒为 .bss 初值 0 ⇒ 回转角度恒 0.0°。
- *
- * 用户裁定：先记录、后续单独排期，不改动。
- * 排期前提：三编码器大角度解算问题修复后一并处理。
- * 详见 motor_fb_abs_encoder.c 的 MARK-13 说明。
- *
- * ⚠ 在 MARK-13 修复前：
- *   - 方向极性配置（CFG_ID_SWING_DIR_POLARITY）无法实测验证
- *   - 零位/限位判定全部失效
- *   - 序列 SWING_NEAR 在目标非 0 时必然超时
+ * 旧实现返回 motor->current_position，但该字段的写点被 MARK-13 注释，
+ * 恒为 0，导致筒角/限位/过零全部失效。
+ * H1-A 直接读 FOC 的 ABZ 计数，用 mech 的 out_num/out_den 换成 0.1°：
+ *   angle_x10 = count * out_num / out_den
+ * 仍用 swing_dir_polarity 统一“角度增大=右转”的符号。
+ * 零点由 t_axis zero 写入 encoder_zero_offset（RAM）。
  * ============================================================ */
 static int32_t swing_encoder_getter(void *user_data)
 {
     motor_t *motor = (motor_t*)user_data;
-    SM_ASSERT_PTR(motor);
+
+    (void)motor;
 
 #if (INPUT_SIM_ENABLE && SWING_ANGLE_SIM_ENABLE)
-    /* 台架模拟：t_sim swing <x10> 直接给出编码器 raw（0.1°），
-     * 角度 = raw − 零点，与真实路径同一换算。 */
+    /* 台架模拟优先：t_sim swing <x10> 直接给出 raw（0.1°）。 */
     if (input_sim_active(INPUT_SIM_SWING) != 0U) {
         return input_sim_value(INPUT_SIM_SWING);
     }
 #endif
 
-    return motor->current_position;
+    {
+        const mech_rt_t *rt = mech_get_rt();
+        int32_t x10;
+
+        if ((rt == RT_NULL) || (rt->out_den == 0U)) {
+            return 0;
+        }
+
+        x10 = mech_div_round64((int64_t)hw_encoder_get_count() *
+                               (int64_t)rt->out_num,
+                               (int64_t)rt->out_den);
+        if (g_swing_dir_polarity != 0U) {
+            x10 = -x10;
+        }
+        return x10;
+    }
 }
 
 /* ============================================================
@@ -128,6 +138,9 @@ int swing_init(void)
                    (g_swing_angle.need_zero_stop != 0U) ? "stop at 0deg, re-press"
                                                         : "pass through");
     }
+
+    /* 1c. H1-A 轴适配层 */
+    swing_axis_init();
 
     /* 2. 注册回转控制对象 */
     extern ctrl_manager_t g_ctrl_mgr;
