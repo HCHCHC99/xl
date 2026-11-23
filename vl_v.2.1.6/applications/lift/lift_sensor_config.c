@@ -50,8 +50,14 @@ const lift_sensor_config_t g_lift_sensor_configs[] = {
             .read_adc_mv   = lift_adc_read_mv,
 //            .user_data     = &g_hw_adc,     /* 全局 ADC 实例 */
             .user_data     = NULL,
-            .fault_high_mv = 4700,          /* 过压阈值 */
-            .fault_low_mv  = 300,           /* 欠压阈值 */
+            /* 【P5 / B-6】这里只作兜底：voltage_init 会以 sys_config
+             * （lift_sens_* 六项）为准覆盖。数值与 xl.xlsx TC-FLT-001~004 一致。 */
+            .fault_high_mv      = 4800,     /* 进入（高） */
+            .fault_low_mv       = 250,      /* 进入（低） */
+            .fault_high_exit_mv = 4400,     /* 恢复（高） */
+            .fault_low_exit_mv  = 520,      /* 恢复（低） */
+            .confirm_ms         = 2000,     /* 进入确认 */
+            .recover_ms         = 2000,     /* 恢复确认 */
         },
         .adapter = {
             .zero_raw      = 2203,          /* 默认零位电压 */

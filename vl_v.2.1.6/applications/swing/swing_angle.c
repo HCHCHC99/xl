@@ -12,6 +12,7 @@
 #include <rtthread.h>
 #include "../angle/abs_angle.h"
 #include "app_event.h"
+#include "../config/sys_config.h"   /* P6：swing_zero_stop */
 #include "../service/input_sim.h"   /* 台架模拟（任务清单 §11） */
 
 /* ============================================================
@@ -76,7 +77,24 @@ uint8_t swing_angle_is_solve_valid(void)
  * ============================================================ */
 static uint8_t swing_crossed_zero(int32_t prev_x10, int32_t now_x10)
 {
-    return ((prev_x10 >= 0) != (now_x10 >= 0)) ? 1U : 0U;
+    /* 【P6 / B-8 修正】只有"从一侧进入零位"才算过零。
+     *
+     * 原实现是 (prev>=0) != (now>=0)，会把"本来就在 0 位、开始向负方向走"
+     * 也判成过零（prev=0 视为 >=0），于是松开重按后一动就又被停住，
+     * 与 TC-MAN-004「松开重按才继续」直接冲突。
+     *
+     * 现改为严格跨侧：prev<0 且 now>=0，或 prev>0 且 now<=0。
+     *   - 从 -5° 转到 0°   → 触发 ✓
+     *   - 从 +5° 转到 0°   → 触发 ✓
+     *   - 从 0° 向负方向走 → 不触发 ✓（起步不该被自己拦住）
+     *   - 从 0° 向正方向走 → 不触发 ✓ */
+    if ((prev_x10 < 0) && (now_x10 >= 0)) {
+        return 1U;
+    }
+    if ((prev_x10 > 0) && (now_x10 <= 0)) {
+        return 1U;
+    }
+    return 0U;
 }
 
 /* ============================================================
@@ -203,6 +221,8 @@ void swing_angle_init(swing_angle_t *angle,
     angle->get_encoder = getter;
     angle->user_data = user_data;
     angle->on_position_change = NULL;
+    angle->on_fault_change = NULL;
+    angle->enc_fault_reported = 0;
 
     angle->is_initialized = 1;
 }
@@ -236,10 +256,12 @@ void swing_angle_update(swing_angle_t *angle)
      *   过零/限位判定可能因此误触发。
      *
      * 【解算失败的动作】
-     *   置 position = UNKNOWN（让上层知道不可信），
-     *   投 ENCODER_FAULT 事件（上层据此置 encoder_fault 标志）。
+     *   ① 置 position = UNKNOWN（让上层知道不可信）；
+     *   ② 置 enc_fault_reported 并经 on_fault_change 写 ctx.encoder_fault
+     *      （2026-11-23 补齐：此前只有事件、没人写标志，导致显示与门禁失效）；
+     *   ③ 投 SWING_EVT_ENCODER_FAULT（状态机进 FAULT、停电机）。
      *   ⚠ 但不阻断手动模式 —— 用户 2026-11-10 裁定"报故障但不影响手动"。
-     *     具体保证方式见 swing_trans_table.c 中 IDLE 保留手动跳转的说明。
+     *     具体保证方式见 swing_trans_table.c 中 FAULT 保留手动跳转的说明。
      */
     solve_ok = swing_angle_is_solve_valid();
 
@@ -251,12 +273,41 @@ void swing_angle_update(swing_angle_t *angle)
         /* 只在从"可信"跳变到"不可信"时投一次，避免每 50ms 刷屏 */
         if (angle->last_position != SWING_POS_UNKNOWN) {
             LOG_FAULT("[Swing] angle solve INVALID, report encoder fault\n");
+
+            /* 【2026-11-23】同步置 encoder_fault。
+             * 状态机自己会进 FAULT 并停电机，但 HMI / 面板灯 / 一键前置条件
+             * 读的都是这个字段——不写就等于"只停不报"：屏上不报故障，
+             * 一键还能启动，而 SWING_EVT_SEQ_* 在 FAULT 态没有跳转行，
+             * 于是筒不动、序列空跑超时。见 业务.md §13.8.5。 */
+            angle->enc_fault_reported = 1U;
+            if (angle->on_fault_change != NULL) {
+                angle->on_fault_change(1U);
+            }
             post_event(SWING_EVT_ENCODER_FAULT);
         }
 
         /* 不更新 current_angle_x10：保留上次可信值供诊断查看，
          * 但 position=UNKNOWN 已表明它不可用于判定。 */
         return;
+    }
+
+    /* ---- 1b. 解算恢复：清标志 + 投 CLEAR（2026-11-23）----
+     *
+     * 顺序：先清标志，再投事件。
+     *   标志先清 → 状态帧 / 灯在同一拍内不会出现"已恢复但还报红"。
+     * CLEAR 事件由状态机解释为 FAULT → IDLE：
+     *   - 若仍在 FAULT（典型：故障后没动过）→ 正常回 IDLE；
+     *   - 若操作员已靠手动转出 FAULT（Q30-a 允许）→ 该事件无跳转行，
+     *     被忽略，无害。
+     *
+     * ⚠【启用 SPI 绝对式编码器前必读】业务.md §13.8.7 */
+    if (angle->enc_fault_reported != 0U) {
+        angle->enc_fault_reported = 0U;
+        if (angle->on_fault_change != NULL) {
+            angle->on_fault_change(0U);
+        }
+        LOG_OK("[Swing] angle solve recovered, encoder fault cleared\n");
+        post_event(SWING_EVT_ENCODER_FAULT_CLEAR);
     }
 
     /* 读取编码器原始值 */
@@ -282,6 +333,16 @@ void swing_angle_update(swing_angle_t *angle)
      *   ⇒ 手动模式下**不做过零停车**，只在序列模式保留。
      *   故此处实际上对 from_sequence==0 直接跳过。
      */
+    /* 【P6 / B-8】每拍刷新开关（33 项线性查表，50ms 一次，开销可忽略），
+     * 这样 `t_cfg set swing_zero_stop 0` 立即生效，现场不用重启就能退回旧行为。 */
+    {
+        int32_t zs = 1;
+
+        if (sys_config_get_i32(CFG_ID_SWING_ZERO_STOP, &zs) == 0) {
+            angle->need_zero_stop = (zs != 0) ? 1U : 0U;
+        }
+    }
+
     if ((angle->need_zero_stop != 0U) &&
         (swing_crossed_zero(prev_angle, angle->current_angle_x10) != 0U)) {
         post_event(SWING_EVT_ZERO_REACHED);
@@ -302,6 +363,17 @@ void swing_angle_calibrate(swing_angle_t *angle, int32_t encoder_raw)
     SM_ASSERT_MSG(angle->is_initialized, "Swing angle not initialized");
 
     angle->encoder_zero_offset = encoder_raw;
+    swing_angle_update(angle);
+}
+
+void swing_angle_zero_here(swing_angle_t *angle)
+{
+    SM_ASSERT_PTR(angle);
+    SM_ASSERT_MSG(angle->is_initialized, "Swing angle not initialized");
+
+    /* 角度 = raw − offset ⇒ offset += 当前角度 后，当前位置即为 0°。
+     * 【P9 / B-10】两点式对齐成功后的"筒角置 0"（业务.md §13.3 第 6 条）。 */
+    angle->encoder_zero_offset += angle->current_angle_x10;
     swing_angle_update(angle);
 }
 

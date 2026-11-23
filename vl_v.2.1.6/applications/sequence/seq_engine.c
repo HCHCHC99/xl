@@ -17,11 +17,45 @@
 #include <rtthread.h>
 
 /* ============================================================
+ * 【P2 / 2026-11-23】台架条件强制开关
+ * ------------------------------------------------------------
+ * 用于没有人转筒/举升机构时把「角度类完成条件」直接判为满足，
+ * 便于一次跑完整条序列观察步骤编排（t_seq_auto 1/0）。
+ * 只影响 LIFT_GE / LIFT_LE / LIFT_NEAR / SWING_NEAR 四类角度条件；
+ * TIME / NONE / CUSTOM 保持真实语义，避免掩盖时序问题。
+ * 默认 0（真实判定），纯 RAM，不落盘，重启即恢复。
+ * ============================================================ */
+static uint8_t s_force_cond = 0u;
+
+void seq_engine_set_force_cond(uint8_t en)
+{
+    s_force_cond = (en != 0u) ? 1u : 0u;
+}
+
+uint8_t seq_engine_get_force_cond(void)
+{
+    return s_force_cond;
+}
+
+/* ============================================================
  * 内部辅助：检查步骤完成条件
  * ============================================================ */
 static uint8_t check_step_condition(seq_context_t *ctx, const seq_step_t *step)
 {
     int32_t v_angle = 0, h_angle = 0;
+
+    /* 台架强制：角度类条件直接满足（t_seq_auto 1） */
+    if (s_force_cond != 0u) {
+        switch (step->condition) {
+            case SEQ_COND_LIFT_GE:
+            case SEQ_COND_LIFT_LE:
+            case SEQ_COND_LIFT_NEAR:
+            case SEQ_COND_SWING_NEAR:
+                return 1;
+            default:
+                break;
+        }
+    }
 
     /* 从外部对象读取当前角度 */
     if (ctx->lift_angle) {
@@ -92,8 +126,11 @@ static void enter_step(seq_context_t *ctx, uint32_t step_idx)
 
 /* ============================================================
  * 内部辅助：退出当前步骤
+ * ------------------------------------------------------------
+ * normal_exit = 1：条件满足的正常退出，遵守步骤的 keep_lift
+ * normal_exit = 0：超时 / 中止，一律全停（安全方向优先）
  * ============================================================ */
-static void exit_current_step(seq_context_t *ctx)
+static void exit_current_step(seq_context_t *ctx, uint8_t normal_exit)
 {
     SM_ASSERT_PTR(ctx);
 
@@ -104,8 +141,21 @@ static void exit_current_step(seq_context_t *ctx)
         ctx->on_step_exit(ctx, ctx->current_step);
     }
 
-    /* 停止当前步骤的动作（默认停止所有输出） */
-    seq_action_stop(ctx);
+    /* 停止当前步骤的动作。
+     * 【P7 / B-4】keep_lift：本步正常完成后保留举升阀输出，
+     * 供紧随其后的"保持 N 秒"步继续吃（home 的 2 s 保持即此用法）。 */
+    {
+        uint8_t stop_lift = 1U;
+
+        if ((normal_exit != 0U) && (ctx->current_step < ctx->config->step_count)) {
+            if (ctx->config->steps[ctx->current_step].keep_lift != 0U) {
+                stop_lift = 0U;
+                LOG_STATE("[Seq] Step %d keeps lift output (hold next)\n",
+                          ctx->current_step);
+            }
+        }
+        seq_action_stop_ex(ctx, stop_lift);
+    }
 
     ctx->step_entered = 0;
 }
@@ -190,8 +240,8 @@ void seq_engine_abort(seq_context_t *ctx)
 
     LOG_WARN("[Seq] Aborting sequence\n");
 
-    /* 退出当前步骤 */
-    exit_current_step(ctx);
+    /* 退出当前步骤（中止：强制全停，不给 keep_lift 留口子） */
+    exit_current_step(ctx, 0U);
 
     ctx->state = SEQ_STATE_ABORTED;
     ctx->abort_count++;
@@ -212,11 +262,16 @@ void seq_engine_update(seq_context_t *ctx)
     if (check_step_condition(ctx, step)) {
         LOG_STATE("[Seq] Step %d complete\n", ctx->current_step);
 
-        /* 退出当前步骤 */
-        exit_current_step(ctx);
+        /* 退出当前步骤（正常完成：遵守 keep_lift） */
+        exit_current_step(ctx, 1U);
 
         /* 进入下一步 */
         if (ctx->current_step + 1 >= ctx->config->step_count) {
+            /* 【P7 / B-4】末步误标 keep_lift 时兜底全停——序列结束不该有阀带电 */
+            if (ctx->config->steps[ctx->current_step].keep_lift != 0U) {
+                LOG_WARN("[Seq] last step has keep_lift, forcing all-stop\n");
+                seq_action_stop_ex(ctx, 1U);
+            }
             /* 所有步骤完成 */
             ctx->state = SEQ_STATE_DONE;
             ctx->complete_count++;
@@ -237,7 +292,7 @@ void seq_engine_update(seq_context_t *ctx)
                               * 1000 / RT_TICK_PER_SECOND;
         if (elapsed_ms >= timeout) {
             LOG_ERR("[Seq] Step %d TIMEOUT\n", ctx->current_step);
-            exit_current_step(ctx);
+            exit_current_step(ctx, 0U);
             ctx->state = SEQ_STATE_ABORTED;
             ctx->abort_count++;
             return;

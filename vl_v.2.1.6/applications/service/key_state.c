@@ -161,7 +161,8 @@ void acc_poll(void)
 
         LOG_WARN("[ACC] OFF (PB0 high for %ums)\n",
                  (unsigned)g_acc_state_cfg.exit_ms);
-        post_event(SYS_EVT_ACC_OFF);
+        /* 【P1 / 2026-11-23】停止类事件不丢：队列满时进待处理环 */
+        post_event_stop(SYS_EVT_ACC_OFF);
     }
 }
 

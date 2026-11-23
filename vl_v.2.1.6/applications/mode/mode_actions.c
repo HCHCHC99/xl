@@ -16,6 +16,26 @@
 #include <rtthread.h>
 
 /* ============================================================
+ * 内部辅助：sys_mode_t -> mode_state_t 显式映射
+ * ------------------------------------------------------------
+ * 【P2 / 2026-11-23】两个枚举不是同一套：
+ *   sys_mode_t   { FACTORY=0, MAINT=1, WORK=2 }
+ *   mode_state_t { INIT=0, FACTORY=1, TEST=2, WORK=3 }
+ * 原实现 `(mode_state_t)mode` 直接强转 ⇒ 进 MAINT 后 current_mode 变成
+ * FACTORY(1)，而 mode_tick_check() 判的是 MODE_STATE_TEST(2) ⇒
+ * 维护/测试模式的超时判定永远不生效（D-8）。此处改为显式映射。
+ * ============================================================ */
+static mode_state_t mode_to_state(sys_mode_t m)
+{
+    switch (m) {
+        case SYS_MODE_FACTORY: return MODE_STATE_FACTORY;
+        case SYS_MODE_MAINT:   return MODE_STATE_TEST;   /* TEST 与 MAINT 同值 */
+        case SYS_MODE_WORK:    return MODE_STATE_WORK;
+        default:               return MODE_STATE_INIT;
+    }
+}
+
+/* ============================================================
  * 内部辅助：切换模式并广播
  * ============================================================ */
 static void mode_switch_to(mode_context_t *mctx, sys_mode_t mode)
@@ -32,7 +52,7 @@ static void mode_switch_to(mode_context_t *mctx, sys_mode_t mode)
     sys_caps_apply();
 
     /* 更新上下文 */
-    mctx->current_mode = (mode_state_t)mode;
+    mctx->current_mode = mode_to_state(mode);
     mctx->mode_enter_tick = rt_tick_get();
 
     /* 更新统计 */

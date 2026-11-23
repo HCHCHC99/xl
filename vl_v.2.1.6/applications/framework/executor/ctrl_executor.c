@@ -8,6 +8,19 @@
 #include "framework/state_engine/sm_assert.h"
 #include "framework/port/osal.h"
 #include <string.h>
+#include <stddef.h>
+
+/* ============================================================
+ * 【2026-11-23 修复】与 obj_base.c 的 obj_executor_iface_t 布局对齐
+ *
+ * obj_base.c 为保持零 RTOS 依赖，不能 include 本头文件，只能把 executor
+ * 强制解释成 {name, init, emit} 三个指针槽。若执行器结构体在 name 与
+ * emit 之间插入/删除字段，obj_base_emit() 会静默调用错误的函数指针。
+ * 这里做编译期锁定：emit 必须位于第 3 个指针槽。
+ * ============================================================ */
+typedef char ctrl_executor_emit_slot_check[
+    (offsetof(ctrl_executor_t, emit) == (sizeof(void *) * 2U)) ? 1 : -1
+];
 
 /* ============================================================
  * 全局事件队列访问

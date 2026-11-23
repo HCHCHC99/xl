@@ -49,6 +49,23 @@ typedef void (*swing_position_change_cb_t)(swing_position_t old_pos,
                                           swing_position_t new_pos);
 
 /* ============================================================
+ * 编码器故障回调（2026-11-23 新增）
+ * ------------------------------------------------------------
+ * 解算有效性变化时通知上层写 ctx.encoder_fault：
+ *   1 = 刚判为故障（有效 → 无效）
+ *   0 = 刚恢复（无效 → 有效）
+ *
+ * 为什么用回调而不是直接写 g_swing_obj：
+ *   swing_angle 是纯角度对象（可单独测试），反向依赖控制对象会形成环。
+ *   这里与已有的 on_position_change 是同一套写法，接线在 swing_init.c。
+ *
+ * ⚠【启用 SPI 绝对式编码器前必读】业务.md §13.8.7
+ *   届时故障来源会有两个（解算 + SPI 看门狗），本回调的 1/0 语义
+ *   必须改成"来源位掩码"，否则两源互相覆盖。
+ * ============================================================ */
+typedef void (*swing_fault_change_cb_t)(uint8_t fault);
+
+/* ============================================================
  * 回转角度对象结构体
  * ============================================================ */
 typedef struct {
@@ -77,6 +94,13 @@ typedef struct {
 
     /* ----- 事件回调 ----- */
     swing_position_change_cb_t on_position_change;
+
+    /* ----- 编码器故障上报（2026-11-23） -----
+     * on_fault_change：解算有效性变化时通知上层（1=故障 0=恢复）
+     * enc_fault_reported：已上报标志。既用于防重复投递，
+     *   也用于判定"恢复"（只有报过才需要清）。 */
+    swing_fault_change_cb_t on_fault_change;
+    uint8_t enc_fault_reported;
 
     /* ----- 过零停车（2026-11-10 新增，REQ-017.1）-----
      *
@@ -112,6 +136,13 @@ void swing_angle_bind_sensor(swing_angle_t *angle,
 void swing_angle_update(swing_angle_t *angle);
 
 void swing_angle_calibrate(swing_angle_t *angle, int32_t encoder_raw);
+
+/**
+ * @brief 把"当前位置"标定为 0°（P9 / B-10，2026-11-23）
+ * @note  等价于 offset_new = offset_old + current_angle_x10（角度 = raw − offset）。
+ *        只改 RAM 的 encoder_zero_offset，落盘走快区 tube_angle_x10（批次 4 回灌消费）。
+ */
+void swing_angle_zero_here(swing_angle_t *angle);
 
 swing_position_t swing_angle_get_position(const swing_angle_t *angle);
 uint8_t swing_angle_is_left_limit(const swing_angle_t *angle);

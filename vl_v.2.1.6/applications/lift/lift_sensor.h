@@ -56,7 +56,10 @@ struct lift_sensor {
 
     /* ----- 运行时 ----- */
     int32_t              raw_value;
-    uint8_t              fault;
+    uint8_t              fault;          /* 已确认的故障（带 2s 去抖） */
+    uint8_t              fault_latched;  /* 同 fault，保留原名供诊断 */
+    uint32_t             fault_elapsed_ms; /* 当前计时已持续（未计时时为 0） */
+    uint8_t              fault_timing;   /* 1=正在计时（进入或恢复） */
     uint8_t              is_initialized;
 };
 
@@ -112,16 +115,27 @@ rt_err_t lift_sensor_init_from_config(lift_sensor_t *sensor,
 /**
  * @brief 电压型传感器配置
  * @note  raw_value 单位：mV，典型范围 500~4500mV
+ *        【P5 / B-6】进/出各一对阈值 + 两个确认时间，构成带迟滞的去抖：
+ *          未故障时 mv > hi_enter 或 mv < lo_enter 连续 confirm_ms → 置故障；
+ *          已故障时 mv 回到 [lo_exit, hi_exit] 连续 recover_ms → 清故障。
  */
 typedef struct {
     /* ----- 配置项（初始化后只读） ----- */
     uint16_t (*read_adc_mv)(void *user_data);  /* ADC 读取函数 */
     void    *user_data;
-    uint16_t fault_high_mv;                     /* 过压阈值 */
-    uint16_t fault_low_mv;                      /* 欠压阈值 */
+    uint16_t fault_high_mv;                     /* 进入阈值（高） */
+    uint16_t fault_low_mv;                      /* 进入阈值（低） */
+
+    /* ----- P5 新增：迟滞退出阈值与确认时间 ----- */
+    uint16_t fault_high_exit_mv;                /* 恢复阈值（高），默认 4400 */
+    uint16_t fault_low_exit_mv;                 /* 恢复阈值（低），默认 520  */
+    uint16_t confirm_ms;                        /* 进入确认时间，默认 2000 */
+    uint16_t recover_ms;                        /* 恢复确认时间，默认 2000 */
 
     /* ----- 运行时状态（内部维护） ----- */
-    uint16_t last_voltage_mv;      /* 新增：上次采样电压 */
+    uint16_t last_voltage_mv;      /* 上次采样电压 */
+    uint32_t timer_tick;           /* 计时起点（rt_tick） */
+    uint8_t  timer_active;         /* 1=正在计时 */
 } lift_sensor_voltage_cfg_t;
 
 extern const lift_sensor_ops_t lift_sensor_voltage_ops;

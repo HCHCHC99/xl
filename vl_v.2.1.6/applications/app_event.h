@@ -277,11 +277,54 @@ typedef enum {
  * ============================================================ */
 
 /**
- * @brief 投递事件到消息队列
+ * @brief 投递事件到消息队列（普通事件）
  * @param event 事件值（app_event_t 类型，实际为 uint32_t）
- * @note  线程安全，可在中断或线程上下文调用
+ * @note  线程安全，可在中断或线程上下文调用。
+ *        队列满时**静默丢弃**并计入 drops（与历史行为一致）。
  */
 void post_event(app_event_t event);
+
+/**
+ * @brief 投递停止类事件（不丢）
+ * @param event 事件值
+ * @note  【P1 / 2026-11-23】停止类（急停、关阀、回 IDLE）不允许因为
+ *        队列满而丢失。队列满时先压入 8 槽待处理环，由 app_event_wait()
+ *        在下一轮优先取走；同一事件已在环内则去重。
+ *        ⚠ 只允许在线程上下文调用（内部用 rt_enter_critical）。
+ */
+void post_event_stop(app_event_t event);
+
+/**
+ * @brief 取一个待处理事件（供 app_main 使用）
+ * @return 事件值
+ * @note  先取停止类待处理环，环空才阻塞等待主队列 RT_WAITING_FOREVER。
+ *        这样停止类事件的延迟上限是"当前这条事件处理完"，而不是丢。
+ */
+app_event_t app_event_wait(void);
+
+/* 投递统计（t_evt 用） */
+typedef struct {
+    uint32_t posted;         /* 普通投递成功 */
+    uint32_t dropped;        /* 普通投递失败（队列满）*/
+    uint32_t stop_posted;    /* 停止类直接入队成功 */
+    uint32_t stop_deferred;  /* 停止类入待处理环 */
+    uint32_t stop_replayed;  /* 停止类从待处理环取出 */
+    uint32_t stop_dup;       /* 停止类重复（已在环内，未重复入环）*/
+    uint32_t stop_overflow;  /* 待处理环满，丢弃最旧一条 */
+    uint32_t pend_count;     /* 当前待处理条数 */
+    uint32_t pend_mask;      /* 待处理事件区间位：bit n = 基址 (n<<12) */
+} app_event_stat_t;
+
+/**
+ * @brief 读取投递统计
+ */
+void app_event_get_stat(app_event_stat_t *st);
+
+/**
+ * @brief 清零投递统计（P2）
+ * @note  只清计数，不动队列与待处理环；供 msh 的 `t_evt clear` 使用。
+ */
+void app_event_clear_stat(void);
 
 #ifdef __cplusplus
 }

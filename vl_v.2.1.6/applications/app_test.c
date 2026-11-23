@@ -98,6 +98,38 @@ static void cmd_brake_state(int argc, char **argv)
     rt_kprintf("[t_brake] state = %d (%s)\n", s, brake_state_str(s));
 }
 
+/* ------------------------------------------------------------
+ * t_encfault <0|1> —— 强制置/清编码器故障（P8 引入）
+ * ------------------------------------------------------------
+ * 编码器故障**不分级**（2026-11-23 裁定）：SPI/RS485 断线、ABZ 无脉冲、
+ * 回读值与推算值不符，一律置同一个 encoder_fault——立即停机、关阀、
+ * 抱闸、拦一键；**手动仍放行**（Q30-a 裁定，操作员需能手动转回）。
+ * 理由见 swing_control.h 的注释。
+ * 所以本命令只需要 0/1，不需要区分来源。
+ *
+ * 只写 ctx 的一个标志，**不驱动状态机**：
+ *   - 目的：验状态帧 B1.bit0、左右键/电机灯「红闪」；
+ *   - 不动状态机，是为了能随时清 0 恢复，不留下停在 H_FAULT 的残留；
+ *   - 真机验证请拔编码器线，本命令只是台架注入。
+ *
+ * 影响面：状态帧 encoder_sta、灯帧 left/right key + motor 指示灯。
+ * 不影响：限位判定、刹车时序。
+ * ------------------------------------------------------------ */
+static void cmd_encfault(int argc, char **argv)
+{
+    int en = (argc >= 2) ? atoi(argv[1]) : -1;
+
+    if ((en != 0) && (en != 1)) {
+        rt_kprintf("usage: t_encfault <0|1>   0=normal 1=fault   (now %u)\n",
+                   (unsigned)g_swing_obj.ctx.encoder_fault);
+        return;
+    }
+    if (sys_cap_require(SYS_CAP_DIAG_WRITE, "t_encfault") == 0U) { return; }
+
+    g_swing_obj.ctx.encoder_fault = (uint8_t)en;
+    rt_kprintf("[Swing] encoder_fault -> %d  (flag only, state machine untouched)\n", en);
+}
+
 /* ============================================================
  * t_swing —— 回转角度 / 限位 / 解算 / 状态机 / 刹车 一次打印
  * ------------------------------------------------------------
@@ -154,6 +186,14 @@ static void cmd_swing_state(int argc, char **argv)
     rt_kprintf("state   : %s\n", swing_state_str(swing_control_get_state()));
     rt_kprintf("brake   : %s\n", brake_state_str(hw_brake_get_state(&g_swing_brake)));
     rt_kprintf("dir_pol : %u\n", (unsigned)g_swing_dir_polarity);
+    /* 【P6 / B-8】手动过零停车开关。1=到 0° 停并锁刹车（需松开重按）；
+     * 0=可直接过零。可用 t_cfg set swing_zero_stop 0/1 运行期切换。 */
+    rt_kprintf("zero_stop: %u\n", (unsigned)a->need_zero_stop);
+    /* 【2026-11-23】解算故障上报状态。与 ctx.encoder_fault 区分：
+     *   enc_rep=1 → 解算侧已上报（真实链路走过）
+     *   enc_rep=0 而 t_sta 的 enc=1 → 是 t_encfault 注入的（台架） */
+    rt_kprintf("enc_rep : %u  (solve fault reported)\n",
+               (unsigned)a->enc_fault_reported);
     rt_kprintf("=============================\n\n");
 }
 
@@ -356,6 +396,7 @@ static void cmd_can_tx(void)
 MSH_CMD_EXPORT_ALIAS(cmd_brake_unlock,     t_brake_unlock, unlock swing brake);
 MSH_CMD_EXPORT_ALIAS(cmd_brake_lock,       t_brake_lock,   lock swing brake);
 MSH_CMD_EXPORT_ALIAS(cmd_brake_state,      t_brake_state,  show brake state);
+MSH_CMD_EXPORT_ALIAS(cmd_encfault,         t_encfault,     force encoder fault flag 0/1);
 
 MSH_CMD_EXPORT_ALIAS(cmd_pwm,              t_pwm,          set one pwm ch duty);
 MSH_CMD_EXPORT_ALIAS(cmd_pwm_all,          t_pwm_all,      set all pwm duty);

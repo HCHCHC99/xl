@@ -129,10 +129,10 @@ static void hdl_solenoid_feedback(const can_frame_t *frame)
     g_solenoid.down_fault     = down_fault;
 
     /* 同步到举升控制上下文：
-     *   故障码（非 0 即故障）→ 触发 FAULT_VALVE 状态，立即关阀
-     *   开关反馈           → 供 0x18FF11D1 Byte2 / 诊断使用 */
-    lift_control_update_valve_fault((up_fault   != 0U) ? 1U : 0U,
-                                     (down_fault != 0U) ? 1U : 0U);
+     *   原始故障码（0/1/2）→ 交给去抖层，连续满 500 ms 才确认 FAULT_VALVE
+     *   开关反馈         → 供 0x18FF11D1 Byte2 / 诊断使用
+     * 【P4 / B-5】不再在这里判"非 0 即故障"：单帧误报不应让阀瞬间失电。 */
+    lift_control_update_valve_fault(up_fault, down_fault);
     lift_control_update_valve_fb(up_fb, down_fb);
 
     /* 通知 0x18FF11D1 Byte2 电磁阀状态更新 */

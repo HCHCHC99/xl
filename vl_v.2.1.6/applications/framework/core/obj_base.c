@@ -206,22 +206,27 @@ uint8_t obj_base_get_mode(const obj_base_t *obj)
  * 事件投递（经由执行器）
  * @note  executor 是不透明句柄。为使 obj_base.c 不依赖 ctrl_executor.h
  *        （后者 include 了 rtthread.h 与 app_event.h），此处采用
- *        **最小接口约定**：executor 结构体前两个字段必须是
- *        const char *name; 与 emit 函数指针。
+ *        **最小接口约定**：executor 结构体前三个字段必须是
+ *        name / init / emit，emit 位于第 3 个指针槽。
  *
- *        该约定由 ctrl_executor.h 侧的编译期断言强制校验
- *        （见 ctrl_executor.h 中 OBJ_EXECUTOR_IFACE_CHECK）。
+ *        【2026-11-23 修复】原实现只声明 {name, emit}，把第 2 槽（实际是
+ *        init）当成 emit 调用 ⇒ mode_control_set_mode() 等经
+ *        control_object_emit() 投递的事件**全部被吞**，表现为上电默认
+ *        模式停在 INIT、t_wmode/mode_set 无效。
+ *        现按 ctrl_executor_t 真实布局补齐 init 槽位；
+ *        ctrl_executor.c 增加了 offsetof 断言，防止再次错位。
  * ============================================================ */
 typedef obj_err_t (*obj_executor_emit_fn)(void *self, obj_base_t *obj, uint32_t event);
 
 typedef struct {
     const char              *name;
-    obj_executor_emit_fn     emit;
+    void                    *init;      /* 占位：与 ctrl_executor_t.init 对齐 */
+    obj_executor_emit_fn     emit;      /* 第 3 个指针槽 = ctrl_executor_t.emit */
 } obj_executor_iface_t;
 
-/* 本文件内部自校验：确保上面这两个字段的排布与预期一致 */
+/* 本文件内部自校验：name + init + emit 三个指针槽，无填充 */
 typedef char obj_executor_iface_size_check[
-    (sizeof(obj_executor_iface_t) == (sizeof(void *) * 2)) ? 1 : -1
+    (sizeof(obj_executor_iface_t) == (sizeof(void *) * 3)) ? 1 : -1
 ];
 
 obj_err_t obj_base_emit(obj_base_t *obj, uint32_t event)

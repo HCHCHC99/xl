@@ -140,6 +140,27 @@ void swing_act_enter_locking(StateContext_t ctx)
     LOG_INFO("[Swing] Locking...\n");
 }
 
+/* ============================================================
+ * 【P8 / D-1】运行态进入动作被拒绝后的收尾
+ * ------------------------------------------------------------
+ * 跳转表是"先迁移状态、再执行 enter"（state_engine.c:124-129），
+ * 所以 enter 里直接 return 会留下"状态在 RUNNING、电机没转"的假象：
+ *   - t_swing 误报 LEFT_RUNNING；
+ *   - 状态帧接了真实值后，HMI 会误报"电机在转"。
+ *
+ * 正确收尾是走一次"松手"：RUNNING → LOCKING → IDLE。
+ * 这样刹车也会被重新锁上（拦截时刹车是解锁状态），与正常松手一致。
+ *
+ * 用同步投递而非 post_event：工程里 enter_brake_check 已有同款用法
+ * （投 BRAKE_FAULT 进 FAULT），state_engine 先改 cur_state 再调 enter，
+ * 重入时内层迁移不会被外层覆盖。
+ * ============================================================ */
+static void swing_abort_running(swing_context_t *hctx, app_event_t up_event)
+{
+    SM_ASSERT_PTR(hctx);
+    (void)control_object_process(&g_swing_obj.base, up_event);
+}
+
 void swing_act_enter_left_running(StateContext_t ctx)
 {
     swing_context_t *hctx = (swing_context_t*)ctx;
@@ -154,18 +175,21 @@ void swing_act_enter_left_running(StateContext_t ctx)
     /* 模式检查 */
     if (!sys_mode_allows_swing_motion()) {
         LOG_WARN("[Swing] Motion not allowed by mode\n");
+        swing_abort_running(hctx, SWING_EVT_LEFT_UP);
         return;
     }
 
     /* 超限拦截 */
     if (hctx->forbidden_dirs & SWING_FORBID_LEFT) {
         LOG_WARN("[Swing] Left motion forbidden (limit)\n");
+        swing_abort_running(hctx, SWING_EVT_LEFT_UP);
         return;
     }
 
     /* 零位重触发检查 */
     if (hctx->need_retrigger && !hctx->from_sequence) {
         LOG_WARN("[Swing] Need retrigger after zero\n");
+        swing_abort_running(hctx, SWING_EVT_LEFT_UP);
         return;
     }
 
@@ -182,18 +206,21 @@ void swing_act_enter_right_running(StateContext_t ctx)
     /* 模式检查 */
     if (!sys_mode_allows_swing_motion()) {
         LOG_WARN("[Swing] Motion not allowed by mode\n");
+        swing_abort_running(hctx, SWING_EVT_RIGHT_UP);
         return;
     }
 
     /* 超限拦截 */
     if (hctx->forbidden_dirs & SWING_FORBID_RIGHT) {
         LOG_WARN("[Swing] Right motion forbidden (limit)\n");
+        swing_abort_running(hctx, SWING_EVT_RIGHT_UP);
         return;
     }
 
     /* 零位重触发检查 */
     if (hctx->need_retrigger && !hctx->from_sequence) {
         LOG_WARN("[Swing] Need retrigger after zero\n");
+        swing_abort_running(hctx, SWING_EVT_RIGHT_UP);
         return;
     }
 

@@ -76,7 +76,7 @@ const StateJumpTable_t g_lift_jump_table[] = {
     {P_STATE_UP_RUNNING,    LIFT_EVT_LIMIT_REACHED,     P_STATE_IDLE},
     {P_STATE_UP_RUNNING,    EVT_TICK_50MS,               P_STATE_UP_RUNNING},
 
-    {P_STATE_UP_RUNNING,   LIFT_EVT_LIMIT_REACHED_UPPER, P_STATE_IDLE},
+    {P_STATE_UP_RUNNING,   LIFT_EVT_LIMIT_REACHED_UPPER, P_STATE_LIMIT_HOLDING},
     {P_STATE_UP_RUNNING,   LIFT_EVT_VALVE_FAULT,         P_STATE_FAULT_VALVE},
     {P_STATE_UP_RUNNING,   LIFT_EVT_SENSOR_FAULT,        P_STATE_FAULT_SENSOR},
 
@@ -86,10 +86,10 @@ const StateJumpTable_t g_lift_jump_table[] = {
     {P_STATE_DOWN_RUNNING,  LIFT_EVT_SEQ_STOP,          P_STATE_IDLE},
 
     /* 同上：限位保持先注释，到限位直接回 IDLE（exit 回调照常关阀） */
-    {P_STATE_DOWN_RUNNING,  LIFT_EVT_LIMIT_REACHED,     P_STATE_IDLE},
+    {P_STATE_DOWN_RUNNING,  LIFT_EVT_LIMIT_REACHED,     P_STATE_LIMIT_HOLDING},
     {P_STATE_DOWN_RUNNING,  EVT_TICK_50MS,               P_STATE_DOWN_RUNNING},
 
-    {P_STATE_DOWN_RUNNING, LIFT_EVT_LIMIT_REACHED_LOWER, P_STATE_IDLE},
+    {P_STATE_DOWN_RUNNING, LIFT_EVT_LIMIT_REACHED_LOWER, P_STATE_LIMIT_HOLDING},
     {P_STATE_DOWN_RUNNING, LIFT_EVT_VALVE_FAULT,         P_STATE_FAULT_VALVE},
     {P_STATE_DOWN_RUNNING, LIFT_EVT_SENSOR_FAULT,        P_STATE_FAULT_SENSOR},
 
@@ -117,9 +117,15 @@ const StateJumpTable_t g_lift_jump_table[] = {
     {P_STATE_FAULT_SENSOR, EVT_TICK_50MS,               P_STATE_FAULT_SENSOR},
 
 
-    /* ===== FAULT_SENSOR 状态 ===== */
-    {P_STATE_FAULT_SENSOR,  LIFT_EVT_UP_DOWN,           P_STATE_FAULT_SENSOR},
-    {P_STATE_FAULT_SENSOR,  LIFT_EVT_DOWN_DOWN,         P_STATE_FAULT_SENSOR},
+    /* ===== FAULT_SENSOR 状态 =====
+     * 【P5 / B-6】TC-ANG-013 要求"传感器故障时一键不启动，仅保留允许的手动控制"。
+     * 原实现把上/下做成自转移（手动被彻底拦死），与用例相反。
+     * 现放行到 UP/DOWN_RUNNING：限位检测在 lift_act_tick_check 里已因
+     * sensor_fault 提前返回，所以手动期间没有限位保护 —— 这正是用例要求的降级。
+     * 松手后 UP/DOWN_RUNNING → IDLE，再由 tick_check 的"IDLE 且仍故障"分支
+     * 把状态退回 FAULT_SENSOR，避免故障指示随手动一起丢掉。 */
+    {P_STATE_FAULT_SENSOR,  LIFT_EVT_UP_DOWN,           P_STATE_UP_RUNNING},
+    {P_STATE_FAULT_SENSOR,  LIFT_EVT_DOWN_DOWN,         P_STATE_DOWN_RUNNING},
     {P_STATE_FAULT_SENSOR,  LIFT_EVT_SENSOR_FAULT_CLEAR,P_STATE_IDLE},
 };
 

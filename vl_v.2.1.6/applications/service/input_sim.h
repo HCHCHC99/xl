@@ -111,6 +111,17 @@ void input_sim_init(void);
  */
 int input_sim_name_to_src(const char *name, input_sim_src_t *out);
 
+/**
+ * @brief 三态总览（t_sim status）：acc/bus/lift/swing/key
+ * @note  仅打印 REAL(rt)/SIM(v)/OFF(cmp)，不改变覆盖状态
+ */
+void input_sim_status(void);
+
+/**
+ * @brief 上电打印一行 [SIM] boot ...（由启动表调用）
+ */
+void input_sim_boot_report(void);
+
 #ifdef __cplusplus
 }
 #endif

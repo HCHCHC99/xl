@@ -54,6 +54,24 @@ static int32_t swing_encoder_getter(void *user_data)
 }
 
 /* ============================================================
+ * 解算有效性 → ctx.encoder_fault（2026-11-23 新增）
+ * ------------------------------------------------------------
+ * 这是 encoder_fault 的**唯一真实生产者**（另一个是台架 t_encfault）。
+ * 单一口径：不管来源是解算失效还是将来的 SPI 掉线，都只写这一个字段，
+ * 处置也完全一样（停机 + 关阀 + 抱闸 + 拦一键；手动放行，Q30-a）。
+ *
+ * ⚠【启用 SPI 绝对式编码器前必读】业务.md §13.8.7
+ *   SPI 看门狗落地时**不要**直接写 ctx.encoder_fault，必须走同一个入口，
+ *   并把 1/0 语义升级为来源位掩码（SOLVE / SPI），否则两源互相覆盖。
+ * ============================================================ */
+static void swing_angle_fault_to_ctx(uint8_t fault)
+{
+    g_swing_obj.ctx.encoder_fault = (fault != 0U) ? 1U : 0U;
+
+    LOG_WARN("[Swing] encoder_fault -> %u\n", (unsigned)g_swing_obj.ctx.encoder_fault);
+}
+
+/* ============================================================
  * 初始化
  * ============================================================ */
 int swing_init(void)
@@ -90,6 +108,26 @@ int swing_init(void)
                                  sys_param->encoder_zero_raw,
                                  swing_encoder_getter,
                                  &g_swing_motor);
+
+    /* 1a. 解算有效性 → ctx.encoder_fault（2026-11-23） */
+    g_swing_angle.on_fault_change = swing_angle_fault_to_ctx;
+
+    /* 1b. 【P6 / B-8】手动过零停车开关（TC-MAN-004）
+     *  1 = 到 0° 停车 + 锁刹车，必须松开重按才继续（默认，对应用例）；
+     *  0 = 手动可直接过零（旧行为，现场可退回）。
+     * 只影响手动 LEFT/RIGHT_RUNNING 两个状态；一键走位置环，不进这两个状态。 */
+    {
+        int32_t v = CFG_DEF_SWING_ZERO_STOP;
+
+        if (sys_config_get_i32(CFG_ID_SWING_ZERO_STOP, &v) != 0) {
+            v = CFG_DEF_SWING_ZERO_STOP;
+        }
+        g_swing_angle.need_zero_stop = (v != 0) ? 1U : 0U;
+        rt_kprintf("[SWING] zero stop = %u (%s)\n",
+                   (unsigned)g_swing_angle.need_zero_stop,
+                   (g_swing_angle.need_zero_stop != 0U) ? "stop at 0deg, re-press"
+                                                        : "pass through");
+    }
 
     /* 2. 注册回转控制对象 */
     extern ctrl_manager_t g_ctrl_mgr;

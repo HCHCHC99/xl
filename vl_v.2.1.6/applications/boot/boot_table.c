@@ -15,6 +15,7 @@
 #include "../tick/tick_50ms.h"
 #include "../bsp/bsp_hw_init.h"
 #include "../motor/diag/foc_vofa.h"
+#include "../service/input_sim.h"        /* INPUT_SIM_ENABLE + 上电 [SIM] boot */
 
 
 /* ===================== 外部入口声明 ===================== */
@@ -138,6 +139,20 @@ static int boot_param_dump(void)
 {
     param_store_boot_dump();
     param_store_boot_prepare();
+    return 0;
+}
+
+/* ===================== 模拟层上电自述 ===================== */
+/**
+ * @brief 上电打印一行 [SIM] boot layer=... acc=... 等三态
+ * @note  只读，不打开任何模拟；INPUT_SIM_ENABLE=0 时整段编译为空。
+ *        位置：console 已就绪、线程尚未创建，打印不会与其他模块交错。
+ */
+static int boot_sim_report(void)
+{
+#if INPUT_SIM_ENABLE
+    input_sim_boot_report();
+#endif
     return 0;
 }
 
@@ -293,6 +308,8 @@ const boot_step_t g_boot_steps[] = {
      *   以及 motion/system/angle_mech/device/fast 的当前值（含 sys_config ID）。
      * 只读，不写 Flash；失败/被跳过不影响启动。 */
     {"param_dump",       boot_param_dump,      BOOT_LV_SERVICE,    BOOT_OPTIONAL, 0, {"storage", "sys_config", "mech_cfg"}},
+    /* 模拟层上电自述（2026-11-23 P1）：一行 [SIM] boot ...，与 t_sim status 同格式 */
+    {"sim_report",       boot_sim_report,      BOOT_LV_SERVICE,    BOOT_OPTIONAL, 0, {NULL}},
     {"threads",          boot_create_threads,  BOOT_LV_THREAD,     BOOT_FATAL,    0, {"ipc_center"}},
     {"tick_50ms",        tick_50ms_init,       BOOT_LV_THREAD,     BOOT_FATAL,    0, {"threads"}},
     {"wdt",              wdt_monitor_init,     BOOT_LV_WDT,        BOOT_FATAL,    0, {"threads"}},

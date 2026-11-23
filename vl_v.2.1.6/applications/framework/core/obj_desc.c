@@ -32,7 +32,7 @@ extern const StateMachineConfig_t g_lift_config;
 extern const StateMachineConfig_t g_swing_config;
 
 /* ============================================================
- * 描述表（C1：2 行）
+ * 描述表（C1：2 行；P2 / 2026-11-23 追加 SeqControl，共 3 行）
  * @note  结构体 44 B/条由 obj_desc.h 的编译期 size_check 实测；
  *        .rodata 增量以编译前后 arm-none-eabi-size 差值为准（R-06）。
  * ============================================================ */
@@ -65,6 +65,27 @@ const ctrl_obj_desc_t g_ctrl_obj_descs[] = {
         .resources     = NULL,
         .layer         = CTRL_OBJ_LAYER_CONTROLLED,
     },
+    {
+        /* 【P2 / 2026-11-23】一键序列路由行。
+         * 键盘投 SEQ_EVT_ONKEY_*（0x7000~0x7002），没有这一行会被
+         * app_main 的回退分支静默丢弃（历史现象：按一键毫无反应）。
+         * 注意：序列对象的状态机只有 IDLE/ACTIVE 两态，一键按键不引起
+         * 状态迁移，因此 app_main 在该行命中后还会补一次
+         * seq_control_on_event() 做"命令分发"。
+         * sm_cfg 留 NULL：序列对象的状态机配置在 seq_control.c 内为私有。 */
+        .type          = CTRL_OBJ_TYPE_SEQ,
+        .name          = "SeqControl",
+        .event_base    = SEQ_EVENT_BASE,     /* 0x7000 */
+        .event_mask    = 0U,                 /* 全收 0x7000~0x7FFF */
+        .priority      = 0U,
+        .required_caps = SYS_CAP_SEQUENCE,   /* 一键需要 SEQUENCE 权限 */
+        .depends_on    = NULL,
+        .sm_cfg        = NULL,
+        .obj_cfg       = NULL,
+        .ops           = NULL,
+        .resources     = NULL,
+        .layer         = CTRL_OBJ_LAYER_CONTROLLED,
+    },
 };
 
 const uint8_t g_ctrl_obj_desc_count =
@@ -73,7 +94,7 @@ const uint8_t g_ctrl_obj_desc_count =
 /* ============================================================
  * 按类型查描述
  * @note  obj_base_init() 在初始化时调用本函数，把描述指针绑定到 obj->desc。
- *        未填表项的对象（mode / seq / vehicle）返回 NULL，属预期行为。
+ *        未填表项的对象（mode / vehicle / calib / clutch）返回 NULL，属预期行为。
  * ============================================================ */
 const ctrl_obj_desc_t *obj_desc_find_by_type(uint32_t type)
 {

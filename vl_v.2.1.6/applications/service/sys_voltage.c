@@ -142,7 +142,8 @@ static void sys_voltage_uv_timer_cb(void *parameter)
             if (s_uv_enter_acc_ms >= (uint32_t)s_uv_confirm_ms) {
                 s_uv_enter_acc_ms = 0U;
                 s_uv_state = SYS_POWER_UV;
-                post_event(SYS_EVT_UV_ENTER);
+                /* 【P1 / 2026-11-23】停止类事件不丢：队列满时进待处理环 */
+                post_event_stop(SYS_EVT_UV_ENTER);
             }
         } else {
             s_uv_enter_acc_ms = 0U;

@@ -128,6 +128,27 @@ static const cfg_def_t s_cfg_def[] = {
     { CFG_ID_LIFT_LOWER_X10, "lift_lower_x10", CFG_T_I16, 0,
       -300, -900, 900, "0.1deg" },
 
+    /* ---- 举升传感器阈值与确认时间（P5 / B-6，2026-11-23）----
+     * 进入/恢复各一对阈值（迟滞）+ 两个确认时间。
+     * 改后重启生效：lift_sensor 在 init 时读取一次，运行期不查表。 */
+    { CFG_ID_LIFT_SENS_HI_ENTER_MV, "lift_sens_hi_enter_mv", CFG_T_U16,
+      CFG_F_REQ_RESTART, CFG_DEF_LIFT_SENS_HI_ENTER_MV, 3000, 5000, "mV" },
+    { CFG_ID_LIFT_SENS_HI_EXIT_MV,  "lift_sens_hi_exit_mv",  CFG_T_U16,
+      CFG_F_REQ_RESTART, CFG_DEF_LIFT_SENS_HI_EXIT_MV,  3000, 5000, "mV" },
+    { CFG_ID_LIFT_SENS_LO_ENTER_MV, "lift_sens_lo_enter_mv", CFG_T_U16,
+      CFG_F_REQ_RESTART, CFG_DEF_LIFT_SENS_LO_ENTER_MV,    0, 2000, "mV" },
+    { CFG_ID_LIFT_SENS_LO_EXIT_MV,  "lift_sens_lo_exit_mv",  CFG_T_U16,
+      CFG_F_REQ_RESTART, CFG_DEF_LIFT_SENS_LO_EXIT_MV,     0, 2000, "mV" },
+    { CFG_ID_LIFT_SENS_CONFIRM_MS,  "lift_sens_confirm_ms",  CFG_T_U16,
+      CFG_F_REQ_RESTART, CFG_DEF_LIFT_SENS_CONFIRM_MS,   100, 10000, "ms" },
+    { CFG_ID_LIFT_SENS_RECOVER_MS,  "lift_sens_recover_ms",  CFG_T_U16,
+      CFG_F_REQ_RESTART, CFG_DEF_LIFT_SENS_RECOVER_MS,   100, 10000, "ms" },
+
+    /* ---- 到限位后阀保持（P6 / B-7）----
+     * 0 = 到限位立即关阀（旧行为），可现场退回。 */
+    { CFG_ID_LIFT_HOLD_MS, "lift_hold_ms", CFG_T_U16,
+      0, CFG_DEF_LIFT_HOLD_MS, 0, 20000, "ms" },
+
     /* ---- 0x07xx 标定标志（镜像，只读）----
      * 真值在 sys_param，本表只提供统一查询入口，绝不存副本。
      * 改标定必须走 t_enc_cal / t_lift_calib（Q8 裁定）。 */
@@ -396,6 +417,11 @@ static const cfg_def_t s_cfg_def[] = {
       CFG_F_REQ_RESTART, CFG_DEF_UV_RECOVER_MS,  100,  5000, "ms" },
     { CFG_ID_UV_BLANK_MS,   "uv_blank_ms",   CFG_T_U16,
       CFG_F_REQ_RESTART, CFG_DEF_UV_BLANK_MS,    100,  2000, "ms" },
+
+    /* ---- 手动过零停车（P6 / B-8，2026-11-23）----
+     * 0 = 手动可直接过零（旧行为），1 = 到 0° 停并锁刹车，需松开重按。 */
+    { CFG_ID_SWING_ZERO_STOP, "swing_zero_stop", CFG_T_U8,
+      0, CFG_DEF_SWING_ZERO_STOP, 0, 1, "" },
 };
 
 #define CFG_DEF_COUNT   (sizeof(s_cfg_def) / sizeof(s_cfg_def[0]))

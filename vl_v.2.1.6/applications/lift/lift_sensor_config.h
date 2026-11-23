@@ -23,8 +23,13 @@ typedef union {
     struct {
         uint16_t (*read_adc_mv)(void *user_data);
         void    *user_data;
-        uint16_t fault_high_mv;
-        uint16_t fault_low_mv;
+        uint16_t fault_high_mv;       /* 进入（高） */
+        uint16_t fault_low_mv;        /* 进入（低） */
+        /* 【P5 / B-6】迟滞退出阈值与两个确认时间（0 = 由 voltage_init 兜底） */
+        uint16_t fault_high_exit_mv;  /* 恢复（高），典型 4400 */
+        uint16_t fault_low_exit_mv;   /* 恢复（低），典型 520  */
+        uint16_t confirm_ms;          /* 进入确认，典型 2000 */
+        uint16_t recover_ms;          /* 恢复确认，典型 2000 */
     } voltage;
 
     /* ----- 电流型参数 ----- */

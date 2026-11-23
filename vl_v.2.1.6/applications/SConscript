@@ -9,7 +9,7 @@ CPPPATH = [cwd, str(Dir('#'))]
 
 # 手动指定需要加入头文件搜索路径的子目录
 subdirs = ['storage', 'sys_param', 'device_info', 'param', 'ota_shared', 'lift', 'CAN', 'service', 'framework', 'mode', 'swing', 'motor', 'motor/foc', 'sequence','hw', 'bsp', 'keyboard', 'config',
-           'angle', 'vehicle', 'framework/state_engine']   # 【2026-11-03】angle/config 此前缺失，补上避免新目录掉出构建
+           'angle', 'vehicle', 'framework/state_engine', 'arbiter', 'calib']   # 【2026-11-03】angle/config 此前缺失，补上避免新目录掉出构建；【2026-11-23】calib=P9
 for d in subdirs:
     subdir = os.path.join(cwd, d)
     if os.path.exists(subdir):

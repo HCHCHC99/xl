@@ -204,6 +204,17 @@ typedef enum {
 /* --- 0x06xx 举升 --- */
 #define CFG_ID_LIFT_UPPER_X10      0x0601U
 #define CFG_ID_LIFT_LOWER_X10      0x0602U
+/* 举升传感器阈值与确认时间（P5 / B-6，2026-11-23）
+ *   进入：> hi_enter 或 < lo_enter，连续 confirm_ms 才置故障
+ *   恢复：回到 [lo_exit, hi_exit] 区间，连续 recover_ms 才清除（迟滞） */
+#define CFG_ID_LIFT_SENS_HI_ENTER_MV  0x0603U
+#define CFG_ID_LIFT_SENS_HI_EXIT_MV   0x0604U
+#define CFG_ID_LIFT_SENS_LO_ENTER_MV  0x0605U
+#define CFG_ID_LIFT_SENS_LO_EXIT_MV   0x0606U
+#define CFG_ID_LIFT_SENS_CONFIRM_MS   0x0607U
+#define CFG_ID_LIFT_SENS_RECOVER_MS   0x0608U
+/* 到限位后阀继续保持的时间（P6 / B-7，2026-11-23） */
+#define CFG_ID_LIFT_HOLD_MS           0x0609U
 
 /* --- 0x07xx 标定标志（镜像 sys_param，只读） --- */
 #define CFG_ID_ENC_ZERO_VALID       0x0701U
@@ -333,6 +344,22 @@ typedef enum {
  *   这样"当前角度"物理含义保持唯一，便于现场用示波器核对。
  * ============================================================ */
 
+/* --- 0x06xx 举升传感器阈值默认值（P5 / B-6，2026-11-23）--------
+ * 依据：xl.xlsx TC-FLT-001~004（4800/4400/250/520 mV，各 2.5 s 注入、2 s 后动作）。
+ * 进/出各一对阈值构成迟滞，避免在门限附近来回抖。 */
+#define CFG_DEF_LIFT_SENS_HI_ENTER_MV   4800
+#define CFG_DEF_LIFT_SENS_HI_EXIT_MV    4400
+#define CFG_DEF_LIFT_SENS_LO_ENTER_MV    250
+#define CFG_DEF_LIFT_SENS_LO_EXIT_MV     520
+#define CFG_DEF_LIFT_SENS_CONFIRM_MS    2000
+#define CFG_DEF_LIFT_SENS_RECOVER_MS    2000
+
+/* --- 0x06xx 限位保持 / 0x0B07 过零停车（P6 / B-7、B-8，2026-11-23）---
+ * 依据：xl.xlsx TC-MAN-008 / TC-ANG-009/010（到限位后阀继续输出 5 s）；
+ *       TC-MAN-004（手动到 0° 停车，松开重按才继续）。 */
+#define CFG_DEF_LIFT_HOLD_MS            5000
+#define CFG_DEF_SWING_ZERO_STOP            1
+
 /* --- 0x0B02~0x0B06 欠压 / 下电存档（2026-11-20）----------------
  * 依据：业务.md §13.6-A。全部放 SYSTEM 慢区（s_system_ids[]）。
  * 默认值用 CFG_DEF_UV_* 宏：首次烧录/全片擦除时生效；已落盘设备保持 Flash 值
@@ -348,6 +375,8 @@ typedef enum {
 #define CFG_ID_UV_CONFIRM_MS       0x0B04U
 #define CFG_ID_UV_RECOVER_MS       0x0B05U
 #define CFG_ID_UV_BLANK_MS         0x0B06U
+/* 手动过零停车（P6 / B-8，2026-11-23）：1=到 0° 停并要求松开重按 */
+#define CFG_ID_SWING_ZERO_STOP     0x0B07U
 
 /* ============================================================
  * 8. API

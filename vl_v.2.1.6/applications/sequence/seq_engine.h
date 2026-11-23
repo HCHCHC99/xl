@@ -116,6 +116,14 @@ seq_state_t seq_engine_get_state(const seq_context_t *ctx);
  */
 uint32_t seq_engine_get_step(const seq_context_t *ctx);
 
+/**
+ * @brief 台架条件强制开关（P2）
+ * @param en 1 = 角度类条件（LIFT_GE/LE/NEAR、SWING_NEAR）直接判满足
+ * @note  仅供 `t_seq_auto` 使用；不影响 TIME/NONE/CUSTOM；纯 RAM，不落盘。
+ */
+void    seq_engine_set_force_cond(uint8_t en);
+uint8_t seq_engine_get_force_cond(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -75,6 +75,12 @@ typedef struct {
     seq_cond_t   condition;     /* 完成条件 */
     uint32_t     timeout_ms;    /* 该步骤超时（0=用序列默认） */
 
+    /* 【P7 / B-4】本步"正常完成"时不关举升阀，让下一步继续吃这个输出。
+     * 典型用法：home 的「下降到 0°」→「保持 2 s」。
+     * 只对正常完成生效；超时/中止仍强制全停（安全方向）。
+     * 回转输出不受此标志影响，始终在步末停止。 */
+    uint8_t      keep_lift;
+
     /* 自定义动作/条件（仅当 action/condition 为 CUSTOM 时使用） */
     int  (*custom_action)(void *ctx);
     int  (*custom_cond)(void *ctx);

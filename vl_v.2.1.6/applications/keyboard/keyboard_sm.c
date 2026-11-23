@@ -33,8 +33,8 @@
  * 说明：最初按"880 够用"想给 1024，验证脚本算出 880/1024 = 86%，
  * 判定 TIGHT，故上调。keyboard 是唯一在 50ms 内要连续跑完
  * 「按键扫描 → 去抖 → 事件投递 → 控制同步」全链的线程，
- * 且 _kb_sync_context 经函数指针进入 seq_control_update_onekey
- * 等业务模块，不宜压到极限。 */
+ * 且 _kb_sync_context 经函数指针进入 lift/swing 的 update_switch，
+ * 不宜压到极限。 */
 #define KB_THREAD_STACK     1280U
 #define KB_THREAD_TIMESLICE 10
 
@@ -43,6 +43,9 @@
  * ============================================================ */
 static kb_snapshot_t s_snap;
 static kb_sm_t       s_sm;
+
+/* 【P3】三键同按的一次性提示锁：按住不放时避免每 100ms 刷屏 */
+static uint8_t s_multi_onekey_latch;
 
 static rt_timer_t  s_tmr  = RT_NULL;
 static rt_sem_t    s_wake = RT_NULL;
@@ -214,19 +217,40 @@ static void _kb_build_cmd(uint16_t raw_mask,
 
     /* 一键：只要原始报文里存在手动方向，一键一律拒绝。
      * 用原始报文而非消解结果判断，是为了覆盖「手动互斥被判无效」的情形——
-     * 否则上+下冲突瞬间方向位全为 0，一键会趁机动作，与「手动优先」相悖。 */
+     * 否则上+下冲突瞬间方向位全为 0，一键会趁机动作，与「手动优先」相悖。
+     *
+     * 【P3 / 2026-11-23】再叠加一条：同一帧里 ≥2 个一键位 ⇒ 三个都不响应
+     * （TC-PRI-002「三个一键同时按下均不启动」）。否则三个上升沿会依次
+     * 触发"启动→中断→中断"，最后按回位跑，与用例相反。 */
     if ((raw_mask & KB_MANUAL_MASK) == 0U) {
-        cmd->onekey_mid  = ((raw_mask & KB_ONKEY_MID)  != 0U) ? 1U : 0U;
-        cmd->onekey_rear = ((raw_mask & KB_ONKEY_REAR) != 0U) ? 1U : 0U;
-        cmd->onekey_home = ((raw_mask & KB_ONKEY_HOME) != 0U) ? 1U : 0U;
+        uint8_t n_onekey = 0U;
+
+        if ((raw_mask & KB_ONKEY_MID)  != 0U) { n_onekey++; }
+        if ((raw_mask & KB_ONKEY_REAR) != 0U) { n_onekey++; }
+        if ((raw_mask & KB_ONKEY_HOME) != 0U) { n_onekey++; }
+
+        if (n_onekey < 2U) {
+            cmd->onekey_mid  = ((raw_mask & KB_ONKEY_MID)  != 0U) ? 1U : 0U;
+            cmd->onekey_rear = ((raw_mask & KB_ONKEY_REAR) != 0U) ? 1U : 0U;
+            cmd->onekey_home = ((raw_mask & KB_ONKEY_HOME) != 0U) ? 1U : 0U;
+        }
     }
 }
 
 /* ============================================================
  * 指令跳变 → 业务事件
  * ============================================================ */
+/* 校准键时序（P9 / B-10，2026-11-23）
+ *   双击：两次 CLICK 间隔 ≤1s → CALIB_EVT_DOUBLE_CLICK（第二击时补发）
+ *   长按：按住 ≥2s → CALIB_EVT_LONG_PRESS（每次按压只发一次，发在 2s 到点）
+ * CLICK / KEY_UP 仍照发：校准状态机用 CLICK 计"再按"，用 KEY_UP 判"<2s 松开"。 */
+static rt_tick_t s_calib_last_click = 0U;
+static rt_tick_t s_calib_press_tick = 0U;
+static uint8_t   s_calib_long_sent  = 0U;
+
 static void _kb_emit_events(const key_cmd_t *old, const key_cmd_t *now)
 {
+    rt_tick_t now_tick = rt_tick_get();
     /* 举升 */
     if ((now->up   != 0U) && (old->up   == 0U)) { post_event(LIFT_EVT_UP_DOWN);     }
     if ((now->up   == 0U) && (old->up   != 0U)) { post_event(LIFT_EVT_UP_UP);       }
@@ -239,18 +263,45 @@ static void _kb_emit_events(const key_cmd_t *old, const key_cmd_t *now)
     if ((now->right != 0U) && (old->right == 0U)) { post_event(SWING_EVT_RIGHT_DOWN); }
     if ((now->right == 0U) && (old->right != 0U)) { post_event(SWING_EVT_RIGHT_UP);   }
 
-    /* 一键（触发型，只发按下） */
-    if ((now->onekey_mid  != 0U) && (old->onekey_mid  == 0U)) { post_event(SWING_EVT_ONKEY_MIDDLE); }
-    if ((now->onekey_rear != 0U) && (old->onekey_rear == 0U)) { post_event(SWING_EVT_ONKEY_REAR);   }
-    if ((now->onekey_home != 0U) && (old->onekey_home == 0U)) { post_event(SWING_EVT_ONKEY_HOME);   }
+    /* 一键（触发型，只发按下）
+     * 【P2 / 2026-11-23】改投 SEQ 事件：回转跳转表没有 ONKEY 行，
+     * 原来投 SWING_EVT_ONKEY_* 会被状态机静默丢弃。SEQ 事件经
+     * obj_desc 的 SeqControl 行路由到序列对象。 */
+    if ((now->onekey_mid  != 0U) && (old->onekey_mid  == 0U)) { post_event(SEQ_EVT_ONKEY_MIDDLE); }
+    if ((now->onekey_rear != 0U) && (old->onekey_rear == 0U)) { post_event(SEQ_EVT_ONKEY_REAR);   }
+    if ((now->onekey_home != 0U) && (old->onekey_home == 0U)) { post_event(SEQ_EVT_ONKEY_HOME);   }
 
     /* 校准 */
-    if ((now->calib != 0U) && (old->calib == 0U)) { post_event(CALIB_EVT_CLICK);  }
-    if ((now->calib == 0U) && (old->calib != 0U)) { post_event(CALIB_EVT_KEY_UP); }
+    if ((now->calib != 0U) && (old->calib == 0U)) {
+        /* 按下沿：判双击 + 记按压起点 */
+        if ((s_calib_last_click != 0U) &&
+            ((now_tick - s_calib_last_click) <= rt_tick_from_millisecond(1000U))) {
+            post_event(CALIB_EVT_DOUBLE_CLICK);
+        }
+        s_calib_last_click = now_tick;
+        s_calib_press_tick = now_tick;
+        s_calib_long_sent  = 0U;
+        post_event(CALIB_EVT_CLICK);
+    }
+    if ((now->calib != 0U) && (s_calib_long_sent == 0U) &&
+        (s_calib_press_tick != 0U) &&
+        ((now_tick - s_calib_press_tick) >= rt_tick_from_millisecond(2000U))) {
+        /* 按住满 2s：发一次长按（P9 / B-10） */
+        s_calib_long_sent = 1U;
+        post_event(CALIB_EVT_LONG_PRESS);
+    }
+    if ((now->calib == 0U) && (old->calib != 0U)) {
+        s_calib_long_sent = 0U;
+        post_event(CALIB_EVT_KEY_UP);
+    }
 }
 
 /* ============================================================
  * 上下文同步（互锁标志 / 序列打断依据）
+ * @note  【P2 / 2026-11-23】调用点已提前到 _kb_emit_events() **之前**：
+ *        pending_dir 等方向状态必须在事件投递前就绪，否则事件被
+ *        app_main 抢先消费时会读到上一拍的值（D-9）。
+ *        一键的"是否按下"不再经此同步（改为一键事件直接驱动）。
  * ============================================================ */
 static void _kb_sync_context(const key_cmd_t *cmd)
 {
@@ -266,7 +317,6 @@ static void _kb_sync_context(const key_cmd_t *cmd)
 
     lift_control_update_switch(up, down);
     swing_control_update_switch(left, right);
-    seq_control_update_onekey(0U, 0U, 0U);      /* 一键由事件驱动，标志无需保持 */
 }
 
 /* ============================================================
@@ -293,8 +343,8 @@ static void _kb_sm_step(void)
 
             s_sm.cur_key = kc;
             s_sm.cmd     = new_cmd;
-            _kb_emit_events(&s_sm.prev_cmd, &s_sm.cmd);
             _kb_sync_context(&s_sm.cmd);
+            _kb_emit_events(&s_sm.prev_cmd, &s_sm.cmd);
             s_sm.prev_cmd = s_sm.cmd;
             return;
         }
@@ -336,6 +386,28 @@ static void _kb_sm_step(void)
     /* ---------- 生成指令 ---------- */
     _kb_build_cmd(mask, up, down, left, right, &new_cmd);
 
+    /* ---------- 【P3】三键同按：计数 + 一次性提示 ----------
+     * 一键位已在 _kb_build_cmd() 里被清零，这里只负责统计与日志。
+     * 用锁存避免按住三个键时每帧刷一行。 */
+    {
+        uint8_t n_onekey = 0U;
+
+        if ((mask & KB_ONKEY_MID)  != 0U) { n_onekey++; }
+        if ((mask & KB_ONKEY_REAR) != 0U) { n_onekey++; }
+        if ((mask & KB_ONKEY_HOME) != 0U) { n_onekey++; }
+
+        if ((n_onekey >= 2U) && ((mask & KB_MANUAL_MASK) == 0U)) {
+            if (s_multi_onekey_latch == 0U) {
+                s_multi_onekey_latch = 1U;
+                s_sm.cnt_reject++;
+                rt_kprintf("[KB] multi one-key (%u pressed) -> all suppressed\n",
+                           (unsigned)n_onekey);
+            }
+        } else {
+            s_multi_onekey_latch = 0U;
+        }
+    }
+
     /* 手动优先：报文中有手动方向且同时有一键 → 一键被拒 */
     if (((mask & KB_MANUAL_MASK) != 0U) && ((mask & KB_ONEKEY_MASK) != 0U)) {
         s_sm.cnt_reject++;
@@ -345,8 +417,8 @@ static void _kb_sm_step(void)
     s_sm.cur_key = kc;
     s_sm.cmd     = new_cmd;
 
-    _kb_emit_events(&s_sm.prev_cmd, &s_sm.cmd);
     _kb_sync_context(&s_sm.cmd);
+    _kb_emit_events(&s_sm.prev_cmd, &s_sm.cmd);
 
     s_sm.prev_cmd = s_sm.cmd;
 }

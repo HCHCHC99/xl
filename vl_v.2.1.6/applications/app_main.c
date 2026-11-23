@@ -34,6 +34,9 @@
 /* 序列引擎（需 seq_control_set_vehicle_started） */
 #include "sequence/seq_control.h"
 
+/* 零点校准状态机（P9 / B-10，选项 A） */
+#include "calib/calib_ctrl.h"
+
 /* 母线欠压监视（业务.md §13.6-A / 任务清单 §10.5）*/
 #include "service/sys_voltage.h"
 
@@ -57,6 +60,12 @@
 #include "framework/core/obj_desc.h"
 #include "framework/manager/ctrl_manager.h"
 #include "mode/sys_caps.h"
+
+/* 2026-11-23 P1：仲裁影子骨架（只记录，不拦截） */
+#include "arbiter/arbiter.h"
+
+/* 2026-11-23 P2：一键序列周期推进 + 一键事件分发 */
+#include "sequence/seq_control.h"
 
 /* 全局管理器实例：沿用工程惯例在各使用点 extern（见 boot_table.c / lift_init.c） */
 extern ctrl_manager_t g_ctrl_mgr;
@@ -182,15 +191,25 @@ static void uv_snapshot_save(void)
         off += (int32_t)CFG_ENCODER_CPR;
     }
 
-    p.cpr            = (uint16_t)CFG_ENCODER_CPR;          /* 4096 */
-    p.pole_pairs     = (uint8_t)CFG_MOTOR_POLE_PAIRS;      /* 10 */
-    p.elec_dir       = g_enc_elec_dir;
-    p.offset         = (uint32_t)off;
-    /* p.calib_count 保持不变 */
-    p.snapshot_seq++;
-    p.valid          = (g_motor_is_aligned != 0U) ? 0x01U : 0x00U;  /* 仅 bit0 */
-    p.source         = 0U;                                          /* ABZ */
-    p.tube_angle_x10 = 0;                                           /* 批次 4 才填 */
+    /* 【P9 / 2026-11-23】筒角快照与 bit1/bit2 必须保留：
+     * 校准（B-10）会把 tube_angle_x10 + bit1 写进快区，欠压整条覆盖会把
+     * 筒角清零（机械自锁假设下筒角掉电不变，旧值就是当前值）。
+     * bit0（对齐有效）仍按本次状态重算。 */
+    {
+        uint8_t keep_bits = (uint8_t)(p.valid & (uint8_t)(0x02U | 0x04U));
+        int32_t tube_keep = p.tube_angle_x10;
+
+        p.cpr            = (uint16_t)CFG_ENCODER_CPR;      /* 4096 */
+        p.pole_pairs     = (uint8_t)CFG_MOTOR_POLE_PAIRS;   /* 10 */
+        p.elec_dir       = g_enc_elec_dir;
+        p.offset         = (uint32_t)off;
+        /* p.calib_count 保持不变 */
+        p.snapshot_seq++;
+        p.valid          = (uint8_t)((g_motor_is_aligned != 0U) ? 0x01U : 0x00U) |
+                           keep_bits;
+        p.source         = 0U;                              /* ABZ */
+        p.tube_angle_x10 = tube_keep;
+    }
 
     /* 只写一条：同步落盘接口内部已包含 RAM 更新，不能再调 param_fast_save()
      * （那会额外投一次异步请求，多占一个槽位，可能在掉电瞬间触发擦除）。 */
@@ -214,9 +233,14 @@ void app_main_thread_entry(void *param)
      * 此处只打印生效参数（首次定时器回调已完成 CFG_ID_UV_* 读取）。 */
     sys_voltage_monitor_start();
 
+    /* 【P9 / B-10】校准状态机（不进 boot 表：纯 RAM 状态，无需在启动期占一步） */
+    calib_ctrl_init();
+
     while (1) {
-        /* 阻塞等待事件（无事件时挂起） */
-        rt_mq_recv(g_app_event_mq, &event, sizeof(app_event_t), RT_WAITING_FOREVER);
+        /* 阻塞等待事件（无事件时挂起）
+         * 【P1 / 2026-11-23】改走 app_event_wait()：停止类待处理环优先，
+         * 环空才阻塞等主队列。已入队事件的取出顺序不变。 */
+        event = app_event_wait();
 
         /* ----- 50ms Tick 处理 ----- */
         if (event == EVT_TICK_50MS) {
@@ -234,8 +258,13 @@ void app_main_thread_entry(void *param)
             /* 3. 模式超时检测（同样无法挂进函数表） */
             mode_tick_check(&g_mode_obj.ctx);
 
-            /* 4. 角度已刷新 → 通知 0x18FF11D1 状态帧更新缓存 */
-            post_event(CAN_EVT_STA_ANGLE);
+            /* 4. 角度已刷新 → 状态帧 / 灯帧全量重算（P8 / 2026-11-23）
+             *    直接调 refresh，不投事件：
+             *    - 事件队列多一次往返，且描述表若漏映射就静默失效
+             *      （旧实现 9 个字段里 6 个永远停在初值，就是这个坑）；
+             *    - 灯色要跟随阀输出/状态机变化，不能只等 LED 类事件。 */
+            status_tx_refresh();
+            led_tx_refresh();
 
             /* 5. 角度传感器故障 → 举升控制上下文
              *    感知层不依赖业务层，由调度层在此搬运 */
@@ -251,20 +280,40 @@ void app_main_thread_entry(void *param)
              *    【Q33 独立】与启车判定无耦合，各自独立维护状态 */
             acc_poll();
 
-            /* 阀故障 500ms 去抖 */
-//            lift_control_valve_fb_poll();
+            /* 阀故障 500ms 去抖（P4 / B-5）
+             *   收到 0x18FF0E63 只登记原始码，这里推进计时；满 500ms 才确认。
+             *   必须放在 seq_control_update() 之前：同一拍内先确认故障、再判中断，
+             *   否则序列会多跑一步。 */
+            lift_control_valve_fb_poll();
 
 //            if (++s_tick_div >= 4U) {             /* 200ms 状态帧 */
 //                s_tick_div = 0U;
 //                valve_tx_apply();
 //            }
+
+            /* 【P2 / 2026-11-23】仲裁 owner 释放：模块回到 IDLE 后让出 owner，
+             * 否则 P3 开 enforce 会误判"某人占用中"把人锁死。只释放、不抢占。 */
+            arb_owner_sync();
+
+            /* 【P2 / 2026-11-23】序列引擎周期推进。
+             * 原实现本行被注释，且上面提前 continue 使本段不可达，
+             * 导致一键即使触发也永远停在第一步。必须放在 continue 之前。 */
+            seq_control_update();
+
+            /* 【P9 / B-10】校准状态机周期推进：PREP 5s 窗口、EXEC 轮询
+             * Foc_Proc_IsBusy()、DONE/FAIL 2s 回 IDLE。 */
+            calib_ctrl_tick_50ms();
+
             continue;   /* tick 不投给状态机：自转移在 state_engine.c:106 直接 return，投了也是空转 */
+        }
 
-
-            /* 序列引擎周期更新 */
-//            extern void seq_control_tick_update(void);   /* 或直接调用 */
-//            seq_control_update();   /* 需将函数暴露 */
-            /* 可在此添加其他 50ms 周期任务 */
+        /* ----- 校准事件（P9 / B-10）：0x3000 区间转发给校准状态机 -----
+         * 键盘的 CALIB_EVT_CLICK / DOUBLE_CLICK / LONG_PRESS / KEY_UP 都从
+         * 这里进 calib_ctrl_feed()。灯色由 50ms tick 的 led_tx_refresh()
+         * 全量重算，不需要在这里再投 LED 事件。 */
+        if ((event >= CALIB_EVENT_BASE) && (event < 0x4000U)) {
+            calib_ctrl_feed(event);
+            continue;
         }
 
         /* ----- 系统事件：启车 / 熄车状态跳变 ----- */
@@ -365,6 +414,12 @@ void app_main_thread_entry(void *param)
             continue;
         }
 
+        /* ----- 仲裁影子探针（P1 / 2026-11-23）-----
+         * 位置：两道门禁之后、描述表路由之前。
+         * 影子模式只记录决策，不改变下方任何路由分支；下方每条终止路径
+         * 都必须调用 arb_shadow_actual() 完成对账。 */
+        arb_shadow_probe(event);
+
         /* ----- 事件路由（2026-11-15 C2 / LEG-3 / G-07）-----
          * 【Q-C4 按建议代裁定】先查描述表；命中后做能力门禁，再经
          * control_object_process() 专用投递接口（E-2）同步触发引擎一次。
@@ -386,12 +441,22 @@ void app_main_thread_entry(void *param)
                     rt_kprintf("[app_main] drop evt 0x%X: caps=0x%X need=0x%X\n",
                                (unsigned)event, (unsigned)sys_caps_get(),
                                (unsigned)desc->required_caps);
+                    arb_shadow_actual(0U);
                 } else if (target == NULL) {
                     rt_kprintf("[app_main] drop evt 0x%X: type=%u not registered\n",
                                (unsigned)event, (unsigned)desc->type);
+                    arb_shadow_actual(0U);
                 } else {
                     /* E-2：唯一入口，基类校验 base.sm / is_initialized 后投一次 */
                     control_object_process(target, event);
+
+                    /* 【P2 / 2026-11-23】序列对象的状态机只有 IDLE/ACTIVE 两态
+                     * （SEQ_OBJ_EVT_START/FINISH/ABORT），一键按键本身不引起
+                     * 状态迁移 ⇒ 投递后补一次"命令分发"。只有 SEQ 类需要。 */
+                    if (desc->type == CTRL_OBJ_TYPE_SEQ) {
+                        seq_control_on_event(event);
+                    }
+                    arb_shadow_actual(1U);
                 }
                 continue;   /* 描述表已命中，不再走下面的旧区间分支 */
             }
@@ -406,9 +471,11 @@ void app_main_thread_entry(void *param)
         if (event >= LIFT_EVENT_BASE && event < SWING_EVENT_BASE) {
             /* 举升 0x1000 ~ 0x1FFF */
             control_object_process(&g_lift_obj.base, event);
+            arb_shadow_actual(1U);
         } else if (event >= SWING_EVENT_BASE && event < CALIB_EVENT_BASE) {
             /* 回转 0x2000 ~ 0x2FFF（原先遗漏，导致左右手动完全不动） */
             control_object_process(&g_swing_obj.base, event);
+            arb_shadow_actual(1U);
         } else if (event >= MODE_EVENT_BASE && event <= (MODE_EVENT_BASE + 0x0FF)) {
             /* 【P0 修正 2026-10-27】模式事件 0x8000 ~ 0x80FF 原先无人接收。
              * mode_init() → mode_control_set_mode() → control_object_emit()
@@ -416,6 +483,12 @@ void app_main_thread_entry(void *param)
              * 但 app_main 只路由 0x1000/0x2000 两个区间，模式事件被静默丢弃。
              * 现转发给模式状态机，使 MODE_EVT_ENTER_* 能真正驱动迁移。 */
             control_object_process(&g_mode_obj.base, event);
+            arb_shadow_actual(1U);
+        } else {
+            /* 本段包含 0x3000 校准 / 0x5000 离合 / 0x6000 OTA / 0x7000 序列
+             * 等尚无路由的事件：影子据此把"判 GRANT 却没人接"记成
+             * mismatch_link，作为后续阶段补齐路由的依据。 */
+            arb_shadow_actual(0U);
         }
         /* 校准 0x3000：待校准模块（独立）接入后转发 */
 

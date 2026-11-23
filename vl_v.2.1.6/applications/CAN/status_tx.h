@@ -2,9 +2,16 @@
  * @file    status_tx.h
  * @brief   0x18FF11D1 控制器状态反馈帧组包（本机 → HMI，100ms）
  * @note
- *   数据源：各业务模块状态变更后 post_event()，本模块在事件回调中
- *           刷新本地缓存共用体 s_tx，发送线程按周期读取组包。
- *   禁止在 pack 中直接读取其他模块对象（避免跨线程竞态）。
+ *   【P8 / 2026-11-23】数据源改为"全量 refresh"：
+ *     50ms tick 调 status_tx_refresh() 一次性读各模块 getter 填缓存，
+ *     pack 仍只做 memcpy（不在发送线程里读别的模块）。
+ *
+ *   旧实现是"事件驱动单字段刷新"，后果是 9 个字段里有 6 个没人投事件、
+ *   永远停在 reset 初值（角度一直报 0°）。改成全量 refresh 后，
+ *   任何字段漏接都会在 t_sta 里立刻暴露，而不是悄悄报错值。
+ *
+ *   t_sta 直接打印缓存内容，与"帧有没有真的发出去"无关，
+ *   便于在没有 CAN 对端的台架上验证解码。
  */
 
 #ifndef __STATUS_TX_H
@@ -79,6 +86,17 @@ extern "C" {
  * @return 0 成功
  */
 int status_tx_init(void);
+
+/**
+ * @brief 全量刷新缓存（读各模块 getter，P8）
+ * @note  50ms tick 调用一次；事件入口也复用本函数
+ */
+void status_tx_refresh(void);
+
+/**
+ * @brief 打印本帧的 id / 周期 / raw / 逐字节解码（t_sta 调用）
+ */
+void status_tx_dump(void);
 
 /**
  * @brief 状态变更事件入口 [线程安全]

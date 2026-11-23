@@ -22,11 +22,18 @@ volatile sys_mode_t g_current_mode = SYS_MODE_WORK;
  * ============================================================ */
 static int sys_mode_apply(const char *name)
 {
-    if (strcmp(name, "work") == 0) {
-        sys_set_mode(SYS_MODE_WORK);
-    } else if (strcmp(name, "factory") == 0) {
-        sys_set_mode(SYS_MODE_FACTORY);
-    } else if ((strcmp(name, "maint") == 0) || (strcmp(name, "test") == 0)) {
+    /* 【P2 / 2026-11-23】按"仅 MAINT"口径收紧：
+     * 本产品（含量产）固定运行在 MAINT，work/factory 不再是可用目标模式。
+     * t_wmode 会绕过 mode_control 状态机直改快查变量，容易造成
+     * "SM 在 MAINT、权限却已是 WORK"的静默降级，故此处直接拒绝。
+     * 确实需要切换时请用 mode_set <0|1|2>（走状态机 + 重算权限 + 事件广播）。 */
+    if ((strcmp(name, "work") == 0) || (strcmp(name, "factory") == 0)) {
+        rt_kprintf("[MODE] '%s' disabled: this product runs in MAINT only\n", name);
+        rt_kprintf("[MODE] use 'mode_set 0|1|2' if a real mode switch is needed\n");
+        return -1;
+    }
+
+    if ((strcmp(name, "maint") == 0) || (strcmp(name, "test") == 0)) {
         sys_set_mode(SYS_MODE_MAINT);
     } else {
         return -1;

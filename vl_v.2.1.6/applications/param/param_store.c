@@ -103,6 +103,12 @@ static const uint16_t s_system_ids[PARAM_SYSTEM_CFG_COUNT] = {
     /* 欠压 / 下电存档（2026-11-20） */
     CFG_ID_UV_ENTER_MV, CFG_ID_UV_RECOVER_MV,
     CFG_ID_UV_CONFIRM_MS, CFG_ID_UV_RECOVER_MS, CFG_ID_UV_BLANK_MS,
+    /* 举升传感器阈值与确认时间（P5 / B-6，2026-11-23） */
+    CFG_ID_LIFT_SENS_HI_ENTER_MV, CFG_ID_LIFT_SENS_HI_EXIT_MV,
+    CFG_ID_LIFT_SENS_LO_ENTER_MV, CFG_ID_LIFT_SENS_LO_EXIT_MV,
+    CFG_ID_LIFT_SENS_CONFIRM_MS, CFG_ID_LIFT_SENS_RECOVER_MS,
+    /* 限位保持 / 过零停车（P6 / B-7、B-8，2026-11-23） */
+    CFG_ID_LIFT_HOLD_MS, CFG_ID_SWING_ZERO_STOP,
 };
 
 /* ============================================================
